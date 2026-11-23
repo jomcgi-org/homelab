@@ -220,6 +220,7 @@ series do not change at all, and `failure_mode_total` does not exist.
 | `factory_egress_scan_semgrep_agreement_total{gitleaks,semgrep}` | Both tiers gave a verdict. `gitleaks="clean",semgrep="found"` is a catch by the engine. In enforce mode a `gitleaks="found"` pair is a lower bound, because Gitleaks answers first. In observe mode the engine call always ends, so the pair is complete. |
 | `factory_egress_scan_semgrep_observe_total{result}` | Observe mode only. Per request that Gitleaks decided: `would_deny`, `would_fail` or `no_change`. See [Observe mode](#observe-mode). |
 | `factory_egress_scan_semgrep_observe_mode` | Observe mode only. 1 while the tier observes. |
+| `factory_egress_scan_semgrep_observe_size_bytes{kind}` | Observe mode only. Histogram of `raw_body` and `engine_text` sizes of each request, in 12 buckets from 512 B to 1 MiB. The label has two fixed values and holds no request data. |
 | `factory_egress_scan_semgrep_inflight` | Calls in progress |
 | `factory_egress_scan_semgrep_breaker_open` | 1 while the breaker is open |
 | `factory_egress_scan_semgrep_deadline_seconds` | Configured deadline |
@@ -255,7 +256,9 @@ can never delay the reply.
 - The call uses the same in-flight limit (`semgrep.concurrency`), breaker and
   deadline as enforce mode. The scanner takes the slot and checks the breaker
   and the size limit **before** it starts a goroutine. A refused request starts
-  no goroutine and copies no body. So the number of background goroutines is
+  no goroutine and copies no body. An admitted call gets one copy of the engine
+  text before the goroutine starts, so the goroutine never reads the request
+  body after the reply. So the number of background goroutines is
   at most `semgrep.concurrency`, and each ends at the deadline. A slow or hung
   engine cannot pile up calls: it fills the slots, and the rest are counted as
   `shed`.
@@ -283,24 +286,28 @@ denies on its own findings and its own 75 ms deadline in observe mode.
 
 #### The 7-day observe procedure
 
-Run the tier in observe mode for 7 days before enforce mode. Set
+Joe decided that the tier runs in observe mode for 7 days before enforce mode
+([ARCHITECTURE.md](ARCHITECTURE.md#decided), row 3). Set
 `semgrep.enabled: true` and `semgrep.mode: observe` in
 `helm.valuesObject` of the Application. Keep the gateway `requestTimeout` at
 `80ms`. Add the scanner egress rule and the engine ingress rule first (see
 [Security](#security)). Then watch these, on the `egress-scanning` dashboard
 row "Observe mode" and in the pod log:
 
-| Look at | Healthy | If not |
+| Look at | Suggested threshold | If not |
 | --- | --- | --- |
 | Would-deny rate and the findings by rule id (log line `semgrep tier observed a finding`) | Each rule id is a true positive, or a known false positive that you fix in the engine rules before enforce | A rule that fires on normal traffic must be tuned or removed. A false positive in enforce mode is a 403. |
 | Engine error and timeout rate (`requests_total{outcome=~"timeout\|error"}`) | below 0.1 % of calls, and no `error` run | Find the cause (a bad response, `errors` or `paths.skipped` from the engine). In enforce mode with failure mode `deny` each one is a 503. |
 | Shed and breaker-open rate | none | Raise `semgrep.concurrency`, or fix the engine capacity. |
 | Engine latency p95 against `semgrep.deadline` | p95 at most half of the deadline | Raise the deadline (and the gateway timeout with it), or make the engine faster. |
+| Request sizes (`observe_size_bytes`, kinds `raw_body` and `engine_text`) | the p99 of `raw_body` and the highest bucket with traffic set `semgrep.maxBodyBytes` (v1 value 32 KiB) | A body over the limit is `oversize` in enforce mode (503 with failure mode `deny`). |
 | Observed requests, and `agreement_total` | a stable count each day, with the traffic of all callers | If no `observe_total` series moves, the engine is unreachable (check the network rules). |
 
-Exit criteria for the switch: 7 days of data, every would-deny explained, the
-failure rates in the table met, and the latency p95 within the deadline. Then
-make one values change in one PR:
+The 7 days are Joe's decision. The thresholds in the table, and these exit
+criteria, are **suggestions** of the author: 7 days of data, every would-deny
+explained, the failure rates in the table met, and the latency p95 within the
+deadline. The owner of the switch sets the final values. Then make one values
+change in one PR:
 
 ```yaml
 semgrep:

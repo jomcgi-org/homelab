@@ -539,3 +539,105 @@ func TestEnforceModeStillWaitsForTheEngine(t *testing.T) {
 		t.Fatal("enforce mode did not wait for the engine")
 	}
 }
+
+// The slot release is a method, so that taking and freeing a slot allocates
+// nothing: the enforce path allocates as it did before observe mode.
+func TestAdmitAndReleaseAllocateNothing(t *testing.T) {
+	tier, err := newSemgrepTier(testConfig(), engineFunc(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocs := testing.AllocsPerRun(1000, func() {
+		if tier.admit(10, 10) != "" {
+			t.Fatal("not admitted")
+		}
+		tier.releaseSlot()
+	})
+	if allocs != 0 {
+		t.Fatalf("admit and releaseSlot allocate %v times", allocs)
+	}
+}
+
+// The background call holds its own copy of the text. A change of the request
+// body after the handler returns must not reach the engine.
+func TestObserveEngineGetsACopyOfTheBody(t *testing.T) {
+	release := make(chan struct{})
+	got := make(chan string, 1)
+	engine := engineFunc(func(ctx context.Context, body []byte) (Verdict, error) {
+		<-release
+		got <- string(body)
+		return Verdict{}, nil
+	})
+	cfg := observeConfig()
+	cfg.Deadline = 5 * time.Second
+	s, _ := newTierScanner(t, cfg, engine)
+	req := cleanRequest("original-body-text")
+	reply, err := s.Check(context.Background(), req)
+	requireAllowed(t, reply, err)
+	raw := req.GetAttributes().GetRequest().GetHttp().GetRawBody()
+	for i := range raw {
+		raw[i] = 'X' // the codec may reuse this buffer after the handler returns
+	}
+	close(release)
+	if text := <-got; !strings.Contains(text, "original-body-text") || strings.Contains(text, "XXXX") {
+		t.Fatalf("the engine saw a changed body: %q", text)
+	}
+}
+
+func histogramFor(t *testing.T, registry *prometheus.Registry, name string) map[string][2]float64 {
+	t.Helper()
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string][2]float64{}
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		for _, m := range family.GetMetric() {
+			if len(m.GetLabel()) != 1 || m.GetLabel()[0].GetName() != "kind" {
+				t.Fatalf("unexpected labels: %v", m.GetLabel())
+			}
+			out[m.GetLabel()[0].GetValue()] = [2]float64{float64(m.GetHistogram().GetSampleCount()), m.GetHistogram().GetSampleSum()}
+		}
+	}
+	return out
+}
+
+func TestObserveRecordsBodySizes(t *testing.T) {
+	engine := engineFunc(func(ctx context.Context, body []byte) (Verdict, error) { return Verdict{}, nil })
+	cfg := observeConfig()
+	cfg.MaxBody = 1000 // a larger body is oversize, and still counted in the sizes
+	s, registry := newTierScanner(t, cfg, engine)
+	for _, n := range []int{10, 2000} {
+		reply, err := s.Check(context.Background(), cleanRequest(strings.Repeat("a", n)))
+		requireAllowed(t, reply, err)
+	}
+	sizes := histogramFor(t, registry, "factory_egress_scan_semgrep_observe_size_bytes")
+	if len(sizes) != 2 {
+		t.Fatalf("kinds: %v", sizes)
+	}
+	if raw := sizes[sizeRawBody]; raw[0] != 2 || raw[1] != 2010 {
+		t.Errorf("raw_body count and sum = %v", raw)
+	}
+	// The text holds the address and header lines and two separators in addition.
+	if text := sizes[sizeEngineText]; text[0] != 2 || text[1] <= 2010 {
+		t.Errorf("engine_text count and sum = %v", text)
+	}
+	if got := counter(t, registry, "factory_egress_scan_semgrep_requests_total", map[string]string{"outcome": "oversize"}); got != 1 {
+		t.Errorf("oversize = %v", got)
+	}
+}
+
+func TestSizeHistogramExistsOnlyInObserveMode(t *testing.T) {
+	engine := engineFunc(func(ctx context.Context, body []byte) (Verdict, error) { return Verdict{}, nil })
+	_, enforce := newTierScanner(t, testConfig(), engine)
+	if hasFamily(t, enforce, "factory_egress_scan_semgrep_observe_size_bytes") {
+		t.Error("enforce mode exposes the size histogram")
+	}
+	_, observing := newTierScanner(t, observeConfig(), engine)
+	if !hasFamily(t, observing, "factory_egress_scan_semgrep_observe_size_bytes") {
+		t.Error("observe mode lacks the size histogram")
+	}
+}

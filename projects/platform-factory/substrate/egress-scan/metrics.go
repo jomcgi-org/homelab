@@ -103,6 +103,7 @@ type tierMetrics struct {
 
 	// The observe series exist only in observe mode.
 	observedTotal *prometheus.CounterVec
+	observedSize  *prometheus.HistogramVec
 	observeMode   prometheus.Gauge
 	observing     bool
 }
@@ -151,6 +152,11 @@ func newTierMetrics(t *semgrepTier) *tierMetrics {
 			Name: "factory_egress_scan_semgrep_observe_total",
 			Help: "Observe mode: requests that Gitleaks decided, by what enforce mode would have changed. would_deny: the engine found a credential that Gitleaks did not. would_fail: the engine gave no verdict and the failure mode would apply. no_change: nothing.",
 		}, []string{"result"})
+		m.observedSize = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "factory_egress_scan_semgrep_observe_size_bytes",
+			Help:    "Observe mode: size of each request that reached the tier, by kind: raw_body (the request body) and engine_text (the text that the engine would get). It sets the engine body limit.",
+			Buckets: []float64{512, 1 << 10, 2 << 10, 4 << 10, 8 << 10, 16 << 10, 32 << 10, 64 << 10, 128 << 10, 256 << 10, 512 << 10, 1 << 20},
+		}, []string{"kind"})
 		m.observeMode = prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "factory_egress_scan_semgrep_observe_mode",
 			Help: "1 while the tier runs in observe mode. The engine never changes a reply.",
@@ -158,6 +164,9 @@ func newTierMetrics(t *semgrepTier) *tierMetrics {
 		m.observeMode.Set(1)
 		for _, result := range observeResults {
 			m.observedTotal.WithLabelValues(result)
+		}
+		for _, kind := range []string{sizeRawBody, sizeEngineText} {
+			m.observedSize.WithLabelValues(kind)
 		}
 	}
 	for _, outcome := range engineOutcomes {
@@ -179,7 +188,7 @@ func (m *tierMetrics) register(registry prometheus.Registerer) {
 	if m.observing {
 		// No failure mode applies in observe mode, so its series would only
 		// show zeros.
-		registry.MustRegister(m.requests, m.duration, m.inflight, m.agreement, m.breakerOpen, m.deadline, m.observedTotal, m.observeMode)
+		registry.MustRegister(m.requests, m.duration, m.inflight, m.agreement, m.breakerOpen, m.deadline, m.observedTotal, m.observedSize, m.observeMode)
 		return
 	}
 	registry.MustRegister(m.requests, m.duration, m.inflight, m.failureMode, m.agreement, m.breakerOpen, m.deadline)
@@ -216,4 +225,17 @@ func (m *tierMetrics) agree(gitleaksFound bool, res engineResult) {
 		g = "found"
 	}
 	m.agreement.WithLabelValues(g, res.outcome).Inc()
+}
+
+// Size kinds of the observe size histogram. They are fixed, so the labels carry
+// no request data.
+const (
+	sizeRawBody    = "raw_body"
+	sizeEngineText = "engine_text"
+)
+
+// observeSizes records the size of a request in observe mode.
+func (m *tierMetrics) observeSizes(bodyLen, textLen int) {
+	m.observedSize.WithLabelValues(sizeRawBody).Observe(float64(bodyLen))
+	m.observedSize.WithLabelValues(sizeEngineText).Observe(float64(textLen))
 }
