@@ -140,12 +140,32 @@ func TestHTTPEngineVerdicts(t *testing.T) {
 		{name: "unsafe rule id is replaced", handler: func(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, `{"results":[{"check_id":"x y\n`+secretFixture+`","start":{"offset":-3},"end":{"offset":2},"extra":{}}]}`)
 		}, findings: []Finding{{"invalid-rule-id", 0, 2}}},
-		{name: "warning level errors are ignored", handler: func(w http.ResponseWriter, r *http.Request) {
-			io.WriteString(w, `{"results":[],"errors":[{"level":"warn"}]}`)
-		}},
+		{name: "warning level error without findings is incomplete", handler: func(w http.ResponseWriter, r *http.Request) {
+			// The CLI reports a rule timeout or out-of-memory at level warn.
+			io.WriteString(w, `{"results":[],"errors":[{"level":"warn","type":"Timeout"}]}`)
+		}, err: errEngineIncomplete},
+		{name: "info level error without findings is incomplete", handler: func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `{"results":[],"errors":[{"level":"info"}]}`)
+		}, err: errEngineIncomplete},
+		{name: "error without a level is incomplete", handler: func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `{"results":[],"errors":[{}]}`)
+		}, err: errEngineIncomplete},
 		{name: "scan error without findings is incomplete", handler: func(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, `{"results":[],"errors":[{"level":"error"}]}`)
 		}, err: errEngineIncomplete},
+		{name: "skipped path without findings is incomplete", handler: func(w http.ResponseWriter, r *http.Request) {
+			// Text over the default target size limit is skipped.
+			io.WriteString(w, `{"results":[],"errors":[],"paths":{"scanned":[],"skipped":[{"path":"/scan/target.json","reason":"file_too_large"}]}}`)
+		}, err: errEngineIncomplete},
+		{name: "empty skipped list is clean", handler: func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `{"results":[],"errors":[],"paths":{"scanned":["/scan/target.json"],"skipped":[]}}`)
+		}},
+		{name: "scanned paths only is clean", handler: func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `{"results":[],"errors":[],"paths":{"scanned":["/scan/target.json"]}}`)
+		}},
+		{name: "skipped path with a finding still finds", handler: func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `{"results":[{"check_id":"a","start":{"offset":1},"end":{"offset":2}}],"paths":{"skipped":[{"path":"x"}]}}`)
+		}, findings: []Finding{{"a", 1, 2}}},
 		{name: "scan error with a finding still finds", handler: func(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, `{"results":[{"check_id":"a","start":{"offset":1},"end":{"offset":2},"extra":{}}],"errors":[{"level":"error"}]}`)
 		}, findings: []Finding{{"a", 1, 2}}},

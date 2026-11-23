@@ -91,8 +91,8 @@ progress line, then the Semgrep JSON. The client reads from the first `{`.
 | --- | --- |
 | Any result | finding. The request is denied (403) whatever the severity or `validation_state`. A key that is invalid or not validated still must not leave. |
 | Result with `is_ignored` true | finding. The text is actor-controlled, so an actor can add a `nosemgrep` marker. A suppressed result still denies. |
-| No findings, `errors` with level `error` | no verdict (`error`): the scan was partial |
-| No findings, `errors` with level `warn` or `info` | clean |
+| No findings, any `errors` entry, at any level | no verdict (`error`): the scan was partial. The CLI reports rule timeouts and out-of-memory at level `warn`. |
+| No findings, any entry in `paths.skipped` | no verdict (`error`): the scan was partial. Semgrep skips a target over its default size limit (about 1 MB), and the text can reach about 1.1 MiB. |
 | HTTP status other than 200, redirect, no `results` key, not JSON | no verdict (`error`) |
 | Response over `--semgrep-max-response` | no verdict (`error`) |
 
