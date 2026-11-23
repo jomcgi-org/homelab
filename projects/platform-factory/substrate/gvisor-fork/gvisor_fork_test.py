@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -495,6 +496,12 @@ def test_conformance_job_is_suspended_and_runs_as_ate_client() -> None:
     assert {"memory", "ephemeral-storage"} <= set(container["resources"]["limits"])
 
 
+def test_conformance_job_has_time_to_clean_up_on_sigterm() -> None:
+    pod = _conformance_job()["spec"]["template"]["spec"]
+    # Cleanup waits up to STATE_WAIT_SECONDS (120) for the seed to go.
+    assert pod["terminationGracePeriodSeconds"] >= 240
+
+
 def test_conformance_job_takes_the_cli_from_the_fork_image_by_digest() -> None:
     pod = _conformance_job()["spec"]["template"]["spec"]
     (cli,) = [v for v in pod["volumes"] if v["name"] == "cli"]
@@ -563,13 +570,16 @@ def test_conformance_template_is_a_fork_template_with_no_egress_and_no_env() -> 
     assert private < fork["seedResources"]["limits"]["memoryBytes"]
 
 
-# conformance.py against a fake kubectl-ate.
+# conformance.py against a fake kubectl-ate that answers in the API's JSON shapes:
+# Actor {metadata, actorTemplate, status: {state, fork: {role}}} and
+# WorkerSeed {seedActor: {atespace, name}, seedActorUid, templateUid, workerEpoch}.
 
 _FAKE = """\
 import json, os, re, sys
 S = os.environ["FAKE_STATE"]
 st = json.load(open(S)) if os.path.exists(S) else {
-    "atespaces": [], "templates": {}, "actors": {}, "listed": {}, "calls": []}
+    "atespaces": [], "templates": {}, "actors": {}, "listed": {}, "calls": [],
+    "next": 0}
 a = sys.argv[1:]
 while a and a[0] in ("--endpoint", "--token-file"):
     a = a[2:]
@@ -582,40 +592,65 @@ def fail(msg):
 def out(obj):
     save(); print(json.dumps(obj)); sys.exit(0)
 env = os.environ.get
+def seed_rows():
+    if env("FAKE_FOREIGN_SEED"):
+        return [{"seedActor": {"atespace": "elsewhere", "name": "seed-x"},
+                 "seedActorUid": "u-seed", "templateUid": "u-other", "workerEpoch": 1}]
+    return [{"seedActor": {"atespace": t["ns"], "name": "seed-" + t["name"]},
+             "seedActorUid": "u-seed-" + t["name"], "templateUid": t["uid"],
+             "workerEpoch": 1} for t in st["templates"].values()]
+def template_json(t):
+    return {"metadata": {"atespace": t["ns"], "name": t["name"], "uid": t["uid"]},
+            "containers": [{"name": "engine"}]}
 verb = a[:2]
 if verb == ["get", "workers"]:
-    seeds = [{"template": n} for n in st["templates"]]
     state = env("FAKE_WORKER_STATE", "WORKER_STATE_ACTIVE")
     out({"workers": [
         {"workerPool": "other", "status": {"state": "WORKER_STATE_ACTIVE"}},
-        {"workerPool": "gvisor-fork", "status": {"state": state, "seeds": seeds}}]})
+        {"workerPool": "gvisor-fork", "status": {"state": state, "seeds": seed_rows()}}]})
 if verb == ["create", "atespace"]:
     st["atespaces"].append(a[2]); out({})
 if verb == ["create", "actor-template"]:
     text = open(a[3]).read()
     bad = ("API_TOKEN" in text or "singleUse: false" in text
            or "FORK_EGRESS_GATEWAY" in text)
+    if bad and env("FAKE_INFRA_REFUSAL"):
+        fail("rpc error: code = Unavailable desc = connection refused")
     if bad and not env("FAKE_ACCEPT_BAD"):
-        fail("rejected: invalid fork template")
+        fail("rpc error: code = InvalidArgument desc = invalid fork template")
+    ns = re.search(r"(?m)^  atespace: (.*)$", text).group(1)
     name = re.search(r"(?m)^  name: (.*)$", text).group(1)
-    st["templates"][name] = text; out({})
+    st["next"] += 1
+    st["templates"][ns + "/" + name] = {"ns": ns, "name": name, "uid": "u-t%d" % st["next"]}
+    out({})
+if verb == ["get", "actor-template"]:
+    ns = flag("-a")
+    rows = [template_json(t) for t in st["templates"].values() if t["ns"] == ns]
+    if len(a) > 2 and not a[2].startswith("-"):
+        rows = [r for r in rows if r["metadata"]["name"] == a[2]]
+        if not rows:
+            fail("rpc error: code = NotFound")
+        out(rows[0])
+    out({"actorTemplates": rows})
 if verb == ["create", "actor"]:
     ns, template = flag("-a"), flag("--template")
     if "/" in template and template.split("/")[0] != ns and not env("FAKE_ALLOW_CROSS"):
-        fail("permission denied: template is in another atespace")
+        fail("rpc error: code = PermissionDenied desc = template is in another atespace")
     st["actors"][ns + "/" + a[2]] = {"name": a[2], "ns": ns, "state": "ACTOR_STATE_SUSPENDED"}
     out({})
 if verb == ["resume", "actor"]:
     actor = st["actors"][flag("-a") + "/" + a[2]]
     if actor["state"] == "ACTOR_STATE_RUNNING":
-        fail("failed precondition: a forked actor runs once")
+        fail("rpc error: code = FailedPrecondition desc = a forked actor runs once")
     actor["state"] = "ACTOR_STATE_RUNNING"; out({})
 if verb == ["suspend", "actor"]:
     if not env("FAKE_ALLOW_SUSPEND"):
-        fail("failed precondition: a forked actor cannot suspend")
+        fail("rpc error: code = FailedPrecondition desc = a forked actor cannot suspend")
     out({})
 if verb == ["get", "actors"]:
     ns = flag("-a")
+    if ns not in st["atespaces"]:
+        fail("rpc error: code = NotFound desc = atespace")
     rows = []
     for key, actor in list(st["actors"].items()):
         if actor["ns"] != ns:
@@ -624,18 +659,26 @@ if verb == ["get", "actors"]:
         if st["listed"][key] > 4 and not env("FAKE_NO_EXPIRE"):
             del st["actors"][key]  # the lifetime passed
             continue
-        rows.append({"name": actor["name"], "state": actor["state"],
-                     "status": {"fork": {"role": "FORK_ROLE_FORK"}}})
-    if st["templates"] and ns == "fork-conformance":
-        rows.append({"name": "seed-engine", "state": "ACTOR_STATE_RUNNING",
-                     "status": {"fork": {"role": "FORK_ROLE_SEED"}}})
+        rows.append({"metadata": {"atespace": ns, "name": actor["name"]},
+                     "actorTemplate": {"atespace": ns, "name": "engine"},
+                     "status": {"state": actor["state"],
+                                "fork": {"role": "FORK_ROLE_FORK"}}})
+    for t in st["templates"].values():
+        if t["ns"] == ns:
+            rows.append({"metadata": {"atespace": ns, "name": "seed-" + t["name"]},
+                         "status": {"state": "ACTOR_STATE_RUNNING",
+                                    "fork": {"role": "FORK_ROLE_SEED"}}})
     out({"actors": rows})
 if verb == ["delete", "actor"]:
     st["actors"].pop(flag("-a") + "/" + a[2], None); out({})
 if verb == ["delete", "actor-template"]:
-    st["templates"].pop(a[2], None); out({})
+    st["templates"].pop(flag("-a") + "/" + a[2], None); out({})
 if verb == ["delete", "atespace"]:
-    out({})
+    ns = a[2]
+    left = [k for k in list(st["actors"]) + list(st["templates"]) if k.startswith(ns + "/")]
+    if left:
+        fail("rpc error: code = FailedPrecondition desc = atespace is not empty: " + left[0])
+    st["atespaces"].remove(ns); out({})
 fail("fake: unknown " + " ".join(a))
 """
 
@@ -668,56 +711,93 @@ def _conformance(tmp_path: Path, template=None, **env):
         capture_output=True,
         text=True,
     )
-    calls = json.loads(state.read_text())["calls"] if state.exists() else []
-    return run, calls
+    final = json.loads(state.read_text()) if state.exists() else None
+    return run, final
 
 
 def _engine_template() -> str:
     return _TEMPLATE.read_text().replace("0" * 64, "1" * 64)
 
 
+def _nothing_left(state: dict) -> bool:
+    return not (state["atespaces"] or state["templates"] or state["actors"])
+
+
 def test_conformance_passes_all_eight_checks(tmp_path: Path) -> None:
-    run, calls = _conformance(tmp_path, _engine_template())
+    run, state = _conformance(tmp_path, _engine_template())
     assert run.returncode == 0, run.stdout + run.stderr
-    for check in ("C1", "C3", "C4", "C5", "C6", "C7", "C8"):
+    for check in ("C1", "C3", "C4", "C5", "C7", "C8"):
         assert f"check={check} result=pass" in run.stdout, check
     assert run.stdout.count("check=C2 result=pass") == 3
+    assert run.stdout.count("check=C6 result=pass") == 2
+    # The log carries the API's reason for each refusal.
+    assert "InvalidArgument" in run.stdout and "PermissionDenied" in run.stdout
     assert "event=summary result=ok" in run.stdout
-    assert calls[-1] == "delete atespace fork-conformance-other"
-    assert "create actor fork-3 -a fork-conformance --template engine" in calls
+    assert "create actor fork-3 -a fork-conformance --template engine" in state["calls"]
+    # Both atespaces went, so no actor or template was left to refuse it.
+    assert _nothing_left(state)
 
 
-def test_conformance_refuses_the_placeholder_engine_image(tmp_path: Path) -> None:
-    run, calls = _conformance(tmp_path)
+def test_conformance_matches_the_seed_by_atespace_and_template_uid(
+    tmp_path: Path,
+) -> None:
+    # The worker lists a seed, but of another atespace and template.
+    run, state = _conformance(tmp_path, _engine_template(), FAKE_FOREIGN_SEED="1")
     assert run.returncode == 1
-    assert "placeholder digest" in run.stdout
-    assert not [c for c in calls if c.startswith("create")]
+    assert "a ready seed: not ready" in run.stdout
+    assert _nothing_left(state)
+
+
+def test_conformance_refuses_a_placeholder_engine_image_before_any_api_call(
+    tmp_path: Path,
+) -> None:
+    run, state = _conformance(tmp_path)
+    assert run.returncode == 1
+    assert "no real sha256 digest" in run.stdout
+    assert state is None  # the fake CLI never ran
+
+
+@pytest.mark.parametrize(
+    "image",
+    ["python:3.14", "x@sha256:abc", "x@sha256:" + "G" * 64],
+)
+def test_conformance_refuses_an_unpinned_engine_image(
+    tmp_path: Path, image: str
+) -> None:
+    text = re.sub(r"(?m)^(    image: ).*$", rf"\g<1>{image}", _TEMPLATE.read_text())
+    run, state = _conformance(tmp_path, text)
+    assert run.returncode == 1
+    assert state is None
 
 
 @pytest.mark.parametrize(
     "env, message",
     [
         ({"FAKE_ACCEPT_BAD": "1"}, "C2: the API accepted a template with secret_env"),
-        ({"FAKE_ALLOW_CROSS": "1"}, "C5: an actor of another atespace"),
-        ({"FAKE_ALLOW_SUSPEND": "1"}, "C6: a forked actor was suspended"),
+        ({"FAKE_INFRA_REFUSAL": "1"}, "failed, but not as a refusal"),
+        ({"FAKE_ALLOW_CROSS": "1"}, "C5: the API accepted an actor of another"),
+        ({"FAKE_ALLOW_SUSPEND": "1"}, "C6: the API accepted a suspend"),
         ({"FAKE_NO_EXPIRE": "1"}, "forks deleted by their lifetime: not ready"),
         ({"FAKE_WORKER_STATE": "WORKER_STATE_UNAVAILABLE"}, "an ACTIVE gvisor-fork"),
     ],
 )
-def test_conformance_fails_on_each_broken_guarantee(
+def test_conformance_fails_on_each_broken_guarantee_and_leaves_nothing(
     tmp_path: Path, env: dict, message: str
 ) -> None:
-    run, calls = _conformance(tmp_path, _engine_template(), **env)
+    run, state = _conformance(tmp_path, _engine_template(), **env)
     assert run.returncode == 1
     assert message in run.stdout
     assert "event=summary result=fail" in run.stdout
-    # Cleanup runs on every path.
-    assert calls[-1] == "delete atespace fork-conformance-other"
+    # Cleanup deleted the forks, the templates (the engine and any accepted
+    # bad one) and then the atespaces, which the API refuses while they hold
+    # a child.
+    assert _nothing_left(state)
 
 
 def test_conformance_refuses_a_template_it_cannot_edit(tmp_path: Path) -> None:
-    run, _ = _conformance(
+    run, state = _conformance(
         tmp_path, _engine_template().replace("singleUse: true", "singleUse: yes")
     )
     assert run.returncode == 1
     assert "has no 'singleUse: true' to edit" in run.stdout
+    assert _nothing_left(state)
