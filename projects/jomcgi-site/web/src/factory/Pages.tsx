@@ -17,7 +17,11 @@ import {
   fillStats,
   formatInstant,
   formatShort,
-  median,
+  firstPassSentence,
+  mergeSentence,
+  roundsSentence,
+  shippedSentence,
+  weekSentence,
   paths,
   sessionLabel,
   tallyCounts,
@@ -151,43 +155,39 @@ function IssueList({
     </>
   );
 }
-/** The line: one block for each state, as wide as its share of the issues. */
-function Flow({
-  counts,
+const natural = new Intl.Collator("en", { numeric: true });
+/** The floor: one square for each issue, in key order, coloured by state.
+ * The squares are a pointer shortcut; the lists hold the same links. */
+function Floor({
+  issues,
   anchors = false,
 }: {
-  counts: { state: State; count: number }[];
+  issues: [string, Issue | null | undefined][];
   anchors?: boolean;
 }) {
-  const shown = counts.filter(({ count }) => count > 0);
-  const total = shown.reduce((sum, { count }) => sum + count, 0);
-  if (!total) return null;
-  let start = 0;
+  if (!issues.length) return null;
+  const sorted = [...issues].sort(([a], [b]) => natural.compare(a, b));
+  const counts = states
+    .map((state) => ({
+      state,
+      count: sorted.filter(([, issue]) => issue?.state === state).length,
+    }))
+    .filter(({ count }) => count > 0);
   return (
-    <div className="flow">
-      <svg
-        className="flow-bar"
-        viewBox={`0 0 ${total} 1`}
-        preserveAspectRatio="none"
-        aria-hidden="true"
-      >
-        {shown.map(({ state, count }) => {
-          const x = start;
-          start += count;
-          return (
-            <rect
-              key={state}
-              data-state={state}
-              x={x}
-              y="0"
-              width={count}
-              height="1"
-            />
-          );
-        })}
-      </svg>
-      <ul className="flow-key">
-        {shown.map(({ state, count }) => (
+    <div className="floor">
+      <div className="floor-grid" aria-hidden="true">
+        {sorted.map(([key, issue]) => (
+          <a
+            key={key}
+            href={paths.issue(key)}
+            tabIndex={-1}
+            data-state={issue?.state}
+            title={issue ? `${key}: ${issue.title} (${issue.state})` : `${key}`}
+          />
+        ))}
+      </div>
+      <ul className="floor-key">
+        {counts.map(({ state, count }) => (
           <li key={state} data-state={state}>
             {anchors ? (
               <a href={`#${stateId(state)}`}>
@@ -239,30 +239,19 @@ export function StoryPage({
   const mergeHours = story.charts.issueToMergeHours.map(({ value }) => value);
   const reviewRounds = story.charts.reviewRounds.map(({ value }) => value);
   const manyGoals = story.goals.length > 1;
-  const shipped = story.goals.length
-    ? story.goals.reduce((sum, goal) => sum + goal.shipped, 0)
-    : story.recentlyShipped.length;
-  const line = states.map((state) => ({
-    state,
-    count:
-      state === "Shipped"
-        ? shipped
-        : story.workInProgress.filter((issue) => issue.state === state).length,
-  }));
-  // A measure reads as one row: its name, its figure, then its chart.
-  const charted = new Set([
-    "shipped",
-    "firstPass",
-    "mergeHours",
-    "reviewRounds",
-  ]);
-  const figure = (key: string) => lookup(story.stats, key);
+  // Count the same issues the floor draws, so the two always agree.
+  const floor = Object.entries(snapshot.issues);
+  const statement = shippedSentence(
+    floor.filter(([, issue]) => issue?.state === "Shipped").length,
+    floor.length,
+  );
   return (
     <>
-      <header className="lead">
+      <header className="lead story-lead">
         <Heading level={1}>{fillStats(story.headline, story.stats)}</Heading>
+        {statement && <p className="statement">{statement}</p>}
         <Narrative paragraphs={story.narrative} stats={story.stats} />
-        <Flow counts={line} />
+        <Floor issues={floor} />
       </header>
       <section aria-labelledby="goals-heading">
         <SectionHead
@@ -303,27 +292,16 @@ export function StoryPage({
             formatValue={formatShort}
             formatLabel={axisLabel}
             title="Shipped per week"
-            figure={figure("shipped")}
-            note="Total to date"
+            headline={weekSentence(story.charts.shippedPerWeek)}
             unit="issues"
             category="Week"
             points={story.charts.shippedPerWeek}
           />
           <DashboardChart
             formatValue={formatShort}
-            formatLabel={axisLabel}
-            title="First-pass review rate"
-            figure={figure("firstPass")}
-            unit="%"
-            category="Week"
-            points={story.charts.firstPassReviewRate}
-            maximum={100}
-          />
-          <DashboardChart
-            formatValue={formatShort}
             title="Issue-to-merge time"
-            figure={figure("mergeHours")}
-            note={medianNote(mergeHours, "hours")}
+            headline={mergeSentence(mergeHours)}
+            note={countNote(mergeHours.length, "issue")}
             unit="issues"
             category="Time from issue to merge"
             points={tallyHours(mergeHours)}
@@ -331,29 +309,23 @@ export function StoryPage({
           <DashboardChart
             formatValue={formatShort}
             title="Review rounds per PR"
-            figure={figure("reviewRounds")}
-            note={medianNote(reviewRounds, "rounds")}
+            headline={roundsSentence(reviewRounds)}
+            note={countNote(reviewRounds.length, "PR")}
             unit="PRs"
             category="Review rounds"
             points={tallyCounts(reviewRounds)}
           />
+          <DashboardChart
+            formatValue={formatShort}
+            formatLabel={axisLabel}
+            title="First-pass review rate"
+            headline={firstPassSentence(story.charts.firstPassReviewRate)}
+            unit="%"
+            category="Week"
+            points={story.charts.firstPassReviewRate}
+            maximum={100}
+          />
         </div>
-        {Object.keys(story.stats).some((key) => !charted.has(key)) && (
-          <dl className="stats">
-            {Object.entries(story.stats).map(
-              ([key, stat]) =>
-                !charted.has(key) && (
-                  <div key={key}>
-                    <dt>{stat.label}</dt>
-                    <dd>
-                      {formatShort(stat.value)}
-                      <span data-unit={stat.unit}>{stat.unit}</span>
-                    </dd>
-                  </div>
-                ),
-            )}
-          </dl>
-        )}
       </section>
       <section aria-labelledby="working-heading">
         <SectionHead
@@ -382,12 +354,8 @@ export function StoryPage({
     </>
   );
 }
-function medianNote(values: number[], unit: string) {
-  const middle = median(values);
-  return middle === undefined
-    ? undefined
-    : `Median ${formatShort(middle)} ${unit} across ${values.length}`;
-}
+const countNote = (count: number, noun: string) =>
+  count ? `${count} ${noun}${count === 1 ? "" : "s"} measured` : undefined;
 
 export function GoalPage({
   goal,
@@ -438,13 +406,7 @@ export function GoalPage({
           count={issues.length}
         />
         {!issues.length && <p>No issues yet.</p>}
-        <Flow
-          anchors
-          counts={groups.map(({ state, members }) => ({
-            state,
-            count: members.length,
-          }))}
-        />
+        <Floor anchors issues={issues.map(({ key, issue }) => [key, issue])} />
         {groups.map(({ state, members }) => (
           <section
             className="state-group"

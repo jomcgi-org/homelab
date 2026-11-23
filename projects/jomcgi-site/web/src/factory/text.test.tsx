@@ -2,8 +2,13 @@ import { render } from "@testing-library/react";
 import { expect, it } from "vitest";
 import {
   axisLabel,
+  firstPassSentence,
   formatInstant,
   median,
+  mergeSentence,
+  roundsSentence,
+  shippedSentence,
+  weekSentence,
   sessionLabel,
   tallyCounts,
   tallyHours,
@@ -71,4 +76,30 @@ it("shortens dates, instants and generated session ids", () => {
   expect(formatInstant("soon")).toBe("soon");
   expect(sessionLabel(`session-${"ab12".repeat(16)}`)).toBe("ab12ab12");
   expect(sessionLabel("demo-build")).toBe("demo-build");
+});
+
+it("writes one sentence for each measure, or none without data", () => {
+  expect(shippedSentence(150, 266)).toBe("150 of 266 issues shipped.");
+  expect(shippedSentence(0, 0)).toBeUndefined();
+  const weeks = [
+    { label: "Week of 2026-11-09", value: 18 },
+    { label: "Week of 2026-11-16", value: 135 },
+  ];
+  expect(weekSentence(weeks)).toBe(
+    "135 shipped in the week of 16 Nov, after 18 the week before.",
+  );
+  expect(weekSentence(weeks.slice(1))).toBe(
+    "135 shipped in the week of 16 Nov.",
+  );
+  expect(weekSentence([])).toBeUndefined();
+  expect(mergeSentence([6])).toBe("Half of the issues merge within 6 hours.");
+  expect(mergeSentence([1])).toBe("Half of the issues merge within 1 hour.");
+  expect(mergeSentence([72])).toBe("Half of the issues merge within 3 days.");
+  expect(mergeSentence([])).toBeUndefined();
+  expect(roundsSentence([1])).toBe("A typical PR takes 1 review round.");
+  expect(roundsSentence([2, 7, 5])).toBe("A typical PR takes 5 review rounds.");
+  expect(firstPassSentence(weeks)).toBe(
+    "135% of PRs passed review the first time in the week of 16 Nov.",
+  );
+  expect(firstPassSentence([])).toBeUndefined();
 });

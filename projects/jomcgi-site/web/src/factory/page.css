@@ -149,6 +149,23 @@
   max-width: 26ch;
   margin-top: 0.25rem;
 }
+/* The story's title is a label; its statement is the headline. */
+.factory .story-lead h1 {
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0;
+  margin-block: 0 0.75rem;
+}
+.factory .statement {
+  margin: 0 0 1.5rem;
+  max-width: 14ch;
+  font-size: clamp(3rem, 10vw, 7.5rem);
+  font-weight: 900;
+  line-height: 0.92;
+  letter-spacing: -0.05em;
+  text-wrap: balance;
+}
 .factory .lead .eyebrow {
   margin: 0;
 }
@@ -246,62 +263,64 @@
   background: var(--color-border-emphasized);
 }
 
-/* The line. Lighter blocks are earlier states; ink is shipped. */
-.factory .flow {
+/* The floor: a square for each issue. Lighter blue is earlier in the
+ * line; ink is shipped; an outline is stopped. */
+.factory .floor {
   margin-top: 2.5rem;
 }
-.factory .flow-bar {
-  display: block;
-  width: 100%;
-  height: 4.5rem;
+.factory .floor-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
-.factory .flow-bar rect {
-  fill: var(--color-accent);
-  stroke: var(--color-background-body);
-  stroke-width: 2px;
-  vector-effect: non-scaling-stroke;
+.factory .floor-grid a {
+  width: 20px;
+  height: 20px;
+  background: var(--color-accent);
 }
-.factory .flow-bar [data-state="Working"],
-.factory .flow-key [data-state="Working"]::before {
+.factory .floor-grid a:hover {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 2px;
+}
+.factory .floor-grid [data-state="Working"],
+.factory .floor-key [data-state="Working"]::before {
   opacity: 0.45;
 }
-.factory .flow-bar [data-state="In merge queue"],
-.factory .flow-key [data-state="In merge queue"]::before {
+.factory .floor-grid [data-state="In merge queue"],
+.factory .floor-key [data-state="In merge queue"]::before {
   opacity: 0.7;
 }
-.factory .flow-bar [data-state="Shipped"] {
-  fill: var(--color-text-primary);
+.factory .floor-grid [data-state="Shipped"],
+.factory .floor-key [data-state="Shipped"]::before {
+  background: var(--color-text-primary);
 }
-.factory .flow-bar [data-state="Stopped"] {
-  fill: var(--color-border);
+.factory .floor-grid a:not([data-state]),
+.factory .floor-grid [data-state="Stopped"],
+.factory .floor-key [data-state="Stopped"]::before {
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--color-border-emphasized);
 }
-.factory .flow-key {
+.factory .floor-key {
   list-style: none;
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem 3rem;
-  margin: 1rem 0 0;
+  margin: 1.25rem 0 0;
   padding: 0;
 }
-.factory .flow-key li {
+.factory .floor-key li {
   display: grid;
   grid-template-columns: auto 1fr;
   column-gap: 0.5rem;
   align-items: baseline;
 }
-.factory .flow-key li::before {
+.factory .floor-key li::before {
   content: "";
   width: 0.75rem;
   height: 0.75rem;
   background: var(--color-accent);
 }
-.factory .flow-key [data-state="Shipped"]::before {
-  background: var(--color-text-primary);
-}
-.factory .flow-key [data-state="Stopped"]::before {
-  background: var(--color-border);
-}
-.factory .flow-key strong {
+.factory .floor-key strong {
   font-size: 2.5rem;
   font-weight: 800;
   line-height: 1;
@@ -309,18 +328,15 @@
   margin-right: 0.35rem;
   font-variant-numeric: tabular-nums;
 }
-.factory .flow-key a {
+.factory .floor-key a {
   color: inherit;
   text-decoration: none;
 }
-.factory .flow-key a:hover {
+.factory .floor-key a:hover {
   text-decoration: underline;
 }
-.factory section > .flow {
+.factory section > .floor {
   margin-block: 0 3rem;
-}
-.factory section > .flow .flow-bar {
-  height: 2.5rem;
 }
 
 /* Goals: a row for each */
@@ -392,7 +408,7 @@
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   grid-template-rows: auto auto auto 1fr;
   column-gap: 2rem;
-  padding-block: 1.5rem 0.5rem;
+  padding-block: 2.5rem 1rem;
   border-bottom: 1px solid var(--color-border);
 }
 .factory .measures .chart > * {
@@ -412,52 +428,27 @@
   font-size: 1rem;
   font-weight: 700;
 }
-.factory .chart-figure {
-  margin: 0.75rem 0 0;
+/* The sentence leads; the chart's name sits under it. */
+.factory .measures .chart-headline {
+  grid-row: 1;
+  margin: 0 0 0.75rem;
+  max-width: 22ch;
+  font-size: clamp(1.5rem, 2.6vw, 2.125rem);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+.factory .measures figcaption {
+  grid-row: 2;
+  font-weight: 400;
   color: var(--color-text-secondary);
 }
-.factory .chart-figure strong {
-  display: block;
-  font-size: clamp(3rem, 6vw, 4.5rem);
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -0.05em;
-  color: var(--color-text-primary);
-  font-variant-numeric: tabular-nums;
+.factory .measures .chart-note {
+  grid-row: 3;
 }
 .factory .chart-note {
-  margin: 0.25rem 0 0;
-}
-/* Figures with no chart */
-.factory .stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1.5rem 4rem;
-  margin: 1.5rem 0 0;
-}
-.factory .stats dt {
-  font-weight: 700;
-}
-.factory .stats dd {
-  margin: 0.5rem 0 0;
-  font-size: 3rem;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -0.05em;
-}
-.factory .stats dd span {
-  margin-left: 0.4rem;
-  font-size: 1rem;
-  font-weight: 400;
-  letter-spacing: 0;
-  color: var(--color-text-secondary);
-}
-.factory .stats dd span[data-unit="%"] {
-  margin-left: 0;
-  font-size: inherit;
-  font-weight: inherit;
-  letter-spacing: inherit;
-  color: inherit;
+  margin: 0;
 }
 .factory .burn-up {
   margin-bottom: 1rem;
@@ -749,8 +740,11 @@
   .site:has(.factory) {
     padding-inline: 16px;
   }
-  .factory .flow-key {
+  .factory .floor-key {
     gap: 0.75rem 2rem;
+  }
+  .factory .measures .chart > * {
+    grid-row: auto;
   }
   .factory .chapter,
   .factory .measures .chart,

@@ -465,8 +465,10 @@ states until HOME-213 publishes snapshots. Charts use the shared chart
 library and have value tables. Per-issue and per-PR measurements show as
 counts in fixed columns, with the median in the caption. Issue and transcript
 text renders a Markdown subset as elements, and links only this repository.
-The story opens with the line: one block for each state, as wide as its
-share of the issues. Each measure is one row: its name, its figure, its chart.
+The story opens with a statement and the floor: one square for each issue,
+coloured by state, linked to that issue. Each measure is one row: a sentence
+written from the snapshot, then its chart. The exporter's narrative shows
+when the snapshot has one.
 The layout uses the shared light/dark palette, the home page's typeface and
 16px phone gutters.
 

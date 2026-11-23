@@ -8,7 +8,7 @@ const DashboardPlot = lazy(() => import("./DashboardPlot"));
 /** A titled column chart with its values as a table. */
 export function DashboardChart({
   title,
-  figure,
+  headline,
   note,
   unit,
   category = "Period",
@@ -18,8 +18,8 @@ export function DashboardChart({
   formatLabel,
 }: {
   title: string;
-  /** The headline value this chart supports. */
-  figure?: { value: number; unit: string };
+  /** One sentence: what the chart shows. */
+  headline?: string;
   /** One short line under the title, such as a median. */
   note?: string;
   unit: string;
@@ -36,15 +36,7 @@ export function DashboardChart({
   return (
     <figure className="chart" aria-labelledby={id}>
       <figcaption id={id}>{title}</figcaption>
-      {figure && (
-        <p className="chart-figure">
-          <strong>
-            {formatValue(figure.value)}
-            {figure.unit === "%" && "%"}
-          </strong>
-          {figure.unit !== "%" && figure.unit}
-        </p>
-      )}
+      {headline && <p className="chart-headline">{headline}</p>}
       {note && <p className="chart-note">{note}</p>}
       {points.length === 0 ? (
         <p>No measurements yet.</p>

@@ -225,3 +225,40 @@ export function tallyCounts(values: readonly number[]): Tally[] {
     value,
   }));
 }
+
+/* Sentences written from the snapshot. Each states one fact, or nothing
+ * when the snapshot has no measurement for it. */
+const duration = (hours: number) =>
+  hours < 48
+    ? `${formatShort(hours)} ${hours === 1 ? "hour" : "hours"}`
+    : `${formatShort(hours / 24)} days`;
+export function shippedSentence(shipped: number, total: number) {
+  return total > 0 ? `${shipped} of ${total} issues shipped.` : undefined;
+}
+export function weekSentence(points: readonly Tally[]) {
+  const last = points.at(-1);
+  const before = points.at(-2);
+  if (!last) return undefined;
+  const now = `${formatShort(last.value)} shipped in the week of ${axisLabel(last.label)}`;
+  return before
+    ? `${now}, after ${formatShort(before.value)} the week before.`
+    : `${now}.`;
+}
+export function mergeSentence(hours: readonly number[]) {
+  const middle = median(hours);
+  return middle === undefined
+    ? undefined
+    : `Half of the issues merge within ${duration(middle)}.`;
+}
+export function roundsSentence(rounds: readonly number[]) {
+  const middle = median(rounds);
+  return middle === undefined
+    ? undefined
+    : `A typical PR takes ${formatShort(middle)} review ${middle === 1 ? "round" : "rounds"}.`;
+}
+export function firstPassSentence(points: readonly Tally[]) {
+  const last = points.at(-1);
+  return last
+    ? `${formatShort(last.value)}% of PRs passed review the first time in the week of ${axisLabel(last.label)}.`
+    : undefined;
+}
