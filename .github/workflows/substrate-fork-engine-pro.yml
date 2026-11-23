@@ -31,6 +31,10 @@ on:
         description: Push the private image (off builds and tests it, then discards it)
         type: boolean
         default: false
+      debug:
+        description: 'Print the last lines of the engine log when a smoke run fails (the job log is public and can show a rule id or a finding text; not with publish)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -62,11 +66,16 @@ jobs:
         working-directory: .
         env:
           PUBLISH: ${{ inputs.publish }}
+          DEBUG: ${{ inputs.debug }}
           REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           if [[ "${PUBLISH}" != "true" && "${PUBLISH}" != "false" ]]; then
             echo "publish must be true or false, got '${PUBLISH}'" >&2
+            exit 1
+          fi
+          if [[ "${DEBUG}" == "true" && "${PUBLISH}" == "true" ]]; then
+            echo "debug and publish do not go together: a debug log can hold rule text" >&2
             exit 1
           fi
           if [[ "${PUBLISH}" == "true" && "${REF}" != "refs/heads/main" ]]; then
@@ -126,6 +135,7 @@ jobs:
       - name: Test the image with the placeholder token
         env:
           NET: engine-pro-net
+          DEBUG: ${{ inputs.debug }}
         run: |
           set -euo pipefail
           docker load --input "${RUNNER_TEMP}/engine/image.tar"
@@ -144,7 +154,11 @@ jobs:
             local ip
             ip="$(docker inspect --format "{{ (index .NetworkSettings.Networks \"${NET}\").IPAddress }}" "${name}")"
             if ! python3 -I smoke-pro.py "${ip}" 8080 "$@" | tee -a "${log}"; then
-              docker logs "${name}" 2>&1 | tail -n 10 | cut -c1-200 >&2 || true
+              # The job log is public and the engine log can hold a rule id or a
+              # finding text: print it only when the run was started with debug.
+              if [[ "${DEBUG}" == "true" ]]; then
+                docker logs "${name}" 2>&1 | tail -n 10 | cut -c1-200 >&2 || true
+              fi
               exit 1
             fi
             local code

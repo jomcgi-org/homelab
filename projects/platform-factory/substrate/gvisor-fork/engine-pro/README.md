@@ -263,9 +263,13 @@ of the template in the same change that uses it.
   run is the first real call. The download uses the standard library, not
   `semgrep login`, so the token never goes to `~/.semgrep/settings.yml`.
 - **The delete is best effort** (see "Publish and the private package").
-- **The counts in the job log are public.** The log shows sizes, hashes, the
-  findings count and the rule count, not a rule id. The engine's own stderr
-  (last 10 lines, cut to 200 characters) shows only when a smoke run fails.
+- **The job log is public.** It shows sizes, hashes, the findings count and the
+  rule count. A failed smoke run shows the HTTP status and the length of the
+  answer, never a byte of the engine's answer. The engine log tail (10 lines of
+  200 characters) shows only when the run was started with the input `debug`
+  on, and a run with `debug` on cannot publish. That log can hold a rule id or
+  a finding text, so use `debug` only for a failure that needs it and
+  delete the run afterwards.
 
 ## What is reproducible
 
