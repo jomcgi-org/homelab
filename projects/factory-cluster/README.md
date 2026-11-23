@@ -820,7 +820,10 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 
 | Alert | Fires when |
 | --- | --- |
-| `NodeDiskFilling` | A node's root filesystem is more than 75% full for 15 min. Image garbage collection starts at 85% and the kubelet evicts pods at 90% |
+| `NodeDiskFilling` | A node's root filesystem is more than 72% full by `df` for 10 min (warning). The kubelet taints the node for disk pressure at about 80%, image garbage collection starts at 85% and the kubelet evicts pods at 90% |
+| `NodeDiskCritical` | A node's root filesystem is more than 78% full by `df` for 5 min (critical) |
+| `NodeDiskPressure` | A node has the `DiskPressure` condition or the `node.kubernetes.io/disk-pressure` taint for 2 min (critical). No new pod starts there |
+| `PodsUnschedulable` | At least one pod has been unschedulable (the state of a `FailedScheduling` event) for 20 min |
 | `KagentSuspendTimedOut` | A `SuspendActor` call passed the controller's 120-second deadline. Each scrape (30 s) that shows more timeouts sends one message with the count, so two timeouts in one scrape give one message. The alert ends an hour later and sends nothing then |
 | `FactoryItsaplanOutage` | A connector dispatch phase has been failing on itsaplan for 10 min. Check the named phase in connector logs and sample the coordinator key counter using the [HOME-385 procedure](../factory/deploy/notify.md#home-385-rollout-verification). |
 | `FactoryCodexQuotaLow` | A Codex grant has used 90% or more of a quota window for 5 min |
@@ -1015,14 +1018,68 @@ item. The 1Password operator updates the Secret and restarts the exporter
 of result with its HTTP status:
 `kubectl -n <namespace> logs deploy/cloudflare-exporter`.
 
-#### NodeDiskFilling
+#### NodeDiskFilling, NodeDiskCritical, NodeDiskPressure and PodsUnschedulable
 
-Find the largest directories with
-`ssh node-N 'sudo du -xh --max-depth=3 / | sort -h | tail -20'`. The usual
-users are local-path volumes under `/var/lib/rancher/k3s/storage` (rustfs
-snapshots, Garage, the databases), images (`sudo k3s crictl rmi --prune`) and,
-on node-1, Claude scratch under `/tmp/claude-1000`. Ask before you delete a
-directory that a running session uses.
+On 2026-11-23 the kubelet tainted node-1 for disk pressure twice (at 86% and
+at about 80% by `df`). The taint stops all scheduling on the node, and 22 pods
+stayed Pending for hours. Run the commands below as the node operator on the
+node in the alert. `NodeDiskFilling` and `NodeDiskCritical` read cAdvisor
+divided by 0.95, so their value matches `df`. The cluster has no
+node-exporter, so no alert reads inodes or other mounts.
+
+Find the largest directories: `du -xh --max-depth=3 / 2>/dev/null | sort -h | tail -20`.
+The usual users, on node-1, are:
+
+| Use | Typical size | Action |
+| --- | --- | --- |
+| Go build cache (`go env GOCACHE`) | 17 GB | Cache. Remove it below |
+| `/tmp/pgdata*` and `/tmp/tmp*` test directories (test Postgres) | 22 GB | Cache. Remove it below |
+| `~/.cache/bazel/disk_cache` | 8.5 GB | Cache. Remove it below |
+| `/tmp/claude-1000/<project>/<session>` session scratch | 22 GB | Remove it below, only for a finished session |
+| Agent worktrees under `repos/homelab/.claude/worktrees` | 14 GB | Not a cache. A person decides with `git worktree list` |
+| local-path volumes under `/var/lib/rancher/k3s/storage` (rustfs, Garage, databases) | varies | Not a cache. Ask first |
+
+Remove caches only. For each step, check that no process uses the data first.
+
+```bash
+# Go build cache: list the processes that use it. If none, remove it. A running
+# build only rebuilds what it needs.
+pgrep -a -f 'go (build|test|vet)|/compile|/link'
+go clean -cache
+
+# Bazel disk cache: entries not read for 7 days. Bazel's own limit is 10 GB.
+find ~/.cache/bazel/disk_cache -type f -atime +7 -delete
+
+# Test directories: older than 12 h, no open file, and no postgres process
+# that uses the directory (skip any directory in the pgrep output). Test
+# databases make files read-only, so make them writable first.
+pgrep -a postgres
+find /tmp -maxdepth 1 -type d \( -name 'pgdata*' -o -name 'tmp*' \) -mmin +720 -print0 |
+  while IFS= read -r -d '' dir; do
+    lsof +D "$dir" >/dev/null 2>&1 && { echo "in use: $dir"; continue; }
+    chmod -R u+w "$dir" && rm -rf "$dir"
+  done
+
+# Session scratch: list it with its age, then name each directory of a
+# finished session. Run the lsof check first; it prints nothing for a
+# directory that no process uses.
+ls -ltd /tmp/claude-1000/*/*
+lsof +D /tmp/claude-1000/<project>/<session>
+rm -rf /tmp/claude-1000/<project>/<session>
+```
+
+Then check `df -h /`. When the node has the taint, it clears a few minutes
+after usage falls below the kubelet threshold. Images on any node: `k3s crictl rmi --prune`.
+
+For `PodsUnschedulable`, find the pods and the reason, and check the node taints.
+The usual cause is the disk-pressure taint on a node:
+
+```bash
+export KUBECONFIG=~/.kube/factory-sessions.yaml
+kubectl get pods -A --field-selector=status.phase=Pending
+kubectl get events -A --field-selector reason=FailedScheduling --sort-by=.lastTimestamp | tail
+kubectl get nodes -o custom-columns='NODE:.metadata.name,TAINTS:.spec.taints[*].key'
+```
 
 #### KagentSuspendTimedOut
 
