@@ -4,8 +4,9 @@
 # issued to any pod that runs as that ServiceAccount. So any principal who can
 # create a pod, or a workload that makes one, as engine-gate gets the router
 # identity and the editor role. Only ArgoCD may create the ServiceAccount or the
-# StatefulSet. The statefulset-controller makes the pod for ArgoCD's
-# StatefulSet, and the garbage collector updates its finalizers. Other
+# StatefulSet. The ServiceAccount rule exempts ArgoCD alone: no controller
+# creates a ServiceAccount for it. The statefulset-controller makes the pod for
+# ArgoCD's StatefulSet, and the garbage collector updates its finalizers. Other
 # controllers (deployment, replicaset, daemonset, job) are not exempt, so a
 # workload of another kind that names the ServiceAccount cannot make a pod.
 # The pattern is projects/platform-factory/substrate/resources/kagent-identity-guard.yaml
@@ -31,9 +32,7 @@ spec:
     - name: not-an-exempt-identity
       expression: >-
         !(request.userInfo.username in [
-          'system:serviceaccount:argocd:argocd-application-controller',
-          'system:serviceaccount:kube-system:statefulset-controller',
-          'system:serviceaccount:kube-system:generic-garbage-collector'
+          'system:serviceaccount:argocd:argocd-application-controller'
         ])
   validations:
     - expression: >-
