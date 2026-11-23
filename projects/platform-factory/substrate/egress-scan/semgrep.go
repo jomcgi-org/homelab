@@ -388,32 +388,34 @@ func (t *semgrepTier) run(ctx context.Context, payload []byte, bodyLen int) engi
 }
 
 func (t *semgrepTier) call(ctx context.Context, payload []byte, bodyLen int) engineResult {
-	release, refused := t.admit(bodyLen, len(payload))
-	if refused != "" {
+	if refused := t.admit(bodyLen, len(payload)); refused != "" {
 		return engineResult{outcome: refused}
 	}
-	defer release()
+	defer t.releaseSlot()
 	return t.exec(ctx, payload)
 }
 
 // admit applies the size limit, the in-flight limit and the breaker, in this
-// order. It returns a refusal outcome, or a release function for the slot. A
-// caller that gets a release function must call exec once, and then release.
-func (t *semgrepTier) admit(bodyLen, textLen int) (release func(), refused string) {
+// order. It returns a refusal outcome, or "" when it took a slot. A caller that
+// gets "" must call exec once, and then releaseSlot. The slot release is a
+// method, not a returned closure, so that a call allocates nothing for it.
+func (t *semgrepTier) admit(bodyLen, textLen int) (refused string) {
 	if bodyLen > t.cfg.MaxBody || textLen > maxEngineRequest {
-		return nil, engineOversize
+		return engineOversize
 	}
 	select {
 	case t.slots <- struct{}{}:
 	default:
-		return nil, engineShed
+		return engineShed
 	}
 	if !t.breaker.allow() {
-		<-t.slots
-		return nil, engineBreakerOpen
+		t.releaseSlot()
+		return engineBreakerOpen
 	}
-	return func() { <-t.slots }, ""
+	return ""
 }
+
+func (t *semgrepTier) releaseSlot() { <-t.slots }
 
 // exec runs one admitted engine call under the deadline and settles the
 // breaker.
@@ -539,7 +541,7 @@ func errorKind(err error) string {
 // Gitleaks scans: the address, query and headers, the body, and the decoded
 // JSON strings.
 func engineText(fields string, body []byte, decoded string) []byte {
-	out := make([]byte, 0, len(fields)+len(body)+len(decoded)+2)
+	out := make([]byte, 0, engineTextLen(fields, body, decoded))
 	out = append(out, fields...)
 	out = append(out, '\n')
 	out = append(out, body...)
@@ -548,4 +550,9 @@ func engineText(fields string, body []byte, decoded string) []byte {
 		out = append(out, decoded...)
 	}
 	return out
+}
+
+// engineTextLen is the length that engineText returns, without building it.
+func engineTextLen(fields string, body []byte, decoded string) int {
+	return len(fields) + len(body) + len(decoded) + 2
 }

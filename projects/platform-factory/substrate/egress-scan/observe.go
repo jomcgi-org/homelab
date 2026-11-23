@@ -85,18 +85,23 @@ func (o *observation) settle() {
 
 // beginObserve admits one engine call and starts it in the background. It
 // returns at once. The returned observation always gets the engine result.
+//
+// The engine text is built here, before the goroutine starts, and only when the
+// call is admitted. The goroutine holds that copy and the immutable strings
+// only. It never reads the request body after the handler returns, so it does
+// not depend on how the gRPC codec reuses its buffers.
 func (t *semgrepTier) beginObserve(fields string, body []byte, decoded string) *observation {
 	obs := &observation{tier: t}
-	textLen := len(fields) + len(body) + len(decoded) + 2
+	textLen := engineTextLen(fields, body, decoded)
+	t.metrics.observeSizes(len(body), textLen)
 	began := time.Now()
-	release, refused := t.admit(len(body), textLen)
-	if refused != "" {
-		res := engineResult{outcome: refused}
-		t.finishObserved(obs, res, time.Since(began))
+	if refused := t.admit(len(body), textLen); refused != "" {
+		t.finishObserved(obs, engineResult{outcome: refused}, time.Since(began))
 		return obs
 	}
+	payload := engineText(fields, body, decoded)
 	go func() {
-		defer release()
+		defer t.releaseSlot()
 		var res engineResult
 		defer func() {
 			// A panic outside the engine call. Settle the breaker probe, and
@@ -108,7 +113,7 @@ func (t *semgrepTier) beginObserve(fields string, body []byte, decoded string) *
 			t.finishObserved(obs, res, time.Since(began))
 		}()
 		// No link to the request context: the reply never waits for this call.
-		res = t.exec(context.Background(), engineText(fields, body, decoded))
+		res = t.exec(context.Background(), payload)
 	}()
 	return obs
 }

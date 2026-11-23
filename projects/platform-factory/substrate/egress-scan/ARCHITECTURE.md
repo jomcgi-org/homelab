@@ -166,7 +166,7 @@ queue pop.
 
 ## Latency budget
 
-The tier has two modes (observe mode is `designed`: another change adds it). In
+The tier has two modes (observe mode is merged and the tier is still off). In
 observe mode the engine call runs off the request path. It is detached and
 bounded, and nobody waits for it. The gateway `requestTimeout` stays 80 ms, so a
 Hindsight call sees no added latency. `resources_test.py` requires a timeout of
@@ -226,8 +226,9 @@ and adds nothing while it stays under its 75 ms deadline. The v1 limit is 32 KiB
 of raw body (`semgrep.maxBodyBytes: 32768`). Its worst case, escaped JSON, costs
 what a plain 64 KiB body costs. That leaves about 77 ms under the 300 ms
 deadline. A larger body is `oversize`, and deny mode returns 503. Observe mode
-sets the final limit from real sizes. No metric records body sizes today, so the
-observe change needs one.
+sets the final limit from real sizes. It records them in
+`factory_egress_scan_semgrep_observe_size_bytes{kind}` (raw body and engine
+text), with a dashboard panel.
 
 - **CPU.** A child uses one vCPU for 60 to 80 ms. The measurements ran on a
   12-core host. N=16 was CPU bound there (239 ms median). Inference: a pod with
@@ -392,9 +393,9 @@ original 221-rule set did not reproduce. It came from a microVM that included
 the guest kernel and page cache. The engine runs without secret validation,
 because a child has no egress and the candidate secret must not leave. A finding
 means "matches a rule", and the v1 verdict denies on any finding. The scanner has
-no observe mode. The observe period needs a small change to the tier first: a
-mode that counts the engine verdict and enforces Gitleaks only. The existing
-`failureMode: allow` does not do that, because an engine finding still denies.
+an observe mode (`semgrep.mode: observe`) that counts the engine verdict and
+enforces Gitleaks only. The existing `failureMode: allow` does not do that,
+because an engine finding still denies.
 
 **Rebuild and rotation.** A new template is a new template UID, so the seed is
 new. Rebuild on a Semgrep version bump, a rules refresh, a base image fix or a
@@ -467,8 +468,8 @@ engine atespace. They do not come before the latency runs.
 6. After the X gates and the waiver pass, a global owner creates the atespace
    `egress-scan-engine`, its access policy for the gate and the fork template.
    Check that the read login pulls the image.
-7. Build the `engine-gate` StatefulSet and the network rules. Another change adds
-   observe mode to the tier. Point the tier at the gate.
+7. Build the `engine-gate` StatefulSet and the network rules. Point the tier at
+   the gate.
 8. Turn the tier on in observe mode (`semgrep.mode: observe`) for 7 days. The
    engine call runs off the request path, the gateway timeout stays 80 ms and
    Gitleaks alone decides. The scanner records the engine verdict and the body
@@ -508,7 +509,7 @@ closes.
 | Pool of waiting children for the engine path | HOME-TBD | `designed` |
 | `engine-gate` StatefulSet | HOME-TBD | `designed` |
 | Pro engine image, private package | HOME-TBD | `designed` |
-| Observe mode in the scanner tier, and the private `engine-pro` workflow | HOME-TBD | `designed`, another change implements them |
+| The private `engine-pro` workflow | HOME-TBD | `designed` |
 | Latency Jobs `gvisor-fork-latency-1` and `-data-1` | HOME-TBD | `staged off`, suspended and unwired |
 | Per-client atespace rule in the router | HOME-TBD | `designed`, replaces the two router grants (Decided 2) |
 
