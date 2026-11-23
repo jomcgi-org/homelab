@@ -226,10 +226,10 @@ try {
         "hydration replaced the heading",
       );
       assert.ok(
-        !requests.some((url) =>
-          /stars-map|maplibre|openfreemap|\/sites-|\/historyMap-/.test(url),
-        ),
-        "heavy data or map loaded before intent",
+        // The forecast and the map load on arrival. History waits for the
+        // Historical view.
+        !requests.some((url) => /\/historyMap-/.test(url)),
+        "history loaded before the Historical view",
       );
       await page.addScriptTag({ url: `${origin}/axe.js` });
       const check = async (state) => {
@@ -257,7 +257,6 @@ try {
       };
       const button = (name) => page.getByRole("button", { name, exact: true });
       await check("hydrated summary");
-      await button("Load live forecasts").click();
       const firstSite = page.locator(".stars-site-list button").first();
       await expect(firstSite).toHaveText("Site 2");
       await button("Site 1").click();
@@ -295,11 +294,7 @@ try {
         1,
       );
       await check("history card and month filter");
-      assert.ok(
-        !requests.some((url) => /stars-map|maplibre|openfreemap/.test(url)),
-      );
       await button("Close site card").click();
-      await button("Load interactive map").click();
       await page.locator("canvas.maplibregl-canvas").waitFor();
       await check("map");
       assert.ok(
@@ -336,7 +331,6 @@ try {
       await context.route("**/assets/stars-map-*.js", (route) => route.abort());
       await page.reload();
       await page.addScriptTag({ url: `${origin}/axe.js` });
-      await button("Load interactive map").click();
       await page.getByText(/Reload the page to retry/).waitFor();
       for (const mode of ["Live", "Historical"]) {
         await button(mode).click();

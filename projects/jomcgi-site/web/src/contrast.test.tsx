@@ -186,6 +186,7 @@ const ROLES: Record<string, Role> = {
   "--color-blog-warning": "text",
   "--font-family-code": "font",
   "--font-family-body": "font",
+  "--font-family-diagram": "font",
   "--font-family-heading": "font",
   "--font-family-home": "font",
   "--font-family-home-code": "font",

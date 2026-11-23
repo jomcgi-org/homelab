@@ -244,10 +244,9 @@ test("a worker denied tile access by its response CSP fails the map check", asyn
     if (req.url === "/assets/app.js")
       return respond(
         res,
-        `document.querySelector("button").onclick = () => {
-      document.querySelector("canvas").hidden = false;
-      new Worker("/worker.js").onmessage = () => fetch("/worker-rejected");
-    }`,
+        // The map loads on arrival, with no button to press.
+        `document.querySelector("canvas").hidden = false;
+      new Worker("/worker.js").onmessage = () => fetch("/worker-rejected");`,
         "text/javascript",
       );
     if (req.url === "/worker.js")
@@ -261,7 +260,7 @@ test("a worker denied tile access by its response CSP fails the map check", asyn
       res,
       html.replace(
         "</main>",
-        '<button>Load interactive map</button><canvas class="maplibregl-canvas" hidden></canvas></main>',
+        '<canvas class="maplibregl-canvas" hidden></canvas></main>',
       ),
     );
   });

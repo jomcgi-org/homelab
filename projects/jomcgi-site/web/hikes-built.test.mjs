@@ -43,7 +43,8 @@ test("built hikes page has its metadata and defers the map and forecast", async 
   assert.equal(document.querySelectorAll("h1").length, 1);
   assert.ok(document.querySelector("#hikes-published"));
   assert.equal(document.querySelectorAll("[style]").length, 0);
-  assert.match(document.body.textContent, /Explore walks/);
+  // The planner loads on arrival, so the static page offers no load button.
+  assert.doesNotMatch(document.body.textContent, /Explore walks/);
   assert.match(document.body.textContent, /MET Norway.*CC BY 4.0.*Copernicus/);
   const { files, inline } = initialScripts(html);
   assert.deepEqual(inline, []);

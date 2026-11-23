@@ -93,6 +93,9 @@ export function StarsPage() {
         setDataWanted(true);
     };
     readView();
+    // Forecasts and the map load on arrival; nothing waits for a click.
+    setDataWanted(true);
+    setMapWanted(true);
     window.addEventListener("popstate", readView);
     setNow(Date.now());
     const clockTimer = setInterval(() => setNow(Date.now()), 60_000);
@@ -150,7 +153,7 @@ export function StarsPage() {
       }
     };
     // Every visit refreshes the small summary after first paint and on a timer.
-    // Full forecast and historical payloads still require user or URL intent.
+    // The full forecast loads on arrival. History waits for the Historical view.
     const paint = requestAnimationFrame(() => {
       if (alive) {
         setNow(Date.now());
@@ -276,45 +279,52 @@ export function StarsPage() {
           Scotland&apos;s dark-sky sites ranked by forecast clear, dark hours.
         </p>
       </header>
-      <section
-        id="stars-summary"
-        aria-label="Forecast snapshot"
-        dangerouslySetInnerHTML={{ __html: summaryHtml(summary, now) }}
-      />
-      {summaryError && !liveError && (
-        <p role="status">
-          Could not refresh the summary. Showing the last available data.{" "}
-          <button type="button" onClick={() => setRetry((n) => n + 1)}>
-            Retry summary
-          </button>
-        </p>
-      )}
-      {!dataWanted && (
-        <p>
-          <button
-            type="button"
-            className="stars-load-forecast"
-            onClick={() => setDataWanted(true)}
-          >
-            Load live forecasts
-          </button>
-        </p>
-      )}
-      {dataWanted && !snapshot && !liveError && (
-        <p role="status">
-          Loading forecast… The snapshot remains available above.
-        </p>
-      )}
-      {liveError && (
-        <p role="status">
-          {summary.asOf
-            ? "Could not refresh. Showing the last available data."
-            : "Could not load the forecast."}{" "}
-          <button type="button" onClick={() => setRetry((n) => n + 1)}>
-            Retry forecast
-          </button>
-        </p>
-      )}
+      <section aria-label="Dark-sky map" className="stars-map-section">
+        {mapWanted ? (
+          <MapBoundary>
+            <Suspense
+              fallback={<div className="stars-map" aria-hidden="true" />}
+            >
+              <StarsMap
+                sites={rows}
+                mode={view.mode}
+                darkness={darkness}
+                activeNights={activeNights}
+                now={now}
+                onSelect={setSelectedId}
+              />
+            </Suspense>
+          </MapBoundary>
+        ) : (
+          // The map loads on arrival. This holds its place until then.
+          <div className="stars-map" aria-hidden="true" />
+        )}
+        <div
+          className="stars-legend"
+          aria-label={
+            darkness === "twilight" && view.mode === "live"
+              ? "Clear twilight hours"
+              : "Clear dark hours"
+          }
+        >
+          <span>
+            Clear{" "}
+            {darkness === "twilight" && view.mode === "live"
+              ? "twilight"
+              : "dark"}{" "}
+            hours:
+          </span>
+          <span>
+            <i className="stars-low" /> Low
+          </span>
+          <span>
+            <i className="stars-mid" /> Medium
+          </span>
+          <span>
+            <i className="stars-high" /> High
+          </span>
+        </div>
+      </section>
       <div className="stars-controls">
         <div role="group" aria-label="Map mode" className="stars-chips">
           <button
@@ -409,64 +419,29 @@ export function StarsPage() {
           </button>
         </p>
       )}
-      <section aria-label="Dark-sky map" className="stars-map-section">
-        {mapWanted ? (
-          <MapBoundary>
-            <Suspense
-              fallback={
-                <p role="status">
-                  Loading map… The site list remains available below.
-                </p>
-              }
-            >
-              <StarsMap
-                sites={rows}
-                mode={view.mode}
-                darkness={darkness}
-                activeNights={activeNights}
-                now={now}
-                onSelect={setSelectedId}
-              />
-            </Suspense>
-          </MapBoundary>
-        ) : (
-          <button
-            type="button"
-            className="stars-load-map"
-            onClick={() => {
-              setDataWanted(true);
-              setMapWanted(true);
-            }}
-          >
-            Load interactive map
+      {summaryError && !liveError && (
+        <p role="status">
+          Could not refresh the summary. Showing the last available data.{" "}
+          <button type="button" onClick={() => setRetry((n) => n + 1)}>
+            Retry summary
           </button>
-        )}
-        <div
-          className="stars-legend"
-          aria-label={
-            darkness === "twilight" && view.mode === "live"
-              ? "Clear twilight hours"
-              : "Clear dark hours"
-          }
-        >
-          <span>
-            Clear{" "}
-            {darkness === "twilight" && view.mode === "live"
-              ? "twilight"
-              : "dark"}{" "}
-            hours:
-          </span>
-          <span>
-            <i className="stars-low" /> Low
-          </span>
-          <span>
-            <i className="stars-mid" /> Medium
-          </span>
-          <span>
-            <i className="stars-high" /> High
-          </span>
-        </div>
-      </section>
+        </p>
+      )}
+      {liveError && (
+        <p role="status">
+          {summary.asOf
+            ? "Could not refresh. Showing the last available data."
+            : "Could not load the forecast."}{" "}
+          <button type="button" onClick={() => setRetry((n) => n + 1)}>
+            Retry forecast
+          </button>
+        </p>
+      )}
+      <section
+        id="stars-summary"
+        aria-label="Forecast snapshot"
+        dangerouslySetInnerHTML={{ __html: summaryHtml(summary, now) }}
+      />
       {selected && (
         <StarsCard
           site={selected}

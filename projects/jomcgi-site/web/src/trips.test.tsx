@@ -164,19 +164,18 @@ describe("populated static trip pages", () => {
     expect(screen.getByText("To the mountains")).toBeTruthy();
     expect(screen.queryByText(/unavailable/i)).toBeNull();
   });
-  it("does not request map data until the map button is used", async () => {
+  it("requests map data on arrival, with no button to press", async () => {
     const load = vi.fn(async () => []);
     render(<LazyMap slug="2025-trip" load={load} />);
-    expect(load).not.toHaveBeenCalled();
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
     expect(
-      screen.getByRole("button", { name: "Load interactive map" }),
-    ).toBeTruthy();
+      screen.queryByRole("button", { name: "Load interactive map" }),
+    ).toBeNull();
   });
   it("disposes of a failed map and offers a retry", async () => {
+    // Earlier pages open and dispose of their own maps on arrival.
+    disposeMap.mockClear();
     render(<LazyMap slug="2025-trip" load={async () => []} />);
-    fireEvent.click(
-      screen.getByRole("button", { name: "Load interactive map" }),
-    );
     expect(
       await screen.findByRole("button", { name: "Retry map" }),
     ).toBeTruthy();

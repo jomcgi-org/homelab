@@ -251,16 +251,13 @@ export function HomePage() {
             </a>
           </span>
           <nav aria-label="Continue reading">
-            {[
-              "CV",
-              "Engineering",
-              ...(HOME_POSTS.length ? ["Blog"] : []),
-              "Docs",
-            ].map((name) => (
-              <a key={name} href={sectionHref(name)}>
-                {name.toLowerCase()}
-              </a>
-            ))}
+            {["CV", ...(HOME_POSTS.length ? ["Blog"] : []), "Docs"].map(
+              (name) => (
+                <a key={name} href={sectionHref(name)}>
+                  {name.toLowerCase()}
+                </a>
+              ),
+            )}
           </nav>
         </div>
       </div>

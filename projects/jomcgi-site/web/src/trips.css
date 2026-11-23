@@ -81,3 +81,12 @@
   flex-wrap: wrap;
   gap: 2rem;
 }
+
+/* On the trips index the breadcrumb only repeats the title. */
+.site-main > nav[aria-label="Trip"]:not(:has(a + a)) {
+  display: none;
+}
+.site-main > nav[aria-label="Trip"] {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}

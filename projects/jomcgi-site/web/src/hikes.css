@@ -182,3 +182,11 @@
   content: "−";
   font-size: 1.5rem;
 }
+
+/* Holds the map's place while it loads, so the list below does not jump. */
+.hikes-map-pending {
+  height: clamp(24rem, 65vh, 48rem);
+  margin-top: 1rem;
+  border-radius: var(--radius-container);
+  background: var(--color-background-muted);
+}
