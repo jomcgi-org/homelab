@@ -775,10 +775,10 @@ _GVISOR_DEFAULT = "sandboxconfig.ate.dev/is-class-default"
 def test_gvisor_fork_slice_is_wired_and_off() -> None:
     # The gVisor sandbox-fork slice lives in ../gvisor-fork. ArgoCD reads only
     # this directory, and since step 5 of the enable steps it lists the slice.
-    # The slice runs nothing: the pool has no workers, the conformance Job is
-    # suspended and the ForkSeed gate is separate (step 7:
-    # test_fork_seed_gate_is_off). Step 6 raises replicas, and step 8 sets
-    # suspend to false: each changes its assertion here in the same change.
+    # The slice runs no actor: the pool has one idle worker (step 6), the
+    # conformance Job is suspended and the ForkSeed gate is separate (step 7:
+    # test_fork_seed_gate_is_off). Step 8 sets suspend to false: it changes its
+    # assertion here in the same change.
     app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
     paths = [s["path"] for s in app["spec"]["sources"] if "path" in s]
     assert paths == ["projects/platform-factory/substrate/resources"]
@@ -824,9 +824,9 @@ def test_gvisor_fork_slice_is_wired_and_off() -> None:
     assert _GVISOR_DEFAULT not in configs["gvisor-fork"]["metadata"].get(
         "annotations", {}
     )
-    # Off: no worker, and the conformance Job does not run.
+    # Off: one worker that holds no seed, and the conformance Job does not run.
     pool = _one(docs, "WorkerPool", "gvisor-fork")
-    assert pool["spec"]["replicas"] == 0
+    assert pool["spec"]["replicas"] == 1
     assert _one(docs, "Job", "gvisor-fork-conformance-3")["spec"]["suspend"] is True
     # The namespace is kept when the Application goes, like every Namespace.
     namespace = _one(docs, "Namespace", _FORK_NS)
