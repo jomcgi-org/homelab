@@ -830,8 +830,9 @@ def test_conformance_refuses_a_template_it_cannot_edit(tmp_path: Path) -> None:
 
 
 def test_staged_images_name_the_published_fork_digests() -> None:
-    # Published by the substrate-fork-images and substrate-fork-engine
-    # workflows, and pullable anonymously.
+    # The references the substrate-fork-images and substrate-fork-engine
+    # workflows published (their run summaries). The test compares strings: it
+    # does not pull the images.
     template = yaml.safe_load(_TEMPLATE.read_text())
     (container,) = template["containers"]
     pod = _conformance_job()["spec"]["template"]["spec"]

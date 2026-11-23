@@ -599,8 +599,8 @@ flowchart LR
    it replaces workers. Merge it with the gate off. After the merge, verify that
    an existing actor still starts and runs, and that the control plane is
    healthy.
-5. Wire `../gvisor-fork` in `resources/kustomization.yaml`. Set the pool's
-   `workerImage` is already the published digest. Keep `replicas` at 0. In
+5. Wire `../gvisor-fork` in `resources/kustomization.yaml`. The pool's
+   `workerImage` already names the published digest. Keep `replicas` at 0. In
    `resources_test.py`, replace `test_gvisor_fork_slice_is_staged_and_not_wired`
    with a test of the wired objects in the same change. Keep
    `test_fork_seed_gate_is_off` until step 7. The directory renders 13
