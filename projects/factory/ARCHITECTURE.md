@@ -239,7 +239,7 @@ The reviewer needs its own `pending` publisher first: a follow-up.
 2. Enable one pool with `autoscaling.enabled` and `minReplicas: 1`. The pool
    can shrink to one worker and no lower, so a metric failure costs little.
 3. Raise the coder pool to `minReplicas: 0` after a full day of correct
-   metrics. The reviewer pool stays at 1.
+   metrics. The reviewer pool stays fixed.
 
 `maxReplicas` defaults to `concurrency + spare`: 14 for the coder pool, above
 the 12 fixed workers today, on nodes that request 98% of memory. Set
