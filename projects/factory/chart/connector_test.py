@@ -497,6 +497,7 @@ def test_bindings_derive_from_repositories() -> None:
         "progressLease": "25m",
         "toolLease": "90m",
         "reviewPoll": "120s",  # from deploy/values.yaml
+        "workerWait": "5m",  # from deploy/values.yaml
     }
     assert config["links"] == {
         "issue": "https://factory-plan.jomcgi.dev/issue/{issueId}",

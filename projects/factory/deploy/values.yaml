@@ -120,15 +120,15 @@ agents:
       resources:
         requests:
           memory: 768Mi
-    # The pool follows demand between 1 and 12 workers instead of holding 12
-    # (ARCHITECTURE.md, "Worker pool autoscaling"). minReplicas stays 1: a
-    # pool at zero needs the connector's send wait (`intervals.workerWait`),
-    # which is a separate change. The spare of 2 matches the two workers this
-    # pool keeps above connector.agents. Argo CD ignores the pool's
-    # /spec/replicas (application.yaml), because the HPA owns it.
+    # The pool follows demand between 0 and 12 workers instead of holding 12
+    # (ARCHITECTURE.md, "Worker pool autoscaling"). At zero, the connector
+    # holds a run's send until a worker is ready (`intervals.workerWait`,
+    # below). The spare of 2 matches the two workers this pool keeps above
+    # connector.agents. Argo CD ignores the pool's /spec/replicas
+    # (application.yaml), because the HPA owns it.
     autoscaling:
       enabled: true
-      minReplicas: 1
+      minReplicas: 0
       spare: 2
       maxReplicas: 12
   # The reviewer reads and never edits, so it needs no apply_patch. It runs
@@ -220,6 +220,13 @@ connector:
   # (HOME-751).
   intervals:
     reviewPoll: 120s
+    # A send waits at most 5 min for a ready worker. A cold start from zero
+    # takes about 2 min: Prometheus scrapes each 30 s, the HPA syncs each
+    # 15 s, a worker pod is Ready about 10 s after it starts, and the reaper
+    # writes its capacity row each 15 s. One pod took 161 s to be scheduled on
+    # 2026-11-20, so the bound covers a slow schedule too. A held send is not
+    # issued, so no lease runs on it.
+    workerWait: 5m
   bindings:
     homelab:
       itsaplanProject: HOME
