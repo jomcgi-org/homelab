@@ -1,9 +1,16 @@
 {{- if .Values.connector.enabled }}
+{{- range $p := include "factory.autoscaledPools" . | fromJsonArray }}
+{{- if not (has $p.namespace (list "factory-r-homelab" "factory-r-homelab-review")) }}
+{{- fail (printf "autoscaling: the reaper has no pod access in %s" $p.namespace) }}
+{{- end }}
+{{- end }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: factory-reaper
   namespace: {{ .Values.broker.namespace }}
+{{- /* patch (only where a pool autoscales): the deletion cost that makes a scale-down remove idle workers first. */}}
+{{- $autoscaled := include "factory.autoscaledPools" . | fromJsonArray }}
 {{- range $ns := list "factory-r-homelab" "factory-r-homelab-review" }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -14,7 +21,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "delete"]
+    verbs: ["get", "list", "watch", "delete"{{ range $autoscaled }}{{ if eq .namespace $ns }}, "patch"{{ break }}{{ end }}{{ end }}]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
