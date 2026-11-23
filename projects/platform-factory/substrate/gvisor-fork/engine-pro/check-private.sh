@@ -10,13 +10,17 @@
 #      name is wrong, and an anonymous refusal would prove nothing. (A package
 #      that does not exist is refused the same way as a private one.)
 #   2. With NO credentials (an empty Docker config, an empty environment): the
-#      same call must be refused by the manifest request of the registry with
-#      the error code UNAUTHORIZED or DENIED. Only after step 1 does this refusal
-#      mean "private". Nothing else counts: a 404, MANIFEST_UNKNOWN or
-#      NAME_UNKNOWN (a stale negative cache, a flaky read), a 401 or 403 with no
-#      registry error code, or an error of the token endpoint (a rate limit)
-#      says nothing about the visibility. Those and any other answer are
-#      "unclear": three tries, then the image is not proven private.
+#      same call must be refused with the registry error code UNAUTHORIZED or
+#      DENIED, by the manifest request or by the token endpoint of ghcr.io. GHCR
+#      refuses an anonymous client of a private package at the TOKEN endpoint:
+#        GET https://ghcr.io/token?scope=...: UNAUTHORIZED: authentication required
+#      (a package that does not exist gets DENIED there; step 1 has shown that
+#      it exists). Only after step 1 does this refusal mean "private". Nothing
+#      else counts: a 404, MANIFEST_UNKNOWN or NAME_UNKNOWN (a stale negative
+#      cache, a flaky read), and a 403, 429 or 5xx with no registry error code (a
+#      rate limit, an outage) say nothing about the visibility. Those and any
+#      other answer are "unclear": three tries, then the image is not proven
+#      private.
 #
 # A reference that is not proven private fails the job. Then the script tries to
 # delete the version with `gh api` (GH_TOKEN), unless --no-delete is given (the
@@ -71,8 +75,9 @@ for attempt in 1 2 3; do
 	if [[ $status -eq 0 ]]; then
 		verdict=exposed
 		break
-	elif grep -qE '/manifests/[^ ]*: (UNAUTHORIZED|DENIED):' <<<"$answer"; then
-		# The error code of the manifest request, not of the token endpoint.
+	elif grep -qE 'GET (https://ghcr\.io|http://127\.0\.0\.1:[0-9]+)/(v2/[^ ]*/manifests/[^ ]*|token\?[^ ]*): (UNAUTHORIZED|DENIED):' <<<"$answer"; then
+		# A registry error code of the manifest request or of the token endpoint
+		# (127.0.0.1 is the fake registry of the tests).
 		verdict=refused
 		break
 	fi

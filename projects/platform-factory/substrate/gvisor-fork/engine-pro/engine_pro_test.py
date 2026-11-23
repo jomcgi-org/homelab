@@ -598,7 +598,10 @@ def stubs(tmp_path: Path) -> Path:
         '  plain404) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/v2/x/y/manifests/t: unexpected status code 404 Not Found: x" >&2; exit 1 ;;\n'
         '  plain403) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/v2/x/y/manifests/t: unexpected status code 403 Forbidden: x" >&2; exit 1 ;;\n'
         '  token403) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/token?scope=repository%3Ax%2Fy%3Apull&service=ghcr.io: unexpected status code 403 Forbidden: x" >&2; exit 1 ;;\n'
-        '  token_denied) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/token?scope=repository%3Ax%2Fy%3Apull&service=ghcr.io: DENIED: denied" >&2; exit 1 ;;\n'
+        '  token_denied) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/token?scope=repository%3Ax%2Fy%3Apull&service=ghcr.io: DENIED: requested access to the resource is denied" >&2; exit 1 ;;\n'
+        '  token_unauthorized) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/token?scope=repository%3Ax%2Fy%3Apull&service=ghcr.io: UNAUTHORIZED: authentication required" >&2; exit 1 ;;\n'
+        '  token429) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/token?scope=repository%3Ax%2Fy%3Apull&service=ghcr.io: unexpected status code 429 Too Many Requests: x" >&2; exit 1 ;;\n'
+        '  token500) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/token?scope=repository%3Ax%2Fy%3Apull&service=ghcr.io: unexpected status code 500 Internal Server Error: x" >&2; exit 1 ;;\n'
         '  unknown) echo "Error: dial tcp: i/o timeout" >&2; exit 1 ;;\n'
         "esac\n"
     )
@@ -644,7 +647,9 @@ def run_guard(
     return done, (stubs / "log").read_text()
 
 
-@pytest.mark.parametrize("mode", ["denied", "denied403"])
+@pytest.mark.parametrize(
+    "mode", ["denied", "denied403", "token_unauthorized", "token_denied"]
+)
 def test_guard_passes_when_the_image_resolves_and_the_anonymous_pull_is_refused(
     stubs: Path, mode: str
 ) -> None:
@@ -696,7 +701,8 @@ def test_guard_deletes_and_fails_when_the_image_is_public(stubs: Path) -> None:
         "plain404",
         "plain403",
         "token403",
-        "token_denied",
+        "token429",
+        "token500",
         "unknown",
     ],
 )
@@ -704,8 +710,9 @@ def test_guard_does_not_count_a_404_or_a_token_endpoint_error_as_a_refusal(
     stubs: Path, mode: str
 ) -> None:
     """A public package can answer 404 or MANIFEST_UNKNOWN to one call (a stale negative
-    cache, a flaky read), and the token endpoint can answer 403 (a rate limit). None of
-    these says that the package is private: three tries, then the job fails."""
+    cache, a flaky read), and the token endpoint can answer 403, 429 or 5xx with no
+    registry error code (a rate limit, an outage). None of these says that the package
+    is private: three tries, then the job fails."""
     done, log = run_guard(stubs, mode)
     assert done.returncode == 1, done.stdout
     assert "is private" not in done.stdout
@@ -714,6 +721,56 @@ def test_guard_does_not_count_a_404_or_a_token_endpoint_error_as_a_refusal(
     assert "DELETE" in log, (
         "the Pro image version is deleted when it is not proven private"
     )
+
+
+# The answers of ghcr.io to an anonymous `crane manifest`, as a review saw them on
+# private first-party packages and on a name that does not exist. A private package
+# is refused at the TOKEN endpoint, not at /manifests/.
+REAL_GHCR_PRIVATE = (
+    "Error: fetching manifest ghcr.io/jomcgi-org/homelab/projects/factory/broker:latest: "
+    "GET https://ghcr.io/token?scope=repository%3Ajomcgi-org%2Fhomelab%2Fprojects%2Ffactory%2Fbroker%3Apull"
+    "&service=ghcr.io: UNAUTHORIZED: authentication required"
+)
+REAL_GHCR_NO_SUCH_NAME = (
+    "Error: fetching manifest ghcr.io/jomcgi-org/homelab/nothing-here:latest: "
+    "GET https://ghcr.io/token?scope=repository%3Ajomcgi-org%2Fhomelab%2Fnothing-here%3Apull"
+    "&service=ghcr.io: DENIED: requested access to the resource is denied"
+)
+
+
+@pytest.mark.parametrize("answer", [REAL_GHCR_PRIVATE, REAL_GHCR_NO_SUCH_NAME])
+def test_guard_matches_the_exact_strings_of_ghcr_for_a_refused_anonymous_pull(
+    tmp_path: Path, answer: str
+) -> None:
+    """Feed the real strings to the matching step. Step 1 (the authenticated resolve)
+    has already shown that the image exists, so DENIED at the token endpoint is sound."""
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    (stubs / "crane").write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ -n "${DOCKER_CONFIG:-}" ]]; then\n'
+        '  cat "$(dirname "$0")/answer" >&2; exit 1\n'
+        "fi\n"
+        "echo '{}'\n"
+    )
+    (stubs / "answer").write_text(answer + "\n")  # the anonymous call has an empty env
+    (stubs / "gh").write_text("#!/usr/bin/env bash\nexit 99\n")
+    for name in ("crane", "gh"):
+        (stubs / name).chmod(0o755)
+    env = {
+        "PATH": f"{stubs}:{os.environ['PATH']}",
+        "HOME": str(stubs),
+        "CHECK_PRIVATE_SLEEP": "0",
+    }
+    done = subprocess.run(
+        ["bash", str(HERE / "check-private.sh"), REF],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "is private" in done.stdout
 
 
 def test_guard_with_no_delete_fails_without_calling_gh(stubs: Path) -> None:
@@ -780,6 +837,14 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self.send(200, b'{"token":"ok"}')
             if m == "token403":
                 return self.send(403, b"forbidden")
+            if m == "token429":
+                return self.send(429, b"slow down")
+            if m == "token500":
+                return self.send(500, b"oops")
+            if m == "token_unauthorized":
+                return self.err(401, "UNAUTHORIZED")
+            if m == "token_denied":
+                return self.err(403, "DENIED")
             return self.send(200, b'{"token":"anon"}')
         if self.path == "/v2/":
             if auth in ("Bearer ok", "Bearer anon"):
@@ -877,8 +942,10 @@ def run_guard_real(
     return done, (stubs / "log").read_text()
 
 
-@pytest.mark.parametrize("mode", ["unauthorized", "denied"])
-def test_real_crane_a_registry_error_code_of_the_manifest_request_is_a_refusal(
+@pytest.mark.parametrize(
+    "mode", ["unauthorized", "denied", "token_unauthorized", "token_denied"]
+)
+def test_real_crane_a_registry_error_code_of_the_manifest_or_the_token_endpoint_is_a_refusal(
     tmp_path: Path, fake_registry, mode: str
 ) -> None:
     port, cfg, set_mode = fake_registry
@@ -891,13 +958,23 @@ def test_real_crane_a_registry_error_code_of_the_manifest_request_is_a_refusal(
 
 @pytest.mark.parametrize(
     "mode",
-    ["manifest_unknown", "name_unknown", "plain404", "plain403", "token403", "public"],
+    [
+        "manifest_unknown",
+        "name_unknown",
+        "plain404",
+        "plain403",
+        "token403",
+        "token429",
+        "token500",
+        "public",
+    ],
 )
 def test_real_crane_everything_else_fails_the_gate(
     tmp_path: Path, fake_registry, mode: str
 ) -> None:
-    """404, MANIFEST_UNKNOWN, NAME_UNKNOWN, a 403 without a registry error code, a 403
-    of the token endpoint and a public manifest: none is proof that the package is private."""
+    """404, MANIFEST_UNKNOWN, NAME_UNKNOWN, a 403 without a registry error code, a 403,
+    429 or 5xx of the token endpoint with no registry error code, and a public manifest:
+    none is proof that the package is private."""
     port, cfg, set_mode = fake_registry
     set_mode(mode)
     done, log = run_guard_real(tmp_path, port, cfg)
