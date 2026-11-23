@@ -592,6 +592,39 @@ func TestStartRecoversAPanicOutsideTheEngine(t *testing.T) {
 	}
 }
 
+func TestLogsAreRateLimited(t *testing.T) {
+	logs := captureLog(t)
+	tier, err := newSemgrepTier(testConfig(), engineFunc(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := time.Now()
+	tier.now = func() time.Time { return clock }
+	found := engineResult{outcome: engineFound, verdict: Verdict{Findings: []Finding{{"aws-key-0", 4, 24}}}}
+	timeout := engineResult{outcome: engineTimeout}
+	for i := 0; i < 100; i++ {
+		tier.decide(found)
+		tier.decide(timeout)
+	}
+	if got := strings.Count(logs.String(), "semgrep tier blocked a request"); got != 1 {
+		t.Fatalf("%d finding lines for 100 findings: %q", got, logs.String())
+	}
+	if got := strings.Count(logs.String(), "semgrep tier timeout"); got != 1 {
+		t.Fatalf("%d timeout lines for 100 timeouts", got)
+	}
+	// The next interval writes one more line that counts what it held back.
+	clock = clock.Add(logInterval + time.Second)
+	tier.decide(found)
+	tier.decide(timeout)
+	if !strings.Contains(logs.String(), "aws-key-0@4-24 (+99 suppressed)") || !strings.Contains(logs.String(), "failure mode deny (+99 suppressed)") {
+		t.Fatalf("second interval lines lack the suppressed count: %q", logs.String())
+	}
+	// Findings and failures are limited separately.
+	if got := strings.Count(logs.String(), "\n"); got != 4 {
+		t.Fatalf("%d lines, want 4: %q", got, logs.String())
+	}
+}
+
 func TestConnectionRefusedDeniesOrAllows(t *testing.T) {
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := listener.Addr().String()
