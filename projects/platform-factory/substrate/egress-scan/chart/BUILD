@@ -1,4 +1,5 @@
 load("//bazel/helm:defs.bzl", "helm_chart", "helm_lint_test")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 helm_chart(
     name = "chart",
@@ -24,4 +25,16 @@ filegroup(
         "//projects/platform-factory/substrate/egress-scan/deploy:__pkg__",
         "//projects/platform-factory/substrate/resources:__pkg__",
     ],
+)
+
+py_test(
+    name = "chart_test",
+    srcs = ["chart_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob(["templates/**/*"]),
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = ["@pip//pyyaml"],
 )

@@ -29,15 +29,26 @@ type scanner struct {
 	authv3.UnimplementedAuthorizationServer
 	detector *requestDetector
 	slots    chan struct{}
+	// semgrep is the optional second scan tier. Nil means the tier is off.
+	semgrep *semgrepTier
 }
 
 func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv3.CheckResponse, error) {
 	select {
 	case s.slots <- struct{}{}:
-		defer func() { <-s.slots }()
 	default:
 		return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, capacityReason), nil
 	}
+	// The slot covers the Gitleaks scan only. The engine tier has its own limit,
+	// so a slow engine cannot hold the slots that Gitleaks needs.
+	held := true
+	release := func() {
+		if held {
+			held = false
+			<-s.slots
+		}
+	}
+	defer release()
 	scanCtx, cancel := context.WithTimeout(ctx, maxScanTime)
 	defer cancel()
 
@@ -128,14 +139,59 @@ func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv
 			return deny(codes.InvalidArgument, typev3.StatusCode_UnsupportedMediaType, "unsupported content type"), nil
 		}
 	}
-	matched, err := s.detector.find(scanCtx, fields.String(), string(body), decoded)
+	if s.semgrep == nil {
+		matched, err := s.detector.find(scanCtx, fields.String(), string(body), decoded)
+		if err != nil {
+			return scanBudgetResponse(ctx)
+		}
+		if matched {
+			return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, "request contains a credential pattern"), nil
+		}
+		return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
+	}
+	return s.checkTwoTiers(ctx, scanCtx, release, fields.String(), body, decoded)
+}
+
+// checkTwoTiers runs Gitleaks and the engine at the same time. A Gitleaks deny
+// or work-limit result returns at once and ends the engine call. The request
+// is allowed only when both tiers have finished and neither denies.
+func (s *scanner) checkTwoTiers(ctx, scanCtx context.Context, release func(), fields string, body []byte, decoded string) (*authv3.CheckResponse, error) {
+	engineCtx, stopEngine := context.WithCancel(ctx)
+	defer stopEngine()
+	pending := s.semgrep.start(engineCtx, engineText(fields, body, decoded), len(body))
+
+	matched, err := s.detector.find(scanCtx, fields, string(body), decoded)
 	if err != nil {
 		return scanBudgetResponse(ctx)
 	}
 	if matched {
+		// Count the agreement only when the engine already has a verdict.
+		select {
+		case res := <-pending:
+			s.semgrep.metrics.agree(true, res)
+		default:
+		}
 		return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, "request contains a credential pattern"), nil
 	}
-	return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
+	release()
+
+	select {
+	case res := <-pending:
+		if res.outcome == engineCancelled {
+			// Only the caller ends the call before this point. Never allow on it.
+			return scanBudgetResponse(ctx)
+		}
+		s.semgrep.metrics.agree(false, res)
+		if d := s.semgrep.decide(res); d != nil {
+			if d.found {
+				return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, d.reason), nil
+			}
+			return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, d.reason), nil
+		}
+		return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func scanBudgetResponse(ctx context.Context) (*authv3.CheckResponse, error) {

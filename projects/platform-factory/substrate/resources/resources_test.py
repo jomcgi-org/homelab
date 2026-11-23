@@ -838,3 +838,78 @@ def test_workerpool_crd_has_the_fork_platform_field() -> None:
     assert rule["rule"] == "!has(self.platform) || self.name == 'gvisor'"
     # Existing pools set no platform, so the new rule changes none of them.
     assert "platform" not in item["required"]
+
+
+# The second scan tier waits for the engine up to semgrep.deadline. The gateway
+# gives the whole check requestTimeout. If the gateway timeout is shorter, the
+# gateway cancels the check first and the tier deadline never applies.
+_GATEWAY_MARGIN_MS = 10
+_GATEWAY_TIMEOUT_TIER_OFF_MS = 80
+
+
+def _ms(duration: str) -> int:
+    match = re.fullmatch(r"([0-9]+)(ms|s)", duration)
+    assert match, f"use a whole number of ms or s, got {duration!r}"
+    return int(match[1]) * (1000 if match[2] == "s" else 1)
+
+
+def _check_gateway_covers_tier(
+    enabled: bool, deadline: str, gateway_timeout: str
+) -> None:
+    timeout_ms = _ms(gateway_timeout)
+    if not enabled:
+        # The tier is staged off, so the gateway timeout must not change.
+        assert timeout_ms == _GATEWAY_TIMEOUT_TIER_OFF_MS, (
+            f"requestTimeout is {gateway_timeout} with semgrep.enabled false;"
+            f" it must stay {_GATEWAY_TIMEOUT_TIER_OFF_MS}ms until the tier is on"
+        )
+        return
+    needed = _ms(deadline) + _GATEWAY_MARGIN_MS
+    assert timeout_ms >= needed, (
+        f"requestTimeout {gateway_timeout} is below semgrep.deadline {deadline}"
+        f" + {_GATEWAY_MARGIN_MS}ms; the gateway would cancel the check first"
+    )
+
+
+def _semgrep_values() -> dict:
+    """The chart defaults overlaid with the values the Application passes."""
+    chart_values = _HERE.parent / "egress-scan" / "chart" / "values.yaml"
+    values = yaml.safe_load(chart_values.read_text())["semgrep"]
+    app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
+    helm = app["spec"]["sources"][0]["helm"]
+    assert not [
+        p for p in helm.get("parameters", []) if p["name"].startswith("semgrep.")
+    ], "set semgrep values in helm.valuesObject so that this test reads them"
+    given = helm.get("valuesObject", {})
+    if "values" in helm:
+        given = {**yaml.safe_load(helm["values"]), **given}
+    values.update(given.get("semgrep", {}))
+    return values
+
+
+def test_gateway_timeout_is_coupled_to_the_semgrep_deadline() -> None:
+    policy = yaml.safe_load((_HERE / "egress-scan" / "gateway-policy.yaml").read_text())
+    (check,) = policy["conditional"]
+    semgrep = _semgrep_values()
+    _check_gateway_covers_tier(
+        bool(semgrep["enabled"]),
+        semgrep["deadline"],
+        check["policies"]["http"]["requestTimeout"],
+    )
+
+
+def test_the_coupling_check_fails_when_the_gateway_is_too_short() -> None:
+    _check_gateway_covers_tier(False, "300ms", "80ms")
+    _check_gateway_covers_tier(True, "300ms", "310ms")
+    _check_gateway_covers_tier(True, "75ms", "1s")
+    for enabled, deadline, timeout in (
+        (True, "300ms", "80ms"),
+        (True, "300ms", "309ms"),
+        (True, "1s", "1s"),
+        (False, "300ms", "310ms"),
+    ):
+        try:
+            _check_gateway_covers_tier(enabled, deadline, timeout)
+        except AssertionError:
+            continue
+        raise AssertionError(f"accepted {enabled} {deadline} {timeout}")

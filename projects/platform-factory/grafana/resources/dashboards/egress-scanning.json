@@ -1,7 +1,7 @@
 {
   "uid": "egress-scanning",
   "title": "Egress secret scanning",
-  "description": "Credential checks that reach the private egress scanner. Check duration covers the authorization handler. The gateway allows 80 ms for the full RPC.",
+  "description": "Credential checks that reach the private egress scanner. Check duration covers the authorization handler. The gateway allows 80 ms for the full RPC, or the engine deadline plus 10 ms when the second scan tier is on.",
   "tags": ["factory", "security"],
   "timezone": "browser",
   "editable": false,
@@ -251,6 +251,262 @@
         }
       },
       "description": "The scanner allows up to 75 ms for scanning. This percentile includes validation and decoding."
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "Second scan tier (Semgrep engine, off by default)",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Engine calls by outcome",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (outcome) (rate(factory_egress_scan_semgrep_requests_total{job=\"egress-scan\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "found and clean are verdicts. timeout, error, shed, breaker_open and oversize apply the failure mode. cancelled means Gitleaks or the gateway ended the call first. No data while the tier is off."
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Engine latency p95 and p99",
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(factory_egress_scan_semgrep_duration_seconds_bucket{job=\"egress-scan\",outcome=~\"found|clean\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "p95 (verdicts)"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(factory_egress_scan_semgrep_duration_seconds_bucket{job=\"egress-scan\",outcome=~\"found|clean\"}[$__rate_interval])))",
+          "refId": "B",
+          "legendFormat": "p99 (verdicts)"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(factory_egress_scan_semgrep_deadline_seconds{job=\"egress-scan\"})",
+          "refId": "C",
+          "legendFormat": "deadline"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "Calls that returned a verdict. The deadline line is the configured engine deadline. The gateway requestTimeout must stay 10 ms above it."
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Requests decided by the failure mode",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (action) (rate(factory_egress_scan_semgrep_failure_mode_total{job=\"egress-scan\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "The engine gave no verdict. Action allow lets the request through without the second tier, so any value above zero needs a look. Action deny blocks the request."
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Gitleaks and engine agreement",
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (gitleaks, semgrep) (rate(factory_egress_scan_semgrep_agreement_total{job=\"egress-scan\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "gitleaks {{gitleaks}} / engine {{semgrep}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "Requests where both tiers gave a verdict. gitleaks clean / engine found is the engine catching what Gitleaks misses. gitleaks found / engine clean is the reverse. Gitleaks answers first on a finding, so that pair is a lower bound."
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Engine calls in flight and breaker",
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(factory_egress_scan_semgrep_inflight{job=\"egress-scan\"})",
+          "refId": "A",
+          "legendFormat": "in flight"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(factory_egress_scan_semgrep_breaker_open{job=\"egress-scan\"})",
+          "refId": "B",
+          "legendFormat": "breaker open"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "In flight is the sum over pods. Shed calls show in the outcome panel when it reaches the concurrency limit of a pod."
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Check latency p95 with the tier on",
+      "gridPos": {
+        "x": 12,
+        "y": 29,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(factory_egress_scan_check_duration_seconds_bucket{job=\"egress-scan\",outcome=~\"allowed|credential_blocked|engine_unavailable\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "The full handler time, which includes the wait for the engine."
     }
   ]
 }
