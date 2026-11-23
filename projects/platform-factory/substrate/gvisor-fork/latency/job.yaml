@@ -31,9 +31,10 @@
 # file does not make: the router accepts only the SPIFFE IDs in
 # atenet-router.ingressAllowedSPIFFEIDs (../../values/substrate.yaml). The data
 # Job's pod certificate has the ID
-# spiffe://cluster.local/ns/ate-system/sa/ate-client. Joe decides whether to
-# add it for the run (ARCHITECTURE.md of the egress scanner, "Rollout"). Without it the router refuses the TLS handshake, the first
-# request fails and the Job reports it. If the pod certificate signer refuses
+# spiffe://cluster.local/ns/ate-system/sa/ate-client. Joe approved
+# adding it for one run (ARCHITECTURE.md of the egress scanner, "Rollout").
+# Without it the router refuses the TLS handshake, the first request fails and
+# the Job reports it. If the pod certificate signer refuses
 # the pod, the pod stays in ContainerCreating: delete the Job and run the
 # control Job alone.
 ---

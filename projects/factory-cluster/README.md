@@ -724,7 +724,7 @@ flowchart LR
      staged one (2 CPU holds the seed and one child). Restart the pool pod
      before them: a worker pins the atespace of its first seed. The
      `gvisor-fork-latency-data-1` Job also needs the `ate-client` SPIFFE ID
-     in `atenet-router.ingressAllowedSPIFFEIDs`, which Joe decides. Read the log
+     in `atenet-router.ingressAllowedSPIFFEIDs`, which Joe approved for one run. Read the log
      with `grep '^LATENCY '`.
 9. Run X1 to X7 and X9 inside the pod from node-1. Add a worker restart, a node
    drain and a forkd crash. Compare `fork_overhead` with the measured use.
