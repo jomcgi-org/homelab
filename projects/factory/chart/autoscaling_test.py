@@ -140,6 +140,22 @@ def test_both_pools_and_overrides():
     )
 
 
+def _reaper_verbs(docs, ns):
+    role = _one(docs, "Role", ns, "factory-reaper")
+    (rule,) = role["rules"]
+    return rule["verbs"]
+
+
+def test_reaper_may_patch_pods_only_where_a_pool_autoscales():
+    # The deletion cost makes a scale-down remove idle workers first.
+    off = _render()
+    assert _reaper_verbs(off, _CODER[0]) == ["get", "list", "watch", "delete"]
+    assert _reaper_verbs(off, _REVIEW[0]) == ["get", "list", "watch", "delete"]
+    on = _render(["agents.codex.autoscaling.enabled=true"])
+    assert _reaper_verbs(on, _CODER[0]) == ["get", "list", "watch", "delete", "patch"]
+    assert _reaper_verbs(on, _REVIEW[0]) == ["get", "list", "watch", "delete"]
+
+
 def test_minimum_above_maximum_is_refused():
     with pytest.raises(RuntimeError, match="minReplicas 5 is above maxReplicas 3"):
         _render(
