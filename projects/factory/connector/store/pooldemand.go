@@ -13,12 +13,19 @@ type AgentAttempts struct {
 // have no accepted task: sending (recorded, not sent) and ambiguous (sent,
 // outcome unknown). The attempt row commits before the send, so the count
 // covers a send that has not left the connector yet.
+//
+// Only attempts of a live run count: dispatched and not stopped. A run can
+// close without finishing its attempt (for example when its binding is no
+// longer configured), and such an attempt would otherwise count as demand for
+// good and keep a pool from scaling down.
 func (s *Store) PendingAttempts(ctx context.Context) ([]AgentAttempts, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT kagent_namespace, kagent_agent, count(*)
-		FROM delivery_attempt
-		WHERE state IN ('sending', 'ambiguous')
-		GROUP BY kagent_namespace, kagent_agent`)
+		SELECT a.kagent_namespace, a.kagent_agent, count(*)
+		FROM delivery_attempt a
+		JOIN run r ON r.id = a.run_id
+		WHERE a.state IN ('sending', 'ambiguous')
+			AND r.state = 'dispatched' AND r.stopped_reason IS NULL
+		GROUP BY a.kagent_namespace, a.kagent_agent`)
 	if err != nil {
 		return nil, err
 	}
