@@ -93,7 +93,7 @@ progress line, then the Semgrep JSON. The client reads from the first `{`.
 | Result with `is_ignored` true | finding. The text is actor-controlled, so an actor can add a `nosemgrep` marker. A suppressed result still denies. |
 | No findings, any `errors` entry, at any level | no verdict (`error`): the scan was partial. The CLI reports rule timeouts and out-of-memory at level `warn`. |
 | No findings, any entry in `paths.skipped` | no verdict (`error`): the scan was partial. Semgrep skips a target over its default size limit (about 1 MB), and the text can reach about 1.1 MiB. |
-| HTTP status other than 200, redirect, no `results` key, not JSON | no verdict (`error`) |
+| HTTP status other than 200, redirect, no `results` key, not JSON, or text other than dots and white space before the JSON | no verdict (`error`) |
 | Response over `--semgrep-max-response` | no verdict (`error`) |
 
 The scanner reads only `check_id`, `start.offset` and `end.offset`. It does not read `extra.lines` or any other field that can

@@ -175,6 +175,15 @@ func TestHTTPEngineVerdicts(t *testing.T) {
 		{name: "garbage", handler: func(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, "<html>not json</html>")
 		}, err: errEngineGarbage},
+		{name: "text before the JSON", handler: func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `x{"results":[]}`)
+		}, err: errEngineGarbage},
+		{name: "text after the progress line", handler: func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, ".\nwarning: something\n{\"results\":[]}")
+		}, err: errEngineGarbage},
+		{name: "dots and blank lines before the JSON", handler: func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, "..\r\n\n .\n{\"results\":[]}")
+		}},
 		{name: "broken json", handler: func(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, `.\n{"results":[{"check_id":`)
 		}, err: errEngineGarbage},
