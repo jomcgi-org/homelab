@@ -3,10 +3,10 @@
 The egress scanner decides whether an actor's outbound HTTP request carries a
 credential. It is an Envoy External Authorization v3 gRPC server in `ate-system`
 that the egress gateway calls before it forwards a request. It matches Gitleaks
-rules in process. A second scan tier (`semgrep.go`, `staged off`) posts the
+rules in process. A second scan tier (`semgrep.go`, on in observe mode since the wiring) posts the
 scanned text to one HTTP endpoint and merges the engine verdict. This note
 designs that endpoint: a warm pool of single-use gVisor children that run the
-Semgrep Pro Secrets engine. Nothing in the engine path is enabled.
+Semgrep Pro Secrets engine. The path runs in observe mode (Decided 7).
 
 ```mermaid
 flowchart LR
@@ -26,7 +26,7 @@ flowchart LR
 | Component | Role | Code | Pin | Untrusted input | Credentials held |
 | --- | --- | --- | --- | --- | --- |
 | egress-scan | Gitleaks verdict, plus the engine tier when on. Gitleaks and the engine run at the same time | `main.go`, `scan.go`, `semgrep.go` | chart `0.4.32`, image by digest | Request bytes from actors, through the gateway | None. `automountServiceAccountToken` is false |
-| engine-gate | StatefulSet, built and staged off. Keeps a pool of waiting children, sends one body to one child, relays the engine reply | `gate/` ([README](gate/README.md)) | image `ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate`, pinned by CI when wired | Text from egress-scan, which holds actor bytes | ate API token (editor of one atespace), router client certificate |
+| engine-gate | StatefulSet, one replica. Keeps a pool of waiting children, sends one body to one child, relays the engine reply | `gate/` ([README](gate/README.md)) | image `ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate`, pinned by CI when wired | Text from egress-scan, which holds actor bytes | ate API token (editor of one atespace), router client certificate |
 | atenet-router | Routes a request to an actor by `ate-target-actor`. Resumes a suspended actor | `../resources/upstream/substrate/atenet-router.yaml` | Substrate chart `1.0.1` | Any client with an allowed SPIFFE ID | Pod identity certificate for atunnel |
 | Pool worker | Staged off. Holds the seed and forks the children | `../gvisor-fork/kvm-pool.yaml` | fork build `8cf248b96e08`, gVisor `0250f9acf` | None: only the router reaches it | KVM device, capabilities for forkd |
 | Engine image | Designed. Semgrep Pro Secrets engine, rules and a small server | none yet | Semgrep `1.186.0` | Request text, after the child's seccomp filter is on | A token file, real or placeholder (see "Pro engine image") |
@@ -507,6 +507,7 @@ them yet.
 | 4 | Token: a placeholder in the image, the real dedicated token only in the build environment secret. Joe handles the licence terms himself | Joe, 2026-11-23 |
 | 5 | The `engine-pro` package is private | Joe, 2026-11-23 |
 | 6 | The router grant PR (the `engine-gate` SPIFFE ID in `atenetRouter.ingressAllowedSPIFFEIDs`), the X8 waiver for gVisor-only use, and the grants: the atespace `egress-scan-engine`, the editor binding for `system:serviceaccount:ate-system:engine-gate` and the template `engine`. This supersedes "after the X gates" in rows 1 and 2: the gates X1 to X7 and X9 still run at step 9 of the fork README as a safety check, and no longer gate the merge of these PRs. The PR that wires the provisioning Job runs it when it merges (the Job is not suspended), so Joe merges it after the pool restart. The X gates do not hold it back | Joe, 2026-11-23, in session |
+| 7 | Skip the X gates (X1 to X7 and X9) for now and wire the scanner now: the tier runs in observe mode for 7 days, then one PR enforces. The X gates run during the observe window, and a failure turns the tier off | Joe, 2026-11-23, in session |
 
 Still open: the engine body limit and the Hindsight route timeout. The enforce
 PR sets them from observe data. The v1 values are 32 KiB of raw body and 310 ms.
@@ -518,8 +519,8 @@ closes.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
-| Pool of waiting children for the engine path | HOME-TBD | built in `gate/`, staged off |
-| `engine-gate` StatefulSet | HOME-TBD | built in `gate/`, staged off (`replicas: 0`, unwired) |
+| Pool of waiting children for the engine path | HOME-TBD | built in `gate/`, wired with the gate |
+| `engine-gate` StatefulSet | HOME-TBD | wired, one replica, called by the scanner in observe mode (`gate/README.md`, "Enable steps") |
 | Pro engine image, private package | HOME-TBD | `designed` |
 | The private `engine-pro` workflow | HOME-TBD | `designed` |
 | Latency Jobs `gvisor-fork-latency-1` and `-data-1` | HOME-TBD | `staged off`, suspended and unwired |
