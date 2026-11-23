@@ -1,0 +1,49 @@
+# The External Metrics API for worker pool autoscaling: Prometheus Adapter
+# serves factory_worker_pool_workers_wanted, which the HorizontalPodAutoscaler
+# of a WorkerPool reads to scale it to and from zero. No HPA uses it yet; the
+# factory chart's `autoscaling.enabled` (default off) wires one per pool.
+# The values layer on the chart in values.yaml beside this file, plus this
+# namespace's network policy.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus-adapter
+  namespace: argocd
+  annotations:
+    # After Prometheus (the adapter reads it) and the network policies.
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: prometheus-adapter
+      targetRevision: 5.4.2
+      helm:
+        releaseName: prometheus-adapter
+        valueFiles:
+          - $values/projects/platform-factory/prometheus-adapter/values.yaml
+        ignoreMissingValueFiles: false
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      path: projects/platform-factory/prometheus-adapter/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: prometheus-adapter
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

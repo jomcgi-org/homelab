@@ -1,0 +1,49 @@
+# Prometheus Adapter for the factory cluster (application.yaml). It serves only
+# the External Metrics API: no resource or custom metrics (metrics-server owns
+# metrics.k8s.io), so the chart's default rules stay off.
+#
+# One external metric, factory_worker_pool_workers_wanted{pool_namespace,pool}:
+# the workers a WorkerPool needs. The series come from two places and add up
+# (ARCHITECTURE.md, "Worker pool autoscaling"):
+#   factory_worker_pool_demand{source="pending"}  the connector's unsent sends
+#   factory_worker_pool_demand{source="actors"}   the reaper's workers that host an actor
+# Spare workers (factory_worker_pool_spare, the reaper's) join only while the
+# pool has demand, so an idle pool asks for 0. A missing series, from a reaper
+# that stopped or a failed read, returns no value: the HPA then holds the
+# replica count (ScalingActive=False, FailedGetExternalMetric).
+#
+# namespaced: false because the series name the pool in labels, not in a
+# Namespace: the HPA lives in the pool's namespace, the series in factory's.
+prometheus:
+  url: http://prometheus.prometheus.svc
+  port: 9090
+
+replicas: 1
+logLevel: 2
+
+# The adapter re-lists series names each minute. It does not cache values: the
+# HPA's read (every 15 s) is a live query.
+metricsRelistInterval: 1m
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 48Mi
+  limits:
+    memory: 128Mi
+
+rules:
+  default: false
+  external:
+    - seriesQuery: '{__name__="factory_worker_pool_demand",pool!=""}'
+      name:
+        matches: "^factory_worker_pool_demand$"
+        as: "factory_worker_pool_workers_wanted"
+      resources:
+        namespaced: false
+      # demand + spare * (demand > 0), per pool. `> bool 0` keeps the series
+      # at 0 instead of dropping it, so an idle pool reads 0, not "no data".
+      metricsQuery: |-
+        sum by (pool_namespace, pool) (factory_worker_pool_demand{<<.LabelMatchers>>})
+        + sum by (pool_namespace, pool) (factory_worker_pool_spare{<<.LabelMatchers>>})
+          * (sum by (pool_namespace, pool) (factory_worker_pool_demand{<<.LabelMatchers>>}) > bool 0)

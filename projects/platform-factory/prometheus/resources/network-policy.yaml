@@ -36,6 +36,9 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: capacity-forecast
             app.kubernetes.io/name: capacity-forecast
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: prometheus-adapter
+            app.kubernetes.io/name: prometheus-adapter
       toPorts:
         - ports:
             - port: "9090"

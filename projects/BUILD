@@ -100,6 +100,7 @@ exports_files(
         "platform-factory/cfgate/resources/network-policy.yaml",
         "platform-factory/cloudnative-pg/resources/network-policy.yaml",
         "platform-factory/kargo/resources/network-policy.yaml",
+        "platform-factory/prometheus-adapter/resources/network-policy.yaml",
     ],
     visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
 )
