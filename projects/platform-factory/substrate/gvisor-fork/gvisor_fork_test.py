@@ -1095,8 +1095,13 @@ if verb == ["get", "workers"]:
     seeds = [{"seedActor": {"atespace": t["ns"], "name": "seed-" + t["name"]},
               "seedActorUid": "u-seed", "templateUid": t["uid"], "workerEpoch": 1}
              for t in st["templates"].values()]
-    out({"workers": [{"workerPool": "gvisor-fork",
-                      "status": {"state": "WORKER_STATE_ACTIVE", "seeds": seeds}}]})
+    status = {"state": "WORKER_STATE_ACTIVE", "seeds": seeds}
+    if os.environ.get("FAKE_CAP_CPU"):
+        # protojson writes an int64 as a string.
+        status["capacity"] = {"cpuMillicores": os.environ["FAKE_CAP_CPU"],
+                              "memoryBytes": os.environ["FAKE_CAP_MEM"]}
+        status["allocated"] = {"cpuMillicores": "1000", "memoryBytes": "268435456"}
+    out({"workers": [{"workerPool": "gvisor-fork", "status": status}]})
 if verb == ["create", "atespace"]:
     st["atespaces"].append(a[2]); out({})
 if verb == ["create", "actor-template"]:
@@ -1114,6 +1119,7 @@ if verb == ["create", "actor"]:
     if not preview:
         fail("rpc error: code = FailedPrecondition desc = needs the ForkSeed preview gate")
     st["actors"][a[2]] = {"name": a[2], "state": "ACTOR_STATE_SUSPENDED"}
+    st["peak"] = max(st.get("peak", 0), len(st["actors"]))
     out({})
 if verb == ["resume", "actor"]:
     st["actors"][a[2]]["state"] = "ACTOR_STATE_RUNNING"; out({})
@@ -1294,3 +1300,53 @@ def test_latency_fails_on_a_router_error_and_leaves_nothing(tmp_path: Path) -> N
     assert "HTTP 503" in run.stdout
     assert "event=summary result=fail" in run.stdout
     assert not _left(state)
+
+
+def test_latency_child_booking_is_the_template_limits_plus_the_overhead() -> None:
+    latency = _load_latency()
+    cpu, memory = latency.child_booking(_LATENCY_TEMPLATE.read_text())
+    template = yaml.safe_load(_LATENCY_TEMPLATE.read_text())
+    assert cpu == template["resources"]["limits"]["cpuMillicores"]
+    assert memory == template["resources"]["limits"]["memoryBytes"] + (16 << 20)
+
+
+def test_latency_stops_early_when_the_pool_cannot_book_the_burst(
+    tmp_path: Path,
+) -> None:
+    # 2 CPU is the staged pool: the seed (1000m is allocated) and one child.
+    run, state, router = _latency(
+        tmp_path, MODE="control", FAKE_CAP_CPU="2000", FAKE_CAP_MEM=str(1280 << 20)
+    )
+    assert run.returncode == 1
+    assert "capacity: 5 children book 5000m CPU" in run.stdout
+    assert "event=capacity children=5" in run.stdout
+    assert "event=summary result=fail" in run.stdout
+    # It stopped before any phase created an actor, and cleaned up.
+    assert not [c for c in state["calls"] if c.startswith("preview create actor ")]
+    assert not _left(state)
+
+
+def test_latency_runs_when_the_pool_books_the_burst_and_keeps_a_batch_small(
+    tmp_path: Path,
+) -> None:
+    # Seed 1000m allocated, 9 CPU in all: 8 free covers 3 children of headroom.
+    run, state, router = _latency(
+        tmp_path,
+        MODE="all",
+        CONCURRENCY="2",
+        POOL_BATCH="2",
+        FAKE_CAP_CPU="9000",
+        FAKE_CAP_MEM=str(2048 << 20),
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "event=capacity children=3" in run.stdout
+    # No phase held more actors than the batch or the burst.
+    assert state["peak"] <= 2
+
+
+def test_latency_skips_the_capacity_check_when_the_worker_reports_none(
+    tmp_path: Path,
+) -> None:
+    run, state, _ = _latency(tmp_path, MODE="control")
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "event=capacity result=unknown" in run.stdout

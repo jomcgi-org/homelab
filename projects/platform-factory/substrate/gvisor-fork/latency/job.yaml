@@ -14,6 +14,17 @@
 # delete this directory's files and their kustomization entries after reading
 # the log; ArgoCD then prunes the Jobs.
 #
+# Capacity: the pool books each child at the template's CPU and memory limits
+# (1000m and 144 MiB with the fork overhead), and the seed books 1000m and
+# 256 MiB. The staged pool (kvm-pool.yaml: 2 CPU, 1280Mi) holds the seed and one
+# child. The defaults here (K up to 4, batches of 4, one child of headroom) need
+# 5 children, so resize the pool first: the egress scanner design sets 9 CPU.
+# latency.py stops with a capacity error otherwise.
+#
+# A worker pins the atespace of its first seed for the life of the process.
+# Restart the pool pod after the conformance Job (atespace fork-conformance) and
+# before these Jobs (atespace fork-latency).
+#
 # Both run as ate-system/ate-client, which the ate API already authorizes
 # (ateApi.authorization.bootstrapOwners in ../../values/substrate.yaml), so
 # they grant nobody anything. The data Job also needs one new grant that this
@@ -74,7 +85,9 @@ spec:
             - name: SEQUENTIAL
               value: "20"
             - name: CONCURRENCY
-              value: "4,16"
+              value: "2,4"
+            - name: POOL_BATCH
+              value: "4"
           resources:
             requests:
               cpu: 100m
@@ -169,7 +182,9 @@ spec:
             - name: SEQUENTIAL
               value: "20"
             - name: CONCURRENCY
-              value: "4,16"
+              value: "2,4"
+            - name: POOL_BATCH
+              value: "4"
           resources:
             requests:
               cpu: 100m
