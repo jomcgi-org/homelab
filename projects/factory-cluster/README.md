@@ -459,7 +459,7 @@ Secret key presence are checked after deployment.
 
 ## Agent Substrate
 
-To upgrade Substrate, rerun `projects/platform-factory/substrate/render-upstream.sh` and review the rendered diff. The script renders the release charts, then applies the fork overlay: the `ateapi`, `atecontroller` and `atelet` images and the WorkerPool CRD come from jomcgi-org/substrate at `b6b0ec3e2`. Verify the installation:
+To upgrade Substrate, rerun `projects/platform-factory/substrate/render-upstream.sh` and review the rendered diff. The script renders the release charts, then applies the fork overlay: the `ateapi`, `atecontroller` and `atelet` images and the WorkerPool CRD come from jomcgi-org/substrate at `b6b0ec3e2`. The overlay is not opt-in. Every run renders the fork images. To return to the release, revert the change or edit the script. Verify the installation:
 
 ```bash
 export KUBECONFIG=~/.kube/factory.yaml
