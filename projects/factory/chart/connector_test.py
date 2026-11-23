@@ -81,6 +81,9 @@ def _render(
     args = ["--values", str(_ENABLE_FILE)] if enable else []
     if trial:
         args += ["--values", str(_CHART_DIR / "files/coder-trial-values.yaml")]
+        # The deploy values let the coder pool scale to zero, which the chart
+        # refuses with a trial's non-control arms (autoscaling_test.py).
+        args += ["--set", "agents.codex.autoscaling.minReplicas=1"]
     for override in overrides or []:
         args += ["--set", override]
     return [d for d in yaml.safe_load_all(_helm(_CHART_DIR, args)) if d]
