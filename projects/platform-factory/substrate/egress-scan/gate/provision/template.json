@@ -1,0 +1,54 @@
+{
+  "metadata": {
+    "atespace": "egress-scan-engine",
+    "name": "engine"
+  },
+  "workerSelector": {
+    "matchLabels": {
+      "workload": "gvisor-fork"
+    }
+  },
+  "containers": [
+    {
+      "name": "engine",
+      "image": "ghcr.io/jomcgi-org/homelab/substrate-fork/engine-pro:1.186.0-0adcac4b1419@sha256:2235edd728528d00ae623be2200d9c29e44e8015300ad2368f7a303b4492f481",
+      "command": [
+        "/usr/local/bin/forksrv-net",
+        "--listen",
+        "0.0.0.0:80"
+      ],
+      "wakeupProbe": {
+        "httpGet": {
+          "path": "/healthz",
+          "port": 80
+        },
+        "timeoutSeconds": 45
+      }
+    }
+  ],
+  "resources": {
+    "limits": {
+      "cpuMillicores": 1000,
+      "memoryBytes": 134217728
+    }
+  },
+  "snapshotConfig": {
+    "goldenSnapshotConfig": {
+      "mode": "GOLDEN_SNAPSHOT_MODE_DISABLED"
+    }
+  },
+  "forkConfig": {
+    "mode": "FORK_MODE_SEED_AND_FORK",
+    "seedResources": {
+      "limits": {
+        "cpuMillicores": 1000,
+        "memoryBytes": 536870912
+      }
+    },
+    "singleUse": true,
+    "maxLifetimeSeconds": 900,
+    "pidsLimit": 256,
+    "logBytesLimit": 1048576,
+    "egress": "FORK_EGRESS_NONE"
+  }
+}

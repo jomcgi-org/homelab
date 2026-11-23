@@ -11,6 +11,7 @@ py_test(
     data = glob([
         "*.yaml",
         "provision.py",
+        "template.json",
     ]) + [
         "@multitool//tools/kustomize",
     ],

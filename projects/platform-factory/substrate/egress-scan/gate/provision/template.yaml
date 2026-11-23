@@ -1,3 +1,6 @@
+# template.json is this template as JSON, the copy provision.py compares a stored
+# template to (the container cannot parse YAML). Edit both: a test fails if they
+# differ.
 # ActorTemplate (protojson ateapi.ActorTemplate) of the egress scanner's engine:
 # the private Semgrep Pro Secrets engine (engine-pro, all Secrets rules baked in
 # the image). engine-gate forks one child of it for each request

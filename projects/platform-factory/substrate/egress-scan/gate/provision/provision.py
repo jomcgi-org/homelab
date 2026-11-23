@@ -45,14 +45,18 @@ ATE_BIN = Path(os.environ.get("ATE_BIN", "/cli/ko-app/kubectl-ate"))
 ENDPOINT = os.environ.get("ATE_ENDPOINT", "api.ate-system.svc:443")
 TOKEN_FILE = os.environ.get("ATE_TOKEN_FILE", "/var/run/ate/token")
 TEMPLATE_FILE = Path(os.environ.get("TEMPLATE_FILE", "/config/template.yaml"))
-ATESPACE = os.environ.get("ATESPACE", "egress-scan-engine")
-TEMPLATE = os.environ.get("TEMPLATE", "engine")
+TEMPLATE_JSON_FILE = Path(os.environ.get("TEMPLATE_JSON_FILE", "/config/template.json"))
+# Fixed in code, never read from the environment: the Job names the objects it
+# creates and the principal that it makes an editor, so a stray variable must
+# not move them. engine-gate takes the same names by flag (../README.md).
+ATESPACE = "egress-scan-engine"
+# The template name comes from template.yaml (apply sets it); "engine" is the
+# name of the one that engine-gate uses.
+TEMPLATE = "engine"
 POOL = os.environ.get("POOL", "gvisor-fork")
-# The members of the editor binding. The API wants "user:<principal>". The
-# principal of a ServiceAccount token is system:serviceaccount:<ns>:<name>.
-EDITOR = os.environ.get(
-    "EDITOR_MEMBER", "user:system:serviceaccount:ate-system:engine-gate"
-)
+# The editor member. The API wants "user:<principal>". The principal of a
+# ServiceAccount token is system:serviceaccount:<ns>:<name>.
+EDITOR = "user:system:serviceaccount:ate-system:engine-gate"
 MODE = os.environ.get("MODE", "apply")
 WORKER_WAIT = float(os.environ.get("WORKER_WAIT_SECONDS", "900"))
 SEED_WAIT = float(os.environ.get("SEED_WAIT_SECONDS", "600"))
@@ -130,21 +134,37 @@ def get_json(*args: str) -> object:
 
 
 def wait_for(what: str, limit: float, ready, detail=None) -> float:
+    """Poll `ready` until it is true or `limit` seconds pass.
+
+    A call that fails inside `ready` (the API restarts, a call times out, the
+    answer is not JSON) is not an answer: the poll goes on, and the last error
+    is in the message if the limit passes. Only the limit ends a wait.
+    """
     start = time.monotonic()
     next_note = start + 60
+    last_error = ""
     while True:
-        if ready():
-            return time.monotonic() - start
+        try:
+            if ready():
+                return time.monotonic() - start
+        except Failed as err:
+            last_error = str(err)
         now = time.monotonic()
         if now - start > limit:
-            raise Failed(f"{what}: not ready after {limit:.0f}s")
+            tail = f" (last error: {last_error})" if last_error else ""
+            raise Failed(f"{what}: not ready after {limit:.0f}s{tail}")
         if now >= next_note:
             next_note = now + 60
+            try:
+                seen = repr(detail() if detail else "")
+            except Failed as err:
+                seen = repr(f"unreadable: {err}")
             log(
                 event="waiting",
                 what=repr(what),
                 elapsed=f"{now - start:.0f}",
-                seen=repr(detail() if detail else ""),
+                seen=seen,
+                last_error=repr(last_error),
             )
         time.sleep(POLL)
 
@@ -167,7 +187,7 @@ def template_checks(text: str) -> list[str]:
     problems = []
     if not template_is_pinned(text):
         problems.append("the image has no real sha256 digest")
-    if f"atespace: {ATESPACE}" not in text:
+    if not re.search(rf"(?m)^  atespace: {re.escape(ATESPACE)}$", text):
         problems.append(f"metadata.atespace is not {ATESPACE}")
     if not re.search(rf"(?m)^  name: {re.escape(TEMPLATE)}$", text):
         problems.append(f"metadata.name is not {TEMPLATE}")
@@ -188,6 +208,23 @@ def template_checks(text: str) -> list[str]:
         problems.append(
             "the template names an env (the placeholder token is in the image)"
         )
+    return problems
+
+
+def template_json_problems(text: str, desired: dict) -> list[str]:
+    """template.json (the compare copy) must agree with template.yaml (the
+    create copy) on what the container cannot parse YAML to check: the image,
+    the atespace and the name. provision_test.py checks that the two files are
+    equal."""
+    problems = []
+    images = {c.get("image", "") for c in desired.get("containers") or []}
+    if image_digests(" ".join(images)) != image_digests(text):
+        problems.append("template.json and template.yaml name different images")
+    meta = desired.get("metadata") or {}
+    if meta.get("atespace") != ATESPACE:
+        problems.append("template.json metadata.atespace is not the atespace")
+    if not re.search(rf"(?m)^  name: {re.escape(str(meta.get('name')))}$", text):
+        problems.append("template.json and template.yaml name different templates")
     return problems
 
 
@@ -221,11 +258,38 @@ def policy_with_editor(current: object, member: str) -> tuple[dict, bool]:
     return manifest, changed
 
 
-def template_matches(existing: object, text: str) -> bool:
-    """The stored template has the image digest of the wanted one."""
-    return image_digests(json.dumps(existing)) == image_digests(text) and bool(
-        image_digests(text)
-    )
+def template_diff(existing: object, desired: object, path: str = "") -> list[str]:
+    """Paths where the stored template differs from the wanted one.
+
+    The stored template has more than the wanted one (uid, version, times,
+    status, defaults the API fills in), so every value of `desired` must be in
+    `existing` at the same path, and nothing else is compared. A number and its
+    decimal string are equal (protojson prints an int64 as a string). A list is
+    compared item by item and must have the same length.
+    """
+    here = path or "."
+    if isinstance(desired, dict):
+        if not isinstance(existing, dict):
+            return [here]
+        out: list[str] = []
+        for key, want in desired.items():
+            if key not in existing:
+                out.append(f"{path}.{key}")
+            else:
+                out += template_diff(existing[key], want, f"{path}.{key}")
+        return out
+    if isinstance(desired, list):
+        if not isinstance(existing, list) or len(existing) != len(desired):
+            return [here]
+        out = []
+        for i, (have, want) in enumerate(zip(existing, desired)):
+            out += template_diff(have, want, f"{path}[{i}]")
+        return out
+    return [] if str(existing) == str(desired) else [here]
+
+
+def template_matches(existing: object, desired: object) -> bool:
+    return not template_diff(existing, desired)
 
 
 # --- the cluster steps ------------------------------------------------------
@@ -271,7 +335,15 @@ def seeded(uid: str) -> bool:
     return False
 
 
-def apply(workdir: Path, text: str) -> None:
+def seed_state() -> list[str]:
+    """For the progress line: each pool worker's state and its seeds here."""
+    return [
+        f"{first(w, 'state')} seeds={len([x for x in first(w, 'seeds') or [] if (x.get('seedActor') or {}).get('atespace') == ATESPACE])}"
+        for w in pool_workers()
+    ]
+
+
+def apply(workdir: Path, text: str, desired: object) -> None:
     wait_for(
         f"an ACTIVE {POOL} worker",
         WORKER_WAIT,
@@ -301,24 +373,29 @@ def apply(workdir: Path, text: str) -> None:
     if existing is None:
         ate_ok("create", "actor-template", "-f", str(TEMPLATE_FILE))
         log(step="template", result="created", template=TEMPLATE)
-    elif template_matches(existing, text):
-        log(step="template", result="exists", template=TEMPLATE)
     else:
-        raise Failed(
-            f"template {TEMPLATE} exists with another image: replace it blue/green "
-            "(a new template name and the gate's --template flag), never in place"
-        )
+        differs = template_diff(existing, desired)
+        if differs:
+            raise Failed(
+                f"template {TEMPLATE} exists and differs at {', '.join(differs[:8])}: "
+                "replace it blue/green (a new template name and the gate's "
+                "--template flag), never in place"
+            )
+        log(step="template", result="exists", template=TEMPLATE)
     uid = str(first(first(template_json() or {}, "metadata") or {}, "uid") or "")
     if not uid:
         raise Failed(f"actor-template {TEMPLATE}: no metadata.uid")
-    seconds = wait_for("a ready seed", SEED_WAIT, lambda: seeded(uid))
+    # The seed boots the engine and compiles its rules (about 25 s on the
+    # first run) after the node pulled the private image. The wait covers both.
+    seconds = wait_for("a ready seed", SEED_WAIT, lambda: seeded(uid), seed_state)
     log(step="seed", result="ready", seconds=f"{seconds:.1f}", template_uid=uid)
 
 
 def actors() -> list[dict]:
     done = ate("get", "actors", "-a", ATESPACE, "-o", "json")
     if done.returncode != 0:
-        return []
+        # An answer that is not a list says nothing about the actors.
+        raise Failed(f"get actors: exit {done.returncode}")
     return [
         a
         for a in walk(json.loads(done.stdout or "{}"))
@@ -332,24 +409,36 @@ def role(actor: dict) -> str:
     return str((actor["status"].get("fork") or {}).get("role") or "")
 
 
+_NOT_FOUND = re.compile(r"not ?found|does not exist|no such", re.IGNORECASE)
+
+
+def delete(failures: list[str], *args: str) -> None:
+    """A delete that succeeds, or finds the object already gone. Any other
+    failure is recorded, and the teardown fails at its end: a half removed
+    atespace must not look like a clean one."""
+    done = ate("delete", *args)
+    if done.returncode == 0:
+        return
+    text = (done.stderr or done.stdout).strip()
+    if _NOT_FOUND.search(text):
+        return
+    log(event="delete_failed", args=repr(" ".join(args)), code=done.returncode, output=repr(text[-300:]))
+    failures.append(" ".join(args))
+
+
 def teardown() -> None:
     if not atespace_exists():
         log(step="teardown", result="atespace absent", atespace=ATESPACE)
         return
+    failures: list[str] = []
     for actor in actors():
         if role(actor) != "FORK_ROLE_SEED":
-            ate("delete", "actor", str(actor["metadata"]["name"]), "-a", ATESPACE)
+            delete(failures, "actor", str(actor["metadata"]["name"]), "-a", ATESPACE)
     done = ate("get", "actor-template", "-a", ATESPACE, "-o", "json")
     if done.returncode == 0:
         for t in walk(json.loads(done.stdout or "{}")):
             if isinstance(t.get("metadata"), dict) and "containers" in t:
-                ate(
-                    "delete",
-                    "actor-template",
-                    str(t["metadata"]["name"]),
-                    "-a",
-                    ATESPACE,
-                )
+                delete(failures, "actor-template", str(t["metadata"]["name"]), "-a", ATESPACE)
     try:
         wait_for(
             "the seeds removed",
@@ -357,20 +446,21 @@ def teardown() -> None:
             lambda: not [a for a in actors() if role(a) == "FORK_ROLE_SEED"],
         )
     except Failed as err:
+        failures.append(f"the seeds removed ({err})")
         log(event="teardown_wait", message=repr(str(err)))
-    log(
-        step="access_policy",
-        result="deleted",
-        code=ate("delete", "access-policy", "-a", ATESPACE).returncode,
-    )
-    log(
-        step="atespace",
-        result="deleted",
-        code=ate("delete", "atespace", ATESPACE).returncode,
-    )
+    # The API refuses to delete the policy or the atespace while an actor or a
+    # template is left, so a failure above ends here before them.
+    if failures:
+        raise Failed("teardown left objects: " + "; ".join(failures))
+    delete(failures, "access-policy", "-a", ATESPACE)
+    delete(failures, "atespace", ATESPACE)
+    if failures:
+        raise Failed("teardown left objects: " + "; ".join(failures))
+    log(step="teardown", result="removed", atespace=ATESPACE)
 
 
 def main() -> int:
+    global TEMPLATE
     log(
         event="start",
         mode=MODE,
@@ -388,13 +478,15 @@ def main() -> int:
         if MODE == "apply":
             # Before any API contact: a template that cannot work makes no call.
             text = TEMPLATE_FILE.read_text()
-            problems = template_checks(text)
+            desired = json.loads(TEMPLATE_JSON_FILE.read_text())
+            TEMPLATE = str(desired["metadata"]["name"])
+            problems = template_checks(text) + template_json_problems(text, desired)
             if problems:
                 for p in problems:
                     log(event="error", message=repr(p))
                 log(event="summary", mode=MODE, result="fail")
                 return 1
-            apply(Path(os.environ.get("WORK_DIR", "/work")), text)
+            apply(Path(os.environ.get("WORK_DIR", "/work")), text, desired)
         else:
             teardown()
         status = "ok"
