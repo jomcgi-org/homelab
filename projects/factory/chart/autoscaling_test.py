@@ -119,30 +119,22 @@ def test_enabled_pool_gets_an_hpa_that_scales_the_workerpool_to_zero():
     assert _reaper_pools(docs) == f"{ns}/{name}=2"
 
 
-def test_both_pools_and_overrides():
+def test_overrides():
     docs = _render(
         [
             "agents.codex.autoscaling.enabled=true",
             "agents.codex.autoscaling.minReplicas=1",
             "agents.codex.autoscaling.spare=0",
             "agents.codex.autoscaling.scaleDown.stabilizationSeconds=600",
-            "agents.reviewer.autoscaling.enabled=true",
-            "agents.reviewer.autoscaling.maxReplicas=6",
         ]
     )
-    by_name = {h["metadata"]["name"]: h["spec"] for h in _hpas(docs)}
-    assert set(by_name) == {_CODER[1], _REVIEW[1]}
-    coder = by_name[_CODER[1]]
+    (hpa,) = _hpas(docs)
+    coder = hpa["spec"]
     assert coder["minReplicas"] == 1
     pool = _one(docs, "WorkerPool", *_CODER)
     assert coder["maxReplicas"] == pool["spec"]["replicas"]
     assert coder["behavior"]["scaleDown"]["stabilizationWindowSeconds"] == 600
-    assert by_name[_REVIEW[1]]["maxReplicas"] == 6
-    # The reviewer's floor is 1 by default: nothing wakes it from zero.
-    assert by_name[_REVIEW[1]]["minReplicas"] == 1
-    assert _reaper_pools(docs) == (
-        f"{_CODER[0]}/{_CODER[1]}=0,{_REVIEW[0]}/{_REVIEW[1]}=2"
-    )
+    assert _reaper_pools(docs) == f"{_CODER[0]}/{_CODER[1]}=0"
 
 
 def _reaper_verbs(docs, ns):
@@ -161,18 +153,20 @@ def test_reaper_may_patch_pods_only_where_a_pool_autoscales():
     assert _reaper_verbs(on, _REVIEW[0]) == ["get", "list", "watch", "delete"]
 
 
-def test_the_reviewer_pool_cannot_scale_to_zero():
+def test_the_reviewer_pool_cannot_be_enabled():
     # The reviewer sends to kagent itself, not through the connector, so no
-    # demand source covers it and nothing wakes the pool from zero.
-    with pytest.raises(RuntimeError, match="reviewer pool needs minReplicas 1"):
-        _render(
-            [
-                "agents.reviewer.autoscaling.enabled=true",
-                "agents.reviewer.autoscaling.minReplicas=0",
-            ]
-        )
-    # Off, the value does not matter.
-    _render(["agents.reviewer.autoscaling.minReplicas=0"])
+    # pending demand series exists for its pool and the metric never has a
+    # value. Refuse it, at any minReplicas.
+    for min_replicas in ("0", "1"):
+        with pytest.raises(RuntimeError, match="reviewer pool cannot autoscale"):
+            _render(
+                [
+                    "agents.reviewer.autoscaling.enabled=true",
+                    f"agents.reviewer.autoscaling.minReplicas={min_replicas}",
+                ]
+            )
+    # Off, nothing changes.
+    assert _hpas(_render(["agents.reviewer.autoscaling.minReplicas=0"])) == []
 
 
 def test_scale_down_period_stays_within_the_hpa_maximum():

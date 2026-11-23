@@ -13,11 +13,11 @@ serves (projects/platform-factory/prometheus-adapter).
 {{- $as := $a.autoscaling | default dict -}}
 {{- $spare := 2 -}}
 {{- if hasKey $as "spare" }}{{ $spare = int $as.spare }}{{ end -}}
-{{- /* The reviewer's sends bypass the connector, so nothing wakes it from zero: its floor is 1. */ -}}
-{{- $min := ternary 1 0 (eq (.key | default "") "reviewer") -}}
+{{- $min := 0 -}}
 {{- if hasKey $as "minReplicas" }}{{ $min = int $as.minReplicas }}{{ end -}}
-{{- if and (eq (toString $as.enabled) "true") (eq (.key | default "") "reviewer") (lt $min 1) -}}
-{{- fail "autoscaling: the reviewer pool needs minReplicas 1 or more: the reviewer sends to kagent itself, so nothing wakes the pool from zero" -}}
+{{- /* The reviewer is not a connector binding, so no pending series exists for its pool and the all-sources metric never has a value. */ -}}
+{{- if and (eq (toString $as.enabled) "true") (eq (.key | default "") "reviewer") -}}
+{{- fail "autoscaling: the reviewer pool cannot autoscale yet: it sends to kagent itself, not through the connector, so no pending demand series exists for it and the metric never has a value" -}}
 {{- end -}}
 {{- $max := add (int $a.concurrency) $spare -}}
 {{- if $as.maxReplicas }}{{ $max = int $as.maxReplicas }}{{ end -}}
