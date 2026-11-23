@@ -134,6 +134,21 @@ A breaker stops calls to an engine that keeps failing. After
 `breaker.cooldown`, so each request does not wait for the full deadline. Then
 it lets one probe call through.
 
+### Capacity and sharing
+
+Each scanner pod allows `semgrep.concurrency` engine calls at the same time.
+A call holds its slot for at most the deadline. At the defaults, 8 in flight
+and 300 ms, one pod handles at most 8 / 0.3 s = about 27 checks per second when
+every call takes the full deadline. A faster engine raises this. Above the
+limit, the tier sheds: in deny mode the request gets 503, and in allow mode it
+passes without the second tier. Each pod has its own limit and its own breaker.
+
+The limit and the breaker are shared by all actors. One actor with slow or
+failing calls can use the slots, or open the breaker for 5 s, for every actor
+behind that pod. This is inherent to a fail-closed engine that all actors
+share. Fairness for each actor (a share of the slots, or a breaker for each
+actor) is a possible follow-up.
+
 ### Deadline and gateway timeout
 
 The tier has its own deadline. The default is 300 ms. A deployment with more
