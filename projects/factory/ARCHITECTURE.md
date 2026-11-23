@@ -32,7 +32,7 @@ flowchart LR
 | itsaplan-web | Renders the native issue and Agent runs UI | `itsaplan-web/` | Community 1.10.0 with the factory patch | Authorized issue and run responses | Browser session cookie |
 | connector | Claims runs and reconciles delivery | `connector/` | Built from this repo | Issue text, agent output and PR state | itsaplan agent keys, projected tokens and short-lived author App token |
 | kagent | Owns agents and sessions | `chart/Chart.yaml`, `deploy/values.yaml` | Charts 1.0.1, controller fork e3d14ee3dd62 | Tasks and session messages | Controller ServiceAccount |
-| Agent Substrate | Isolates actors and injects credentials at egress | `../platform-factory/substrate/` | Fork charts 1.0.1, source `7ce6f439`; `ateapi`, `atecontroller`, `atelet` and the WorkerPool CRD from the fork at `b6b0ec3e2` | Workspace traffic | Actor identity and credentials scoped by policy |
+| Agent Substrate | Isolates actors and injects credentials at egress | `../platform-factory/substrate/` | Fork charts 1.0.1, source `7ce6f439`; `ateapi`, `atecontroller`, `atelet` and the WorkerPool CRD from the fork at `1e7a877d0` | Workspace traffic | Actor identity and credentials scoped by policy |
 | browser-comparison | Compares CLI and MCP evidence on a loopback fixture | `browser-comparison/` | See package-lock.json | Fixture HTML | None |
 | toolchain | Installs local checks for the coding binding | `toolchain/` | Built from this repo | Tool downloads | None |
 | push-guard | Inspects blobs before forwarding factory work branches | `push-guard/` | Staged receiver hook | Private fingerprint index and Git objects | Upstream Git write credential |

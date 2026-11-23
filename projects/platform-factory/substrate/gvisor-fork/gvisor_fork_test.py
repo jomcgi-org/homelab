@@ -473,7 +473,7 @@ _TEMPLATE = _HERE / "conformance" / "template.yaml"
 
 
 def _conformance_job() -> dict:
-    return _one(_docs(), "Job", "gvisor-fork-conformance-2")
+    return _one(_docs(), "Job", "gvisor-fork-conformance-3")
 
 
 def test_conformance_job_is_suspended_and_runs_as_ate_client() -> None:
@@ -851,11 +851,11 @@ def test_staged_images_name_the_published_fork_digests() -> None:
         + "engine-oss:1.186.0-946d07e5597c@sha256:"
         + "dbffb4d73f072b2a71a05356a657a595bd147357bc85a538139f2634be47b238",
         "cli": _FORK_IMAGES
-        + "kubectl-ate:fork-b6b0ec3e217c@sha256:"
-        + "ea22fcf01640627601669506be390d614122f131fadd39de33e1e6da1a7e614f",
+        + "kubectl-ate:fork-1e7a877d0ca3@sha256:"
+        + "ce43eb79787738134a3de680fb660da96eb4a9ad13e48a088bc899d0a654d4ed",
         "worker": _FORK_IMAGES
-        + "ateworker-gvisor:fork-b6b0ec3e217c@sha256:"
-        + "65f14b6900ee64c6dae2e03a7063d9fb0384e1f62becca5a275421b891870e94",
+        + "ateworker-gvisor:fork-1e7a877d0ca3@sha256:"
+        + "f208bf5ae975a2360bfb42a8d38b2eb3fdaba537a2078332af5dcd545a17a7d1",
     }
 
 
@@ -930,7 +930,7 @@ def test_latency_jobs_grant_nothing_new() -> None:
 
 def test_latency_jobs_use_the_conformance_cli_by_digest() -> None:
     reference = {}
-    for name in [*_LATENCY_JOBS, "gvisor-fork-conformance-2"]:
+    for name in [*_LATENCY_JOBS, "gvisor-fork-conformance-3"]:
         pod = (_latency_job(name) if name in _LATENCY_JOBS else _conformance_job())[
             "spec"
         ]["template"]["spec"]

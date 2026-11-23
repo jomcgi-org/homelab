@@ -11,7 +11,8 @@
 # false. The enable steps are in projects/factory-cluster/README.md,
 # "gVisor sandbox fork".
 # A Job's pod template is immutable: to run again, change the run suffix in
-# the name. To remove the test, delete this file and its
+# the name. The suffix is 3 because the fork re-pin changed the kubectl-ate
+# image (-2 named the first fork build). To remove the test, delete this file and its
 # kustomization entries after reading the log; ArgoCD then prunes the Job.
 #
 # It runs as ate-system/ate-client, which the ate API already authorizes
@@ -24,7 +25,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: gvisor-fork-conformance-2
+  name: gvisor-fork-conformance-3
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: "2"
@@ -107,10 +108,10 @@ spec:
           configMap:
             name: gvisor-fork-conformance
         # The fork build of kubectl-ate: /cli/ko-app/kubectl-ate, published by
-        # substrate-fork-images.yml at fork commit b6b0ec3e217c.
+        # substrate-fork-images.yml at fork commit 1e7a877d0ca3.
         - name: cli
           image:
-            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-b6b0ec3e217c@sha256:ea22fcf01640627601669506be390d614122f131fadd39de33e1e6da1a7e614f
+            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-1e7a877d0ca3@sha256:ce43eb79787738134a3de680fb660da96eb4a9ad13e48a088bc899d0a654d4ed
             pullPolicy: IfNotPresent
         # The ate API's JWT provider accepts this audience (api-server-config.yaml).
         - name: ate-token
