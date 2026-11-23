@@ -12,7 +12,7 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: trips
-    targetRevision: 0.13.82
+    targetRevision: 0.14.68
     helm:
       releaseName: trips
   destination:
