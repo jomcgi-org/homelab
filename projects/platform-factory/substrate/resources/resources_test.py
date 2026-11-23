@@ -959,7 +959,7 @@ def test_engine_gate_is_staged_and_not_wired() -> None:
     # (../egress-scan/gate/README.md, "Enable steps").
     kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
     listed = kustomization["resources"] + kustomization.get("components", [])
-    assert not [r for r in listed if "engine-gate" in r or r.endswith("gate/staged")]
+    assert not [r for r in listed if "engine-gate" in r or "gate/staged" in r]
     # No object of the gate renders. The router ConfigMap names the gate's
     # SPIFFE ID since the router grant, so the check is on object names.
     names = {d["metadata"]["name"] for d in _docs()}
