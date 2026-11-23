@@ -3,16 +3,8 @@
   gap: 1.5rem;
   min-width: 0;
 }
-.blog h1 {
-  font-size: clamp(2rem, 5vw, 3.5rem);
-  line-height: 1.15;
-}
-.blog h2 {
-  font-size: 1.8rem;
-  margin-block: 1.5rem 1rem;
-}
+.blog h2,
 .blog h3 {
-  font-size: 1.3rem;
   margin-block: 1.5rem 1rem;
 }
 .blog h1,

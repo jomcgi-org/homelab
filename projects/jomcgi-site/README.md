@@ -444,7 +444,8 @@ remains pending until this revision is deployed.
 | --- | --- |
 | Ground | Warm paper (`--color-background-body`). A surface is white (`--color-background-surface`). |
 | Lines | No outline around a panel. A hairline separates rows. |
-| Type | Schibsted Grotesk, self-hosted. A page title is upper case at regular weight. |
+| Type | Schibsted Grotesk, self-hosted. Five steps, the same on a phone and a desktop: title (`h1`, 2rem to 3.25rem, upper case), section (`h2`, 1.5rem, upper case), heading (`h3`, 1.125rem, semibold), body (1rem / 1.6), small (0.875rem). A page sets no heading size of its own. |
+| Space | The page gutter is 1rem on a phone and 1.5rem above it. The title is the first thing under the nav. On a phone, secondary navigation becomes one row so it does not push the title down. |
 | Links | Ink, underlined in text. The accent tokens are ink. |
 | Nav | One row of ink links. A hairline separates the groups. |
 | Diagrams | Keep `--font-family-diagram`, the stack their layouts are measured with. |

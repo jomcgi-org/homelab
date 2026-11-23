@@ -147,9 +147,14 @@
     max-height: none;
   }
 
+  /* One scrolling row, so the title stays near the top of a phone. */
   .engineering-index ol {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    display: flex;
+    overflow-x: auto;
+  }
+
+  .engineering-index a {
+    white-space: nowrap;
   }
 }
 
