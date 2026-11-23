@@ -1,13 +1,15 @@
 # invariant: PLAT-6
 # The dedicated worker pool for fork slice 1: gVisor on the KVM platform, with
 # no workers (replicas 0). It stays unwired (see kustomization.yaml), and when
-# it is wired it still starts no pod until the enable step raises replicas.
+# it is wired it still starts no pod until step 6 of the enable steps raises
+# replicas (projects/factory-cluster/README.md, "gVisor sandbox fork").
 #
 # platform: kvm exists only in the fork's WorkerPool CRD (jomcgi-org/substrate
 # fork/seed-slice1), so this file cannot be applied before the CRD, the control
-# plane and atelet images come from the fork. ForkSeed (preview gate) stays off
-# in ../values/common.yaml until the isolation gates X1 to X8 pass in the
-# cluster.
+# plane and atelet images come from the fork (step 4). ForkSeed (preview gate)
+# stays off in ../values/common.yaml until step 7, after a worker has started.
+# The gates X1 to X9 run at step 9 with the gate on for this pool only, and
+# factory use of fork templates waits for step 10.
 #
 # What the fork's controller gives a worker of this pool (atecontroller
 # workerpool_apply.go, not set here):
@@ -85,8 +87,9 @@ metadata:
   labels:
     workload: gvisor-fork
 spec:
-  # Off. The enable step raises this to 1, after ForkSeed is on and the fork
-  # control plane runs. Setting it back to 0 is the rollback.
+  # Off. Step 6 of the enable steps raises this to 1, with the fork control
+  # plane running and ForkSeed still off. Setting it back to 0 is part of the
+  # rollback, after the fork templates are deleted.
   replicas: 0
   # The fork build of ateworker-gvisor from .github/workflows/substrate-fork-images.yml.
   # The digest is a placeholder until that workflow publishes the image; the
