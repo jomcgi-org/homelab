@@ -1,6 +1,6 @@
 # Rendered by render-upstream.sh from oci://ghcr.io/kagent-dev/substrate/helm/substrate:1.0.1
 # (sha256:336c12f7f265e1b6400529eb1ef69c8d0765872d810f18f97525c66d2ba90f86) templates/ate-controller.yaml. Do not edit.
-# Overlaid by render-upstream.sh from https://github.com/jomcgi-org/substrate 1e7a877d0ca30c48deee9957e543ea4eaa2cccd1 (fork overlay).
+# Overlaid by render-upstream.sh from https://github.com/jomcgi-org/substrate 8cf248b96e08fcf2402199804fb04deadab5348b (fork overlay).
 # The atecontroller image is the fork build.
 ---
 apiVersion: v1
@@ -78,7 +78,7 @@ spec:
           runAsNonRoot: true
           capabilities:
             drop: [ALL]
-        image: ghcr.io/jomcgi-org/homelab/substrate-fork/atecontroller:fork-1e7a877d0ca3@sha256:306cc8a469d801599e11fcf669b70498986d04c2c5adcffceb6483da4d024803
+        image: ghcr.io/jomcgi-org/homelab/substrate-fork/atecontroller:fork-8cf248b96e08@sha256:d8386836296bb7554a0dc12ba9415c154e17f933ecee37f70cb1fe715efcb55a
         resources:
           limits:
             cpu: "1"
