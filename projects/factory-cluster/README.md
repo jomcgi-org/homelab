@@ -720,7 +720,10 @@ flowchart LR
      They stay out of step 5. Two suspended Jobs would keep the Application in
      health Suspended. To run them, list `latency` in
      `gvisor-fork/kustomization.yaml` and set `suspend` to `false` in the same
-     change. `gvisor-fork-latency-data-1` also needs the `ate-client` SPIFFE ID
+     change. They book up to 5 children, so they need a larger pool than the
+     staged one (2 CPU holds the seed and one child). Restart the pool pod
+     before them: a worker pins the atespace of its first seed. The
+     `gvisor-fork-latency-data-1` Job also needs the `ate-client` SPIFFE ID
      in `atenet-router.ingressAllowedSPIFFEIDs`, which Joe decides. Read the log
      with `grep '^LATENCY '`.
 9. Run X1 to X7 and X9 inside the pod from node-1. Add a worker restart, a node
