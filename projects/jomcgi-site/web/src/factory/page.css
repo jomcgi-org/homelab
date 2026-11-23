@@ -1,6 +1,7 @@
 /* Factory pages. One system: warm paper, ink outlines, white panels, a flat
  * fill for each state, and upper-case display type. A coloured band marks
- * the measures. */
+ * the measures. Body text never sits on a state fill: the fills have no
+ * text contrast in dark mode. */
 @font-face {
   font-family: "Schibsted Grotesk";
   src: url("../../../../monolith/frontend/preview/fonts/SchibstedGrotesk.ttf")
@@ -138,7 +139,7 @@ body:has(.factory) {
   padding: 0.6rem 0.75rem;
   font-size: 0.875rem;
   white-space: pre-wrap;
-  background: var(--factory-sun);
+  background: var(--color-background-body);
   border: 2px solid var(--color-text-primary);
 }
 .factory .records .unavailable {
@@ -619,7 +620,8 @@ body:has(.factory) {
   display: none;
 }
 .factory .more-records > summary:hover {
-  background: var(--factory-sun);
+  background: var(--color-text-primary);
+  color: var(--color-background-body);
 }
 .factory .more-records[open] > summary {
   display: none;
@@ -713,7 +715,8 @@ body:has(.factory) {
   text-decoration: none;
 }
 .factory .turns a:hover {
-  background: var(--factory-sun);
+  background: var(--color-text-primary);
+  color: var(--color-background-body);
 }
 
 /* Transcript: the speaker in the margin, the words beside. */
