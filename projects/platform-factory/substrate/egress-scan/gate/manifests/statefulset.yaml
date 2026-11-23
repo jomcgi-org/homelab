@@ -3,9 +3,10 @@
 # atespace `egress-scan-engine`, and sends each scan request to one child.
 # Design: ../../ARCHITECTURE.md, "Engine path". Behaviour: ../README.md.
 #
-# Staged and OFF. This directory is not wired into any ArgoCD source, and the
-# StatefulSet has no replicas. The cluster grants, the atespace, the template
-# and the wiring steps are in ../README.md, "Enable steps".
+# Wired: ../../../resources lists this directory, and the StatefulSet runs one
+# replica. The grants, the atespace and the template come first (../provision),
+# and the rollout, the checks and the rollback are in ../README.md, "Enable
+# steps".
 #
 # Identity. This pod holds the only router identity and the only editor role in
 # its atespace. Its pod certificate has the SPIFFE ID
@@ -41,12 +42,11 @@ metadata:
   name: engine-gate
   namespace: ate-system
 spec:
-  # Off: the factory-style hold. Wiring sets this to 1. The gate runs one
-  # replica in v1: the pool books 8 children, and a second replica needs its
+  # One replica in v1: the pool books 8 children, and a second replica needs its
   # own pool (ARCHITECTURE.md, "Pool lifecycle"). A StatefulSet keeps the pod
   # name, and the children are named eg-<pod name>-<start epoch>-<n>, so a
   # restart finds and deletes its own leftovers.
-  replicas: 0
+  replicas: 1
   # The ClusterIP Service of this name. The pod needs no stable DNS name: its
   # name is stable (children carry it), and the scanner calls the Service.
   serviceName: engine-gate

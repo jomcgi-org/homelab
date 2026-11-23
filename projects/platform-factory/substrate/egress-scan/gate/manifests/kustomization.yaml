@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# engine-gate, wired by ../../../resources (egress-scan/deploy/application.yaml,
+# path projects/platform-factory/substrate/resources). manifests_test.py checks
+# what this directory renders, and ../../../resources/resources_test.py checks
+# the image pin and what the wired render holds. The rollout, the checks and the
+# rollback are in ../README.md, "Enable steps".
+resources:
+  - statefulset.yaml
+  - networkpolicy.yaml
+  - admission.yaml
+
+images:
+  - name: engine-gate
+    newName: ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate
+    # The digest of the image that main's CI published (apko, //projects/platform-factory/substrate/egress-scan/gate/image).
+    # resources_test.py fails when it differs from the Bazel image digest: the
+    # change that edits the gate's code or its image config updates this line in
+    # the same change, the same way as the credential plugin pin in
+    # resources/patches/atelet-image-credentials.yaml.
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000 # ratchet-allow: image-digest (kustomize has no build pin; resources_test keeps it equal to the Bazel image digest)
