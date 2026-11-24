@@ -319,9 +319,9 @@ dropped seed. The rollout uses three atespaces on one single-replica pool:
 restarts between them, after the templates of the previous atespace are deleted.
 The seed reconciler seeds every live fork template on a restarted worker, so a
 leftover template pins its atespace again. A Job that dies before its cleanup
-leaves its template. Delete it by hand before the restart. The teardown of 2026-11-24
-removed the engine atespace, and the worker pod keeps the pin of its process: restart
-the pool pod before the first seed of another atespace. One shared atespace is not an option: the conformance
+leaves its template. Delete it by hand before the restart. After the teardown of
+2026-11-24 removes the engine atespace, the worker pod keeps the pin of its process:
+restart the pool pod before the first seed of another atespace. One shared atespace is not an option: the conformance
 Job deletes its atespace, and test actors would share the engine's atespace
 and its editor grant.
 

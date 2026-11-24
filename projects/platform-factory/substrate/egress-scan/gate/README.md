@@ -510,9 +510,10 @@ at any time: an object that exists is left alone, an access policy without the
 editor member gets it added (the other bindings stay), and a template that
 differs in any value is an error, because a template is replaced blue/green.
 
-**Teardown.** It ran on 2026-11-24 (Joe deferred the Semgrep tier): the gate was
-stopped first (it deletes its children on SIGTERM), and `provision/kustomization.yaml`
-listed `provision/teardown-job.yaml` with `suspend: false`. To run it again, stop
+**Teardown.** Joe deferred the Semgrep tier on 2026-11-24, and the PR of that day
+lists `provision/teardown-job.yaml` with `suspend: false` in
+`provision/kustomization.yaml`, after the gate was stopped (it deletes its
+children on SIGTERM). The result of the run is in that PR. To run it again, stop
 the gate, then list the file in a PR (a suspended Job makes the Application
 report Suspended, so it is listed only when it runs). The Job
 (`MODE=teardown`) deletes what is left of the actors, then the templates (which

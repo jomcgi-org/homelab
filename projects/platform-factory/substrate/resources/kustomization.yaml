@@ -42,8 +42,9 @@ resources:
   # holds no seed, the conformance Job is suspended and no template sets
   # fork_config, so ForkSeed (on since step 7) starts no fork.
   - ../gvisor-fork
-  # The engine atespace, its access policy and the fork template (egress scanner
-  # engine path, egress-scan/gate/README.md "Enable steps"). One Job runs once.
+  # The teardown of the engine atespace, its access policy and the fork template
+  # (egress-scan/gate/README.md "Teardown"). One Job runs once, then a later PR
+  # removes this line.
   - ../egress-scan/gate/provision
   # engine-gate (egress-scan/gate/manifests) is not deployed: Joe deferred the
   # Semgrep tier on 2026-11-24 (egress-scan/ARCHITECTURE.md "Decided" 9). The
