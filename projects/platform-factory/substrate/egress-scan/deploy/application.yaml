@@ -26,8 +26,8 @@ spec:
       helm:
         releaseName: egress-scan
         # The second scan tier (the Semgrep engine) is off. Joe deferred the
-        # tier on 2026-11-24 (ARCHITECTURE.md "Decided" 9) and the engine-gate
-        # is not deployed. Gitleaks alone scans the Hindsight route and denies
+        # tier on 2026-11-24 (ARCHITECTURE.md "Decided" 9) and nothing
+        # calls the engine-gate. Gitleaks alone scans the Hindsight route and denies
         # on failure. The gateway requestTimeout is 80ms with the tier off
         # (resources/egress-scan/gateway-policy.yaml; resources_test.py couples
         # them). To turn the tier on again, see egress-scan/gate/README.md. Set

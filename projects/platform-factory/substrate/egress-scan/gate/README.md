@@ -483,7 +483,7 @@ To restart, delete the pod: `kubectl -n ate-system delete pod engine-gate-0` (th
 StatefulSet controller makes it again; the gate deletes its children on SIGTERM
 and the new pod cleans up what is left). To change the spec, change git.
 
-**Enforce mode (since 2026-11-24).** Joe skipped the 7-day observe window
+**Enforce mode (2026-11-24 only, tier off since).** Joe skipped the 7-day observe window
 (ARCHITECTURE.md "Decided" 8). The scanner denies a Hindsight request when the
 engine finds a credential, and also when the engine gives no verdict
 (`failureMode: deny`). So an outage of the engine path is an outage of Hindsight
