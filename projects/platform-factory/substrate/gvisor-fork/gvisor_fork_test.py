@@ -893,8 +893,8 @@ def test_gate_template_is_separate_from_the_production_pool() -> None:
     # matches the gate pool's label.
     assert template["workerSelector"]["matchLabels"] == pool["metadata"]["labels"]
     assert pool["metadata"]["labels"] != prod["metadata"]["labels"]
-    # The production template (the engine-gate provisioning template selects the
-    # same label as conformance and latency) never matches the gate pool.
+    # The conformance and latency templates (production pool label) never match
+    # the gate pool.
     for other in (_TEMPLATE, _GATES.parent / "latency" / "template.yaml"):
         selector = yaml.safe_load(other.read_text())["workerSelector"]
         assert selector == {"matchLabels": {"workload": "gvisor-fork"}}, other
@@ -1085,7 +1085,7 @@ def test_gates_script_refuses_another_atespace_pool_or_template(tmp_path, env) -
         check=False,
     )
     assert run.returncode == 1
-    assert "event=error message=\"'refusing" in run.stdout or "refusing" in run.stdout
+    assert "refusing" in run.stdout
     # It made no call at all: nothing reached the cluster.
     assert not (tmp_path / "state.json").exists()
 
