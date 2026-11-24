@@ -45,6 +45,9 @@ they do not launch their own planner, review or landing sequence.
 
 - For standalone edits, use a dedicated branch and worktree, or a new branch
   through connected GitHub tools. Keep the assigned branch for factory work.
+  Never edit or switch branches in the repo root (`~/repos/homelab`). Keep it
+  clean on `main`. A dirty root or a work branch there makes a T3 `git checkout`
+  fail.
 - Run `ci` before pushing when available, otherwise use PR CI. Read failed
   logs before retrying. Never push to a merged branch.
 - The landing owner checks required CI and independent approval against the

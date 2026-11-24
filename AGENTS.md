@@ -106,6 +106,8 @@ durable lessons. Factory prompts choose the work and its sequence.
 - `human` means human-owned; `needs-human` requests a decision. Explicit
   handoff is required to change human ownership; removing the label does not
   resume an admitted receipt.
+- Work in a worktree. Keep the repo root clean on `main`; never edit or switch
+  branches there ([reference](docs/agents/reference.md) "Delivery mechanics").
 - Use Conventional Commits and concise prose per `docs/writing.md`.
 
 ## Writing
