@@ -46,9 +46,11 @@ func main() {
 		Name:        *detectorName,
 		Mode:        detect.Mode(*detectorMode),
 		FailureMode: detect.FailureMode(*detectorFailure),
-		Limits:      detect.Limits{MaxInputBytes: *detectorMaxInput, Deadline: *detectorDeadline},
-		DataPath:    *detectorData,
-		Options:     options,
+		// Abandoned calls count: 4 for each scan slot bounds the CPU that calls past
+		// their deadline can hold.
+		Limits:   detect.Limits{MaxInputBytes: *detectorMaxInput, Deadline: *detectorDeadline, MaxConcurrent: 4 * *concurrency},
+		DataPath: *detectorData,
+		Options:  options,
 	})
 	if err != nil {
 		log.Fatal("cannot load the secret detector: ", err)

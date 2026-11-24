@@ -13,7 +13,6 @@
 package betterleaks
 
 import (
-	"bytes"
 	"context"
 	_ "embed"
 	"errors"
@@ -39,7 +38,9 @@ func init() {
 	detect.Register(Name, func(detect.Config) (detect.Detector, error) { return New() })
 }
 
-// New builds the detector. It compiles the rules, which takes about 60 ms.
+// New builds the detector. It loads the rules, compiles every regex up front
+// and scans a warm-up text, so that the first request after start does not pay
+// for the compile and the tokenizer inside its deadline (about 1 s in all).
 func New() (detect.Detector, error) {
 	cfg, err := blconfig.ParseTOMLString(extraRules, "")
 	if err != nil {
@@ -49,14 +50,34 @@ func New() (detect.Detector, error) {
 		blscan.WithMaxDecodeDepth(MaxDecodeDepth),
 		// No signature: nothing in the input can ask the scanner to skip a line.
 		blscan.WithAllowSignatures(),
+		blscan.WithPrecompile(),
 	)
 	if err != nil {
 		return nil, err
 	}
-	return &adapter{s: s}, nil
+	a := &adapter{s: s}
+	_ = a.s.ScanString(warmUp)
+	return a, nil
 }
 
+// warmUp makes every keyword group match once, so the lazy parts of the library
+// (the tokenizer, the keyword matcher) are ready before the first request.
+const warmUp = "token secret password key auth bearer credential authorization postgres://u:p@h/d curl -H"
+
 type adapter struct{ s *blscan.Scanner }
+
+// whole yields the input as one fragment. sources.Reader cuts a stream into
+// chunks of about 100,000 bytes and scans each alone, so a secret that crosses a
+// cut is missed, and a body of padding decides where the cuts fall. The input
+// is already capped by the host, so one fragment is bounded.
+type whole struct{ text string }
+
+func (w whole) Fragments(ctx context.Context, yield sources.FragmentsFunc) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return yield(sources.Fragment{Raw: w.text}, nil)
+}
 
 func (a *adapter) Name() string { return Name }
 
@@ -64,7 +85,7 @@ var errFound = errors.New("finding")
 
 func (a *adapter) Detect(ctx context.Context, in detect.Input) ([]detect.Finding, error) {
 	var found []detect.Finding
-	_, err := a.s.Scan(ctx, &sources.Reader{Content: bytes.NewReader(in.Bytes)}, func(f report.Finding) error {
+	_, err := a.s.Scan(ctx, whole{text: string(in.Bytes)}, func(f report.Finding) error {
 		// Only the rule ID leaves this function: not the match, not the line.
 		found = append(found, detect.Finding{RuleID: f.RuleID, Class: detect.ClassBlock, Start: detect.NoOffset, End: detect.NoOffset})
 		return errFound

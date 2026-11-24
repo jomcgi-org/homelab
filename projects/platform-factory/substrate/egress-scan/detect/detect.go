@@ -101,6 +101,11 @@ type Limits struct {
 	MaxInputBytes int
 	// Deadline bounds all the calls for one request. Zero: no deadline.
 	Deadline time.Duration
+	// MaxConcurrent bounds the detector calls that run at once, abandoned ones
+	// included: a call that outlives its deadline keeps running until the
+	// detector notices its context. A call over the bound is a budget failure.
+	// Zero: no bound.
+	MaxConcurrent int
 }
 
 // Config selects and configures one detector.

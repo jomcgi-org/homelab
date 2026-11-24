@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Outcome is what the detector found in a request.
@@ -48,10 +49,17 @@ type Verdict struct {
 type Host struct {
 	det Detector
 	cfg Config
+	sem chan struct{}
 }
 
 // NewHost wraps a detector. Use New to build one from the registry.
-func NewHost(d Detector, cfg Config) *Host { return &Host{det: d, cfg: cfg} }
+func NewHost(d Detector, cfg Config) *Host {
+	h := &Host{det: d, cfg: cfg}
+	if n := cfg.Limits.MaxConcurrent; n > 0 {
+		h.sem = make(chan struct{}, n)
+	}
+	return h
+}
 
 // Name returns the detector's name.
 func (h *Host) Name() string { return h.det.Name() }
@@ -81,10 +89,25 @@ func (h *Host) Reload() error {
 // call fails. All calls share Limits.Deadline. An input over Limits.MaxInputBytes
 // is a failure, never a skip.
 func (h *Host) Scan(ctx context.Context, inputs ...Input) Verdict {
+	return h.ScanWithin(ctx, h.cfg.Limits.Deadline, inputs...)
+}
+
+// ScanWithin is Scan with a time budget that replaces Limits.Deadline when it is
+// shorter. A caller that spent part of the deadline before the call (parsing a
+// request) passes what is left. A budget of zero or less, with a deadline set, is
+// a timeout at once.
+func (h *Host) ScanWithin(ctx context.Context, budget time.Duration, inputs ...Input) Verdict {
+	limit := h.cfg.Limits.Deadline
+	if limit > 0 && (budget < limit) {
+		limit = budget
+	}
 	callCtx := ctx
-	if d := h.cfg.Limits.Deadline; d > 0 {
+	if h.cfg.Limits.Deadline > 0 {
+		if limit <= 0 {
+			return h.failed(Verdict{Outcome: OutcomeClean}, FailureTimeout)
+		}
 		var cancel context.CancelFunc
-		callCtx, cancel = context.WithTimeout(ctx, d)
+		callCtx, cancel = context.WithTimeout(ctx, limit)
 		defer cancel()
 	}
 	v := Verdict{Outcome: OutcomeClean}
@@ -95,7 +118,7 @@ func (h *Host) Scan(ctx context.Context, inputs ...Input) Verdict {
 		if max := h.cfg.Limits.MaxInputBytes; max > 0 && len(in.Bytes) > max {
 			return h.failed(v, FailureOversize)
 		}
-		found, failure := h.call(ctx, callCtx, in)
+		found, failure := h.call(callCtx, in)
 		if ctx.Err() != nil {
 			v.Canceled = ctx.Err()
 			return v
@@ -130,16 +153,26 @@ type callResult struct {
 // call runs the detector in its own goroutine, so that a detector that ignores
 // its context cannot hold the request past the deadline, and a panic is a
 // failure. The goroutine ends when the detector returns.
-func (h *Host) call(parent, ctx context.Context, in Input) ([]Finding, Failure) {
+func (h *Host) call(ctx context.Context, in Input) ([]Finding, Failure) {
+	if h.sem != nil {
+		select {
+		case h.sem <- struct{}{}:
+		default:
+			return nil, FailureBudget
+		}
+	}
 	done := make(chan callResult, 1)
 	go func() {
+		if h.sem != nil {
+			defer func() { <-h.sem }()
+		}
 		defer func() {
 			if recover() != nil {
 				done <- callResult{failure: FailurePanic}
 			}
 		}()
 		found, err := h.det.Detect(ctx, in)
-		done <- h.result(parent, found, err)
+		done <- h.result(found, err)
 	}()
 	select {
 	case r := <-done:
@@ -149,7 +182,7 @@ func (h *Host) call(parent, ctx context.Context, in Input) ([]Finding, Failure) 
 	}
 }
 
-func (h *Host) result(parent context.Context, found []Finding, err error) callResult {
+func (h *Host) result(found []Finding, err error) callResult {
 	name := h.det.Name()
 	for i := range found {
 		if found[i].Detector == "" {

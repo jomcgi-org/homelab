@@ -182,3 +182,62 @@ func TestConfigErrors(t *testing.T) {
 	}()
 	Register("test-plain", func(Config) (Detector, error) { return nil, nil })
 }
+
+func TestScanWithinUsesWhatIsLeftOfTheDeadline(t *testing.T) {
+	slow := func(ctx context.Context, _ Input) ([]Finding, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	h := NewHost(&fake{name: "fake", detect: slow}, cfg(ModeEnforce, FailDeny))
+	// 50ms is the configured deadline; 5ms is what the request has left.
+	start := time.Now()
+	v := h.ScanWithin(context.Background(), 5*time.Millisecond, in("x"))
+	if v.Failure != FailureTimeout || !v.Deny || time.Since(start) > 40*time.Millisecond {
+		t.Errorf("short budget: %s after %s", v, time.Since(start))
+	}
+	// Nothing left is a timeout before any call.
+	called := false
+	h = NewHost(&fake{name: "fake", detect: func(context.Context, Input) ([]Finding, error) {
+		called = true
+		return nil, nil
+	}}, cfg(ModeEnforce, FailDeny))
+	if v := h.ScanWithin(context.Background(), 0, in("x")); v.Failure != FailureTimeout || called {
+		t.Errorf("no budget: %s (called %t)", v, called)
+	}
+	// A longer budget never lifts the configured deadline.
+	start = time.Now()
+	v = NewHost(&fake{name: "fake", detect: slow}, cfg(ModeEnforce, FailDeny)).ScanWithin(context.Background(), time.Hour, in("x"))
+	if v.Failure != FailureTimeout || time.Since(start) > 400*time.Millisecond {
+		t.Errorf("long budget: %s after %s", v, time.Since(start))
+	}
+}
+
+func TestAbandonedCallsAreBounded(t *testing.T) {
+	release := make(chan struct{})
+	c := cfg(ModeEnforce, FailDeny)
+	c.Limits.Deadline = 10 * time.Millisecond
+	c.Limits.MaxConcurrent = 2
+	h := NewHost(&fake{name: "fake", detect: func(context.Context, Input) ([]Finding, error) {
+		<-release // ignores its context: the call outlives its deadline
+		return nil, nil
+	}}, c)
+	for i := range 2 {
+		if v := h.Scan(context.Background(), in("x")); v.Failure != FailureTimeout {
+			t.Fatalf("call %d: %s", i, v)
+		}
+	}
+	// Both slots are held by abandoned calls: the next call fails at once.
+	start := time.Now()
+	if v := h.Scan(context.Background(), in("x")); v.Failure != FailureBudget || !v.Deny || time.Since(start) > 5*time.Millisecond {
+		t.Errorf("over the bound: %s", v)
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if v := h.Scan(context.Background(), in("x")); v.Failure == FailureNone {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error("the slots were not released after the calls returned")
+}
