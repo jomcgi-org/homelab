@@ -339,6 +339,7 @@ type Issue struct {
 	Identifier     string            `json:"identifier"`
 	Title          string            `json:"title"`
 	Description    string            `json:"description"`
+	Priority       *string           `json:"priority"`
 	ColumnID       int64             `json:"columnId"`
 	Checklists     []Checklist       `json:"checklists"`
 	Subtasks       []IssueRef        `json:"subtasks"`
