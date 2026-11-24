@@ -2356,7 +2356,7 @@ func TestMediumDecisionOnTheSameHead(t *testing.T) {
 		t.Fatal("the same comment should start exactly one failed retry")
 	}
 	h.gh.withLock(func() {
-		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 43, Author: "jomcgi", Body: "Decision: accept `a.yaml:live` on the rollout log; check delivery after rollout."})
+		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 43, UpdatedAt: "2026-11-18T10:00:00Z", Author: "jomcgi", Body: "Decision: accept `a.yaml:live` on the rollout log; check delivery after rollout."})
 	})
 	task := runReview(t, h, e, ctx, 7, shaA)
 	link := "https://github.com/" + testRepo + "/pull/7#issuecomment-43"
