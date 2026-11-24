@@ -3577,7 +3577,7 @@ func TestInitialIssueDescriptionClipping(t *testing.T) {
 	}{
 		{"short", "Short description.", false},
 		{"quoted placeholder", "Handle (unavailable: upstream failed).", false},
-		{"below limit", strings.Repeat("x", 7600), false},
+		{"below limit", strings.Repeat("x", 6600), false},
 		{"heading exceeds limit", strings.Repeat("x", 8000), true},
 		{"over limit", strings.Repeat("x", 8001), true},
 		{"multibyte", strings.Repeat("界", 2667), true},

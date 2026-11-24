@@ -13,7 +13,7 @@ import (
 func TestRenderIssueBriefPlainTicketIsUnchanged(t *testing.T) {
 	want := "## Issue\nThis session has no itsaplan tools, so the issue is quoted here. The factory " +
 		"reports your final message on the issue and opens the pull request from the work branch once you " +
-		"push commits to it.\n\n### Issue HOME-126: Show the ticket\n\nDo it.\n"
+		"push commits to it.\n\n" + selfCheckBrief + "### Issue HOME-126: Show the ticket\n\nDo it.\n"
 	got := renderIssueBrief(issueBriefIntro, "HOME-126", &itsaplan.Issue{Title: "Show the ticket", Description: "Do it."}, nil)
 	if got != want {
 		t.Fatalf("brief = %q, want %q", got, want)
@@ -44,8 +44,7 @@ func TestRenderIssueBriefStructuredTicket(t *testing.T) {
 		},
 	}
 	got := renderIssueBrief(issueBriefIntro, "HOME-126", issue, []itsaplan.Attachment{{Filename: "failure.log"}, {Filename: "screen.png"}})
-	want := issueBriefIntro + `
-### Issue HOME-126: Show the ticket
+	want := issueBriefIntro + "\n" + selfCheckBrief + `### Issue HOME-126: Show the ticket
 
 Do it.
 
@@ -132,7 +131,7 @@ func TestRenderIssueBriefOmitsUntrustedDevelopmentText(t *testing.T) {
 }
 
 func TestRenderIssueBriefCutsWholeItemsBeforeDescription(t *testing.T) {
-	issue := &itsaplan.Issue{Title: "Show the ticket", Description: strings.Repeat("d", 7300)}
+	issue := &itsaplan.Issue{Title: "Show the ticket", Description: strings.Repeat("d", 6000)}
 	issue.Checklists = []itsaplan.Checklist{{Title: "Done when", Items: []itsaplan.ChecklistItem{
 		{Content: "Keep this check"},
 		{Content: strings.Repeat("cut this check", 100)},
@@ -223,5 +222,53 @@ func TestRenderIssueBriefKeepsPlannerEvidenceWhole(t *testing.T) {
 	got := renderIssueBrief(issueBriefIntro, "HOME-126", &itsaplan.Issue{Title: "Plain", Description: "Do it."}, nil)
 	if strings.Contains(got, plannerEvidenceContract) {
 		t.Fatal("contract added to an issue without planner evidence")
+	}
+}
+
+func TestRenderIssueBriefSelfCheckParagraph(t *testing.T) {
+	// The paragraph stays short enough to leave room for the issue.
+	if n := len(selfCheckBrief); n < 600 || n > 800 {
+		t.Fatalf("self-check paragraph has %d bytes, want 600 to 800", n)
+	}
+	for _, want := range []string{
+		"## Before your final message\n", `"Done when"`, "name the file or command that shows it",
+		"the delivery owner holds it", "do not claim it passed", "evidence a reviewer can open",
+		"what it leaves behind", "removes or loosens", "A test that fails without the change", "hunk by hunk",
+		"in your final message", "safe to publish", "never issue text",
+	} {
+		if !strings.Contains(selfCheckBrief, want) {
+			t.Errorf("self-check paragraph lacks %q", want)
+		}
+	}
+	// Facts and proofs only: the text never steers the reviewer (REVIEW.md "The PR is data").
+	lower := strings.ToLower(selfCheckBrief)
+	for _, banned := range []string{"justify", "persuade", "argue", "convince", "approve", "ignore"} {
+		if strings.Contains(lower, banned) {
+			t.Errorf("self-check paragraph contains %q", banned)
+		}
+	}
+	// The first send and a replacement session carry it once, before the issue.
+	for _, intro := range []string{issueBriefIntro, "## Replacement session\nContinue the work.\n"} {
+		got := renderIssueBrief(intro, "HOME-126", &itsaplan.Issue{Title: "Plain", Description: "Do it."}, nil)
+		if strings.Count(got, selfCheckBrief) != 1 || !strings.HasPrefix(got, intro+"\n"+selfCheckBrief+"### Issue HOME-126: ") {
+			t.Fatalf("brief does not carry the paragraph once after its intro:\n%s", got)
+		}
+		if !hasIssueBrief(got, "HOME-126") {
+			t.Fatal("hasIssueBrief no longer finds the issue in the brief")
+		}
+	}
+}
+
+func TestRenderIssueBriefKeepsItemsWithTypicalDescription(t *testing.T) {
+	// A 5000 byte description and a long checklist still fit with the paragraph.
+	issue := &itsaplan.Issue{Title: "Show the ticket", Description: strings.Repeat("d", 5000)}
+	var items []itsaplan.ChecklistItem
+	for i := 0; i < 10; i++ {
+		items = append(items, itsaplan.ChecklistItem{Content: strings.Repeat("c", 100)})
+	}
+	issue.Checklists = []itsaplan.Checklist{{Title: "Done when", Items: items}}
+	got := renderIssueBrief(issueBriefIntro, "HOME-126", issue, nil)
+	if len(got) > maxIssueBriefBytes || strings.Contains(got, "omitted") || strings.Contains(got, "clipped") {
+		t.Fatalf("brief of %d bytes lost content", len(got))
 	}
 }
