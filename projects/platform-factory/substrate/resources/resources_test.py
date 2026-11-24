@@ -441,15 +441,15 @@ def test_microvm_spike_namespace_allows_only_the_router_and_the_gateway() -> Non
 _ROUTER_CLIENTS = [
     "spiffe://cluster.local/ns/ate-system/sa/atenet-client",
     "spiffe://cluster.local/ns/kagent/sa/kagent-controller",
-    "spiffe://cluster.local/ns/ate-system/sa/engine-gate",
 ]
 
 
-def test_router_allows_exactly_the_three_client_identities() -> None:
+def test_router_allows_exactly_the_two_client_identities() -> None:
     # The router checks a client by its SPIFFE ID alone, and an allowed ID can
-    # reach any actor in any atespace. engine-gate is the only holder of its ID
-    # (egress-scan/gate/README.md): egress-scan, which parses untrusted bytes,
-    # must never be in this list, nor a wildcard. The rendered ConfigMap carries
+    # reach any actor in any atespace. engine-gate left the list when Joe
+    # deferred the Semgrep tier (2026-11-24). egress-scan, which parses
+    # untrusted bytes, must never be in this list, nor a wildcard, and neither
+    # may the deferred engine-gate ID. The rendered ConfigMap carries
     # the list values/substrate.yaml sets.
     config = yaml.safe_load(
         _one(_docs(), "ConfigMap", "atenet-router-agentgateway-config")["data"][
@@ -460,6 +460,7 @@ def test_router_allows_exactly_the_three_client_identities() -> None:
     ids = re.search(r"source\.spiffeId in \[(.*?)\]", rule["allow"]).group(1)
     assert re.findall(r'"([^"]+)"', ids) == _ROUTER_CLIENTS
     assert "egress-scan" not in rule["allow"] and "*" not in rule["allow"]
+    assert "engine-gate" not in rule["allow"]
 
 
 def test_engine_gate_is_not_a_global_owner() -> None:
@@ -824,8 +825,6 @@ def test_gvisor_fork_slice_is_wired() -> None:
     listed = kustomization["resources"] + kustomization.get("components", [])
     assert [r for r in listed if r.startswith("..")] == [
         "../gvisor-fork",
-        "../egress-scan/gate/provision",
-        "../egress-scan/gate/guard",
     ]
     docs = _docs()
 
@@ -916,42 +915,15 @@ def test_gvisor_fork_slice_is_wired() -> None:
     assert max(init, main) <= 256
 
 
-_PROVISION_JOB = "egress-engine-teardown-2"
-# The ConfigMap's hash covers provision.py, template.yaml and template.json. The
-# live Job's pod template is immutable: a changed hash makes the apply fail. A
-# change under egress-scan/gate/provision/ must bump the Job's run suffix and
-# this name in the same change.
-_PROVISION_CONFIGMAP = "egress-engine-provision-g94t5m7h45"
-
-
-def test_engine_provisioning_is_wired_and_runs_once() -> None:
-    # ../egress-scan/gate/provision is listed (test_gvisor_fork_slice_is_wired
-    # pins the list). It renders the teardown Job (it runs once since
-    # 2026-11-24), two network policies and the generated ConfigMap. The apply
-    # Job egress-engine-provision-2 is not listed.
-    docs = _docs()
-    names = {(d["kind"], d["metadata"]["name"]) for d in docs}
-    assert ("Job", _PROVISION_JOB) in names
-    assert ("Job", "egress-engine-provision-2") not in names
-    assert ("ConfigMap", _PROVISION_CONFIGMAP) in names, [
-        n for k, n in names if k == "ConfigMap" and n.startswith("egress-engine")
-    ]
-    assert {
-        n for k, n in names if k == "CiliumNetworkPolicy" and "engine-provision" in n
-    } == {
-        "egress-engine-provision",
-        "ate-api-server-egress-engine-provision",
+def test_engine_provisioning_is_not_wired() -> None:
+    # Joe deferred the Semgrep tier on 2026-11-24. The provisioning and teardown
+    # Jobs (egress-scan/gate/provision) ran their course and are not in the
+    # kustomization: the wired render holds none of their objects.
+    names = {(d["kind"], d["metadata"]["name"]) for d in _docs()}
+    assert not {
+        n for k, n in names if k == "Job" and n.startswith("egress-engine-")
     }
-    job = _one(docs, "Job", _PROVISION_JOB)
-    assert job["spec"]["suspend"] is False
-    pod = job["spec"]["template"]["spec"]
-    assert pod["serviceAccountName"] == "ate-client"
-    (config,) = [v for v in pod["volumes"] if v["name"] == "config"]
-    assert config["configMap"]["name"] == _PROVISION_CONFIGMAP
-    # The Job holds the ate-client token only as a projected file.
-    (c,) = pod["containers"]
-    assert {e["name"]: e["value"] for e in c["env"]}["MODE"] == "teardown"
-    assert "envFrom" not in c
+    assert not {n for k, n in names if n.startswith("egress-engine-provision")}
 
 
 _GATE_IMAGE = (
@@ -986,11 +958,9 @@ def test_engine_gate_is_not_deployed_and_its_pin_follows_the_build() -> None:
         return (d["kind"], d["metadata"].get("namespace"), d["metadata"]["name"])
 
     wired = {key(d) for d in docs}
-    # Only the admission guard of the ServiceAccount stays wired: the router
-    # still trusts that ServiceAccount's certificate, so nobody else may run a
-    # pod as it. The guard leaves with the router grant.
-    guard = {k for k in _GATE_OBJECTS if k[0].startswith("ValidatingAdmission")}
-    assert _GATE_OBJECTS & wired == guard, "engine-gate objects are wired"
+    # The admission guard of the ServiceAccount left with the router grant: no
+    # ID of the gate is trusted any more (test_router_allows_exactly_the_two_...).
+    assert not (_GATE_OBJECTS & wired), "engine-gate objects are wired"
     # The gate's own directory still renders exactly _GATE_OBJECTS, so that
     # deploying it again is a one-line change that this test already covers.
     gate_docs = subprocess.run(

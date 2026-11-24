@@ -4,7 +4,7 @@ kind: Kustomization
 # engine-gate. Not deployed since 2026-11-24 (../../../resources does not list
 # this directory). manifests_test.py checks what this directory renders, and
 # ../../../resources/resources_test.py checks the image pin and that the wired
-# render holds none of it except ../guard. The rollout, the checks and the
+# render holds none of it, nor of ../guard. The rollout, the checks and the
 # rollback are in ../README.md, "Enable steps".
 resources:
   - statefulset.yaml

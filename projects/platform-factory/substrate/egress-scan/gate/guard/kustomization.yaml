@@ -1,10 +1,10 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# The admission guard of the engine-gate ServiceAccount. It stays deployed while
-# the gate is not: the router still trusts the ServiceAccount's certificate
-# (values/substrate.yaml) and the atespace access policy still gives it the
-# editor role, until the teardown PRs remove both. The guard leaves with them.
+# The admission guard of the engine-gate ServiceAccount. Not deployed since
+# 2026-11-24: the router grant of that ServiceAccount left the substrate values,
+# so no ID of the gate is trusted. Deploy it with the gate, before the gate's
+# ServiceAccount exists, and before the router grant returns.
 # ../manifests lists this directory, so the gate's own render still holds it.
 resources:
   - admission.yaml

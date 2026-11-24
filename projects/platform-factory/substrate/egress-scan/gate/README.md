@@ -7,12 +7,15 @@ child. State: **deferred, not deployed**. Joe deferred the Semgrep tier on
 2026-11-24 (ARCHITECTURE.md "Decided" 9), and the gate's manifests left
 `resources/kustomization.yaml`. The source, the tests and this document stay. It
 ran in enforce mode on 2026-11-24 only (see "Enforce mode" and "Enable steps";
-those sections describe the gate when it is deployed). To deploy it again, list
-`manifests` in `resources/kustomization.yaml`, and restore the Prometheus scrape
-job, its egress rule and the `EngineGate*` and `EgressScanSemgrepDenying` alerts
-from the commit that removed them (#8658). The admission guard of its
-ServiceAccount (`guard/`) stays deployed until the router grant and the editor
-binding of that ServiceAccount are gone. The design is
+those sections describe the gate when it is deployed). To deploy it again:
+list `manifests` and `guard` in `resources/kustomization.yaml`; add the
+`engine-gate` ServiceAccount ID to `atenetRouter.ingressAllowedSPIFFEIDs`
+(`values/substrate.yaml` and `resources/upstream/substrate/atenet-router.yaml`);
+restore the Prometheus scrape job, its egress rule and the `EngineGate*` and
+`EgressScanSemgrepDenying` alerts from the commit that removed them (#8658);
+run `provision/job.yaml` (the apply Job) for the atespace and the template; and
+switch the scanner tier on again (ARCHITECTURE.md "Decided" 8). The warm pool of
+single-use fork actors may serve tool-call sandboxes later. The design is
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Engine path" (path B).
 
 ```mermaid
@@ -406,7 +409,7 @@ enforce ("Decided" 8). The X gates still run.
 
 | # | Change | Cluster effect on merge | Joe approves |
 | --- | --- | --- | --- |
-| 1 | [`provision/`](provision): Jobs that create the atespace, its access policy and the template `engine`, or remove them (teardown) | None when it merged: not wired, suspended | Nothing at merge |
+| 1 | [`provision/`](provision): Jobs that create the atespace, its access policy and the template `engine`, or remove them (teardown) | Not wired since 2026-11-24. The teardown ran and left one orphaned seed, the access policy and the atespace ("Teardown") | Nothing |
 | 2 | Router grant: `spiffe://cluster.local/ns/ate-system/sa/engine-gate` in `atenetRouter.ingressAllowedSPIFFEIDs` (`values/substrate.yaml`) | Added to the router ConfigMap (merged, #8627) | Approved (Joe, 2026-11-23, session; Decided 6) |
 | 3 | Wire `provision/` into `resources/` with `egress-engine-provision-2` not suspended (`-1` ran on 2026-11-23; `-2` follows the script nits and re-runs as a no-op: every object exists) | Creates the atespace, the policy and the template, once. The worker pins the atespace at the first seed, so the pool pod must have restarted before | Joe merges it (Decided 6), after the pool restart |
 | 4 | Wire the gate (`manifests/`), its image pin, the Prometheus job, rules and egress rule, and the observe-mode switch of the scanner | Starts the gate (one pod, 2 children), its network rules and the admission guard, and rolls the scanner pods (2) with `semgrep.mode=observe`. The scanner calls the gate off the request path. Replies do not change | Yes |
@@ -510,10 +513,17 @@ at any time: an object that exists is left alone, an access policy without the
 editor member gets it added (the other bindings stay), and a template that
 differs in any value is an error, because a template is replaced blue/green.
 
-**Teardown.** Joe deferred the Semgrep tier on 2026-11-24, and the PR of that day
-lists `provision/teardown-job.yaml` with `suspend: false` in
-`provision/kustomization.yaml`, after the gate was stopped (it deletes its
-children on SIGTERM). The result of the run is in that PR. To run it again, stop
+**Teardown (2026-11-24).** Joe deferred the Semgrep tier. The gate was stopped
+first (it deletes its children on SIGTERM), then `provision/teardown-job.yaml`
+ran twice (`-1`, `-2`). It deleted the actors, the template `engine` and the
+live seed. Both runs failed at the seed wait: one seed actor of a dead worker
+(`seed-9c4c480908f5b025`, state CRASHED, no worker assignment) stays in the
+atespace. Only the control plane may delete a seed, and the fork reaper reads
+only atespaces that hold a fork template, so nothing deletes it. The atespace
+`egress-scan-engine` and its access policy stay too, because the API refuses to
+delete them while an actor is left. They hold no pod, no booking and no running
+actor. To remove them, delete the seed row in the ate database as a decision of
+Joe (a live write), then run the teardown again. The teardown Job is not wired. To run it again, stop
 the gate, then list the file in a PR (a suspended Job makes the Application
 report Suspended, so it is listed only when it runs). The Job
 (`MODE=teardown`) deletes what is left of the actors, then the templates (which

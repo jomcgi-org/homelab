@@ -1,3 +1,7 @@
+# DEFERRED (Joe, 2026-11-24): the Semgrep tier is off, engine-gate is not
+# deployed and the Pro engine converges on Mandoline later. Manual only, and do
+# not run it until the tier is revived. The files stay.
+#
 # Builds the PRIVATE Semgrep Pro Secrets engine image for the gVisor sandbox-fork
 # pool (projects/platform-factory/substrate/gvisor-fork/engine-pro). Manual only:
 # nothing runs on a push or a pull request.
