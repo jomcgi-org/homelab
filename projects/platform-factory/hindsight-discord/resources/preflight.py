@@ -9,10 +9,13 @@ alone, when:
 - the decision model (System One at DECISION_MODEL_BASE_URL) refuses or does
   not answer. Recall has no local fallback, so the pod would serve failures.
   Hindsight cannot send OpenRouter's data policy with decision calls, so the
-  model must have exactly one OpenRouter endpoint, and it must answer when the
-  request requires zero data retention. OpenRouter's preferences cannot pin
-  one variant of a provider (`only` and `ignore` match every variant), so a
-  second endpoint stops the sync for a person to check;
+  model's OpenRouter endpoints must all belong to one provider, and the model
+  must answer when the request requires zero data retention. OpenRouter's
+  preferences cannot pin one variant of a provider (`only` and `ignore` match
+  every variant). Joe accepted on 2026-11-24 that a call without preferences
+  may reach the provider's variant without zero retention (`typesafe` beside
+  `typesafe/zdr`). An endpoint of another provider stops the sync for a
+  person to check;
 - stored rows have another dimension than EMBEDDINGS_DIMENSIONS. Hindsight
   resizes an empty vector column at startup but refuses one with rows.
 
@@ -152,10 +155,11 @@ def main():
         raise SystemExit(f"{model} returns {returned} dimensions, not {dimension}")
     decision = os.environ["DECISION_MODEL"]
     endpoints = decision_endpoints(key, decision)
-    if len(endpoints) != 1:
+    providers = {tag.split("/")[0] for tag in endpoints}
+    if len(providers) != 1:
         raise SystemExit(
-            f"{decision} has OpenRouter endpoints {endpoints}, not exactly one: "
-            "check each one's data policy, then update the preflight"
+            f"{decision} has OpenRouter endpoints {endpoints} from more than one "
+            "provider: check each one's data policy, then update the preflight"
         )
     base_url = os.environ["DECISION_MODEL_BASE_URL"]
     decision_answers(key, base_url, decision, ZERO_RETENTION)
