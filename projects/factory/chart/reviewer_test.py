@@ -344,6 +344,7 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
                     "spec"
                 ]["template"]["inline"]["systemPrompt"],
             },
+            "authorApproved": True,
             "enqueueAuthors": [],
             "humanApprovers": ["jomcgi"],
             "itsaplanProject": "HOME",
