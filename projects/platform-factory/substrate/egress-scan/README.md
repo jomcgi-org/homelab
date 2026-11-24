@@ -39,7 +39,9 @@ policies:
 ```
 
 The timeout is 310 ms since the tier is on in enforce mode (300 ms deadline + 10 ms).
-It is 80 ms with the tier off or in observe mode. Admit only the gateway to the scanner's listener. The Hindsight pilot and
+It is 80 ms with the tier off or in observe mode.
+
+Admit only the gateway to the scanner's listener. The Hindsight pilot and
 its cluster latency check are tracked in
 [HOME-729](https://factory-plan.jomcgi.dev/factory/issue/HOME-729).
 
@@ -307,30 +309,35 @@ a failure, and `decide` applies the failure mode). So the limit must be above th
 largest body that a legitimate caller sends. The gateway sends at most 512 KiB
 (`includeRequestBody.maxRequestBytes: 524288`, `allowPartialMessage: false`).
 
-Latency through the gate, measured on 2026-11-24 with a 5 s deadline from an
-ephemeral container on an egress-scan pod (gate README, "Live check"), filler text,
-5 sequential runs each, the whole round trip (connect, gate, router, child, a 70 KB
+Latency through the gate, measured on 2026-11-24 after the fork pool sizing roll
+(worker 4 CPU request, gate 32Mi/50m) with a 5 s deadline from an ephemeral
+container on an egress-scan pod (gate README, "Live check"), filler text, 5
+sequential runs each, the whole round trip (connect, gate, router, child, a 70 KB
 reply):
 
 | Raw body | Fastest | Slowest (p100) |
 | --- | --- | --- |
-| 1 KiB | 61 ms | 154 ms (the first call) |
-| 64 KiB | 113 ms | 143 ms |
-| 256 KiB | 205 ms | 247 ms |
-| 512 KiB | 385 ms | 406 ms (over the 300 ms deadline) |
+| 1 KiB | 66 ms | 76 ms |
+| 64 KiB | 103 ms | 151 ms |
+| 256 KiB | 242 ms | 278 ms |
+| 512 KiB | 442 ms | 464 ms (over the 300 ms deadline) |
+
+Four parallel calls with 64 KiB (3 rounds, 2 scanner pods at concurrency 2 give 4
+at once): 124 to 215 ms.
 
 The limit is 64 KiB: the largest size with at least half of the 300 ms deadline
-left at p100 (143 ms), and the v1 value of ARCHITECTURE.md. A JSON body also adds
+left at p100 (see the table), and the value of ARCHITECTURE.md Decided 8. A JSON body also adds
 its decoded strings to the text that the engine scans (up to twice the body), so
-a 64 KiB body can cost the engine about the time of 128 KiB (about 170 ms). 256 KiB
-leaves 18% of the deadline, and 512 KiB is over it. The Hindsight callers send
+a 64 KiB body can cost the engine about the time of 128 KiB (about 190 ms). 256 KiB
+leaves 7% of the deadline, and 512 KiB is over it. The Hindsight callers send
 memory lessons of a few hundred tokens and short recalls (factory ARCHITECTURE.md),
 far below 64 KiB. Raise the limit only with new numbers, and raise the deadline and
 the gateway timeout with it.
 
-#### The 7-day observe procedure
+#### The 7-day observe procedure (superseded by Decided 8)
 
-Joe decided that the tier runs in observe mode for 7 days before enforce mode
+This section is the old plan. Joe skipped the 7 days on 2026-11-24 and the tier
+is in enforce mode. Joe had decided that the tier runs in observe mode for 7 days before enforce mode
 ([ARCHITECTURE.md](ARCHITECTURE.md#decided), row 3). Set
 `semgrep.enabled: true` and `semgrep.mode: observe` in
 `helm.valuesObject` of the Application. Keep the gateway `requestTimeout` at
@@ -344,7 +351,7 @@ row "Observe mode" and in the pod log:
 | Engine error and timeout rate (`requests_total{outcome=~"timeout\|error"}`) | below 0.1 % of calls, and no `error` run | Find the cause (a bad response, `errors` or `paths.skipped` from the engine). In enforce mode with failure mode `deny` each one is a 503. |
 | Shed and breaker-open rate | none | Raise `semgrep.concurrency`, or fix the engine capacity. |
 | Engine latency p95 against `semgrep.deadline` | p95 at most half of the deadline | Raise the deadline (and the gateway timeout with it), or make the engine faster. |
-| Request sizes (`observe_size_bytes`, kinds `raw_body` and `engine_text`) | the p99 of `raw_body` and the highest bucket with traffic set `semgrep.maxBodyBytes` (v1 value 32 KiB) | A body over the limit is `oversize` in enforce mode (503 with failure mode `deny`). |
+| Request sizes (`observe_size_bytes`, kinds `raw_body` and `engine_text`) | the p99 of `raw_body` and the highest bucket with traffic set `semgrep.maxBodyBytes` (now 64 KiB) | A body over the limit is `oversize` in enforce mode (503 with failure mode `deny`). |
 | Observed requests, and `agreement_total` | a stable count each day, with the traffic of all callers | If no `observe_total` series moves, the engine is unreachable (check the network rules). |
 
 The 7 days are Joe's decision. The thresholds in the table, and these exit
@@ -362,8 +369,8 @@ and raise the gateway `requestTimeout` to at least `semgrep.deadline` + 10 ms
 in the same PR. `resources_test.py` fails until both agree. To go back, set
 `mode: observe` again and `requestTimeout: 80ms`.
 
-Suggested alert rules, for the owner of the alerts (none exists for the
-scanner yet): in observe mode, `rate(..._observe_total{result="would_fail"}[15m])`
+Suggested alert rules, for the owner of the alerts (`EgressScanSemgrepDenying` now exists
+for the denials; these are for the observe data): in observe mode, `rate(..._observe_total{result="would_fail"}[15m])`
 above 1 % of observed requests for 15 minutes, and a rise of
 `rate(..._observe_total{result="would_deny"}[1h])` above its 7-day level. In
 both modes, `..._breaker_open == 1` for 5 minutes.
