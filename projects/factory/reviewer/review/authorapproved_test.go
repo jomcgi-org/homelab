@@ -58,3 +58,36 @@ func TestAuthorApprovedSkipsTheModelReview(t *testing.T) {
 		})
 	}
 }
+
+// The pass must survive later polls on a binding that reads itsaplan issues,
+// where reconcileIssues compares the stored evidence digest on every poll.
+func TestAuthorApprovedPassSurvivesIssueReconciliation(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Bindings[0].AuthorApproved = true
+	h.cfg.Bindings[0].ItsaplanProject = "HOME"
+	pr := authoredPR()
+	h.gh.addPR(pr)
+	h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
+	e, ctx, _ := h.start()
+	e.Tick(ctx)
+	eventually(t, "the author pass", func() bool {
+		c := h.gh.check(shaA)
+		return c != nil && c.Conclusion == ConclusionSuccess
+	})
+	// A PR on a human-gate path gets one "cleared by authorship" check from
+	// the gate reconciliation; after that the verdict must stay put.
+	for range 2 {
+		e.Tick(ctx)
+	}
+	settled := h.gh.check(shaA).ID
+	for range 4 {
+		e.Tick(ctx)
+	}
+	c := h.gh.check(shaA)
+	if c.Conclusion != ConclusionSuccess || c.ID != settled {
+		t.Fatalf("the pass was withdrawn or kept changing: id %d -> %d, %s, %s", settled, c.ID, c.Conclusion, c.Title)
+	}
+	if got := h.taskOn(7, shaA, 1); got != "" {
+		t.Fatalf("a review task ran after the skip: %s", got)
+	}
+}

@@ -9,6 +9,11 @@ import (
 
 const authorApprovedTitle = "Review skipped: author approves"
 
+// authorApprovedDigest stands in for the issue evidence digest in a skip
+// pass's state. A skip pass reviewed no evidence, so reconcileIssues must not
+// withdraw it when the issue context differs from an empty digest.
+const authorApprovedDigest = "author-approved"
+
 // authorApproved passes a new head without a model review when the binding
 // enables it and the PR meets the authorship waiver in REVIEW.md "Joe decides":
 // the author is in HumanApprovers and every push to the head ref is by a
@@ -52,7 +57,7 @@ func (e *Engine) authorApproved(ctx context.Context, b *Binding, pr github.PullR
 		return false
 	}
 	gate.Authorship = who
-	st := State{Gate: gate}
+	st := State{Gate: gate, IssueDigest: authorApprovedDigest}
 	text := encodeState(st)
 	u := &CommentUpdate{Verdict: VerdictApproved, Headline: authorApprovedTitle, Note: who, Gate: gate}
 	started := now.UTC()
