@@ -19,7 +19,7 @@ export function LlmLeaderboardPage() {
   );
   useEffect(() => onLeaderboardIntent(host.current!), []);
   return (
-    <Shell>
+    <Shell current="/llm-leaderboard">
       <div
         id="leaderboard-report"
         ref={host}

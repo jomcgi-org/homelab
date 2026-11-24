@@ -59,7 +59,9 @@
   margin-block: 1.5rem;
 }
 .stars-map {
-  height: clamp(24rem, 65vh, 48rem);
+  /* Short enough on a phone that the legend and the night chips below it
+   * are near the first screen. */
+  height: clamp(20rem, 55vh, 48rem);
   background: var(--color-background-muted);
 }
 .stars-map {
@@ -150,4 +152,23 @@
 }
 .stars-map .maplibregl-ctrl-attrib a {
   color: var(--color-text-primary);
+}
+
+/* The snapshot card is supporting detail: small and secondary. Its list of
+ * six sites repeats the full list below, so it shows only where the page's
+ * script cannot build that list. */
+#stars-summary {
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+}
+#stars-summary h2 {
+  font-size: 1rem;
+}
+#stars-summary p {
+  margin-block: 0.25rem;
+}
+@media (scripting: enabled) {
+  #stars-summary ol {
+    display: none;
+  }
 }

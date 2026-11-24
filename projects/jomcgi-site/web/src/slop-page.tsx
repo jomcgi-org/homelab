@@ -5,7 +5,7 @@ import { Shell } from "./Shell";
 
 export function SlopPage() {
   return (
-    <Shell>
+    <Shell current="/slop">
       <VStack gap={3}>
         <Heading level={1}>Slop</Heading>
         <Text type="body">/ Drafts</Text>

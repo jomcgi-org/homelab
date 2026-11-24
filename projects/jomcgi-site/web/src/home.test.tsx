@@ -43,6 +43,18 @@ describe("home port", () => {
     ]);
   });
 
+  it("leaves posts about retired projects off the home page", () => {
+    const fixture = [
+      { slug: "old", date: "2026-10-02", tags: ["embervm", "tla"] },
+      { slug: "new", date: "2026-09-01", tags: ["inference"] },
+      { slug: "bare", date: "2026-08-01" },
+    ].map((post) => ({ title: post.slug, summary: post.slug, ...post }));
+    expect(latestPosts(fixture).map((post) => post.slug)).toEqual([
+      "new",
+      "bare",
+    ]);
+  });
+
   it("keeps the original readout text and follows each section's migration state", () => {
     const source = readFileSync(
       new URL("src/routes/public/+page.svelte", hub),
@@ -140,7 +152,8 @@ it("lists every live public page and excludes other entries", () => {
   for (const entry of Object.keys(PAGES)) {
     const path = ("/" + entry)
       .replace(/\/index\.html$/, "/")
-      .replace(/\.html$/, "");
+      .replace(/\.html$/, "")
+      .replace(/(.)\/$/, "$1");
     const section =
       path === "/"
         ? HOME

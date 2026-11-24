@@ -21,7 +21,7 @@ export function TripFrame({
   error?: string;
 }) {
   return (
-    <Shell>
+    <Shell current="/trips">
       <nav aria-label="Trip">
         <a href="/trips">Trips</a>
         {boot.trip && (

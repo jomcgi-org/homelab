@@ -11,8 +11,10 @@ export function sitemap(entries: string[]): string {
     (section) => section.live && section.listed !== false,
   );
   const urls = entries.flatMap((entry) => {
-    const path =
-      "/" + entry.replace(/(^|\/)index\.html$/, "$1").replace(/\.html$/, "");
+    // A directory entry (factory/index.html) is listed without its slash.
+    const path = (
+      "/" + entry.replace(/(^|\/)index\.html$/, "$1").replace(/\.html$/, "")
+    ).replace(/(.)\/$/, "$1");
     const section = listed.find(
       ({ path: root }) => path === root || path.startsWith(root + "/"),
     );

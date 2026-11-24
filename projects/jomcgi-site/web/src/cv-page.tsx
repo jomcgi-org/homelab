@@ -46,7 +46,7 @@ function Bullets({ items }: { items: string[] }) {
 
 export function CvPage() {
   return (
-    <Shell>
+    <Shell current="/cv">
       <VStack gap={8}>
         <header className="site-hero cv-head">
           <Text type="body">Curriculum Vitae · {contact.location}</Text>

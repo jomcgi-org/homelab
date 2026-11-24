@@ -123,7 +123,9 @@ export const SECTIONS: readonly Section[] = [
     group: "Factory",
     path: "/factory",
     legacy: "/slop/factory",
-    live: false,
+    // Its route, jomcgi.dev/factory*, is in edge/routes.json (HOME-202), so
+    // the nav stays on the page this site serves.
+    live: true,
     summary: "The software factory: goals, work in flight and what shipped.",
   },
   {

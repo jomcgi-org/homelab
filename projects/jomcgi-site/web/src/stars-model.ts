@@ -195,8 +195,13 @@ export function writeStarsParams(params: URLSearchParams, view: View) {
     params.set("night", view.selectedNight);
   return params;
 }
+/** The sites are grid cells without place names, so the position is the name:
+ * 58.352°N 4.536°W, the same form the site card shows. */
+export const coordinates = (lat: number, lon: number) =>
+  `${Math.abs(lat).toFixed(3)}°${lat >= 0 ? "N" : "S"} ` +
+  `${Math.abs(lon).toFixed(3)}°${lon >= 0 ? "E" : "W"}`;
 export const siteName = (site: Site) =>
-  site.name || `${site.lat.toFixed(3)}°, ${site.lon.toFixed(3)}°`;
+  site.name || coordinates(site.lat, site.lon);
 export const nightLabel = (night: string) =>
   new Date(`${night}T12:00:00Z`).toLocaleDateString("en-GB", {
     weekday: "short",

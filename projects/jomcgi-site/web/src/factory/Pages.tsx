@@ -158,6 +158,16 @@ function IssueList({
     </>
   );
 }
+/** Work that is moving comes before work that waits, so a reader sees what
+ * the factory is doing now. The sort is stable: each group keeps its order. */
+const stateRank: Partial<Record<State, number>> = {
+  Working: 0,
+  "In merge queue": 1,
+};
+export const activeFirst = (issues: IssueSummary[]): IssueSummary[] =>
+  [...issues].sort(
+    (a, b) => (stateRank[a.state] ?? 2) - (stateRank[b.state] ?? 2),
+  );
 const natural = new Intl.Collator("en", { numeric: true });
 /** The floor: one square for each issue, in key order, marked by state.
  * The squares are a pointer shortcut, outside the tab order. A goal page
@@ -261,8 +271,8 @@ export function StoryPage({
       <section aria-labelledby="goals-heading">
         <SectionHead
           id="goals-heading"
-          title="The goals"
-          count={story.goals.length}
+          title={manyGoals ? "The goals" : "The goal"}
+          count={manyGoals ? story.goals.length : undefined}
         />
         {!story.goals.length && <p>No goals published yet.</p>}
         <div className="chapters">
@@ -341,7 +351,7 @@ export function StoryPage({
           count={story.workInProgress.length}
         />
         <IssueList
-          issues={story.workInProgress}
+          issues={activeFirst(story.workInProgress)}
           snapshot={snapshot}
           showGoal={manyGoals}
         />

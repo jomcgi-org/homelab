@@ -12,3 +12,5 @@ export function oldestForecast(timestamps: (string | null)[]): string | null;
 
 export const SNAPSHOT_STALE_MS: number;
 export function snapshotStatus(generatedAt: string | null, now: number): string;
+export const FORECAST_ON_SCHEDULE: string;
+export const SNAPSHOT_ON_SCHEDULE: string;

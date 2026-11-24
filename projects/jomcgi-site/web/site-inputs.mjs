@@ -8,8 +8,11 @@ export const posts = JSON.parse(
     "utf8",
   ),
 );
+// EmberVM is retired, so its posts stay addressable but leave the home page.
+const retiredTags = ["embervm"];
 export function latestPosts(manifest = posts) {
   return [...manifest]
+    .filter(({ tags = [] }) => !tags.some((tag) => retiredTags.includes(tag)))
     .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
     .slice(0, 2)
     .map(({ slug, title, date, summary }) => ({ slug, title, date, summary }));

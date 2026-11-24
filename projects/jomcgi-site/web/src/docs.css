@@ -36,7 +36,13 @@
 .docs-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--spacing-3);
+  gap: 0 var(--spacing-3);
+}
+/* A 44px target, with the underline kept on the text. */
+.docs-tabs a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
 }
 .docs-project {
   border-top: 1px solid var(--color-border);
@@ -166,6 +172,11 @@
   }
   .docs-sidebar details[open] {
     flex-basis: 100%;
+  }
+  /* On the index the cards below list every project, so the title and the
+   * first card come up the screen instead. Search stays. */
+  .docs-layout-index .docs-sidebar nav {
+    display: none;
   }
 }
 

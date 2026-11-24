@@ -6,7 +6,15 @@ const MENU_FROM = 3;
 
 /* The menu is a native <details>: every link is in the HTML and it opens
  * with no script. Script only adds closing on Escape or an outside press. */
-function Menu({ label, children }: { label: string; children: ReactNode }) {
+function Menu({
+  label,
+  current,
+  children,
+}: {
+  label: string;
+  current: boolean;
+  children: ReactNode;
+}) {
   const menu = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     const close = (event: Event) => {
@@ -27,13 +35,21 @@ function Menu({ label, children }: { label: string; children: ReactNode }) {
   }, []);
   return (
     <details className="site-menu" ref={menu}>
-      <summary>{label}</summary>
+      <summary data-current={current || undefined}>{label}</summary>
       <ul>{children}</ul>
     </details>
   );
 }
 
-export function Shell({ children }: { children: ReactNode }) {
+/** `current` is the section path the page belongs to (`/hikes`). Its link
+ * is marked, and so is the menu that holds it. */
+export function Shell({
+  children,
+  current,
+}: {
+  children: ReactNode;
+  current?: string;
+}) {
   return (
     <div className="site">
       <header className="site-header">
@@ -43,14 +59,25 @@ export function Shell({ children }: { children: ReactNode }) {
         <nav aria-label="Site">
           <ul className="site-nav">
             {GROUPS.map((group) => {
-              const links = sectionsIn(group).map((section) => (
+              const sections = sectionsIn(group);
+              const links = sections.map((section) => (
                 <li key={section.path}>
-                  <a href={hrefFor(section)}>{section.name}</a>
+                  <a
+                    href={hrefFor(section)}
+                    aria-current={section.path === current ? "page" : undefined}
+                  >
+                    {section.name}
+                  </a>
                 </li>
               ));
               return links.length > MENU_FROM ? (
                 <li key={group}>
-                  <Menu label={group}>{links}</Menu>
+                  <Menu
+                    label={group}
+                    current={sections.some(({ path }) => path === current)}
+                  >
+                    {links}
+                  </Menu>
                 </li>
               ) : (
                 links
