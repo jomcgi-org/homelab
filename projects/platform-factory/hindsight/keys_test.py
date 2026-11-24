@@ -402,8 +402,8 @@ def test_preflight_stops_the_sync_on_a_bad_key_model_or_stored_rows(monkeypatch)
 
     monkeypatch.setattr(script, "database", empty)
     script.main()
-    # Hindsight cannot send a data policy, so the one endpoint must answer a
-    # request that requires zero data retention.
+    # Hindsight cannot send a data policy, so the model must answer a request
+    # that requires zero data retention.
     assert asked[-1] == {
         "zdr": True,
         "data_collection": "deny",
@@ -429,6 +429,10 @@ def test_preflight_stops_the_sync_on_a_bad_key_model_or_stored_rows(monkeypatch)
         script, "decision_endpoints", lambda key, model: ["typesafe", "upstage/zdr"]
     )
     with pytest.raises(SystemExit, match="more than one provider"):
+        script.main()
+    # No endpoint at all stops the sync too.
+    monkeypatch.setattr(script, "decision_endpoints", lambda key, model: [])
+    with pytest.raises(SystemExit, match="no endpoint"):
         script.main()
 
 
