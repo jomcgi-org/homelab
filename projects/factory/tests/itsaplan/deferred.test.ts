@@ -112,6 +112,19 @@ test("run phase reads exclude stale attempts and require issue access", async ()
     phase: "waiting",
     reason: "Waiting for an agent slot.",
   };
+  const ownerAPI = authedApi(owner.cookie);
+  expect(
+    (await createProject(ownerAPI, { key: "OTHER", name: "Other" })).status,
+  ).toBe(201);
+  const other = ownerAPI.projects({ projectKey: "OTHER" });
+  const otherProject = (await other.get()).data!;
+  const otherIssue = await other.issues.post({
+    title: "Another project",
+    columnId: otherProject.columns.find((column) => column.name === "Backlog")!
+      .id,
+  });
+  expect(otherIssue.status).toBe(201);
+  const foreignIssueId = otherIssue.data!.id;
   const review = {
     pullRequest: 42,
     head: "a".repeat(40),
@@ -125,6 +138,17 @@ test("run phase reads exclude stale attempts and require issue access", async ()
     fetch(request) {
       reads++;
       const url = new URL(request.url);
+      if (url.pathname === "/project-reviews") {
+        expect(url.searchParams.get("project")).toBe("HOME");
+        return Response.json({
+          observedAt: review.observedAt,
+          complete: true,
+          items: [
+            { ...review, issueId: id },
+            { ...review, issueId: foreignIssueId, position: 4 },
+          ],
+        });
+      }
       expect(url.searchParams.get("issueId")).toBe(String(id));
       if (url.pathname === "/issue-review") return Response.json(review);
       return Response.json({
@@ -207,6 +231,19 @@ test("run phase reads exclude stale attempts and require issue access", async ()
     );
     expect(reviewResponse.status).toBe(200);
     expect(await reviewResponse.json()).toEqual(review);
+
+    const projectQueueURL =
+      "http://localhost/projects/HOME/factory-review-queue";
+    const readsBeforeProjectDenial = reads;
+    expect((await app.handle(new Request(projectQueueURL))).status).toBe(401);
+    expect(reads).toBe(readsBeforeProjectDenial);
+    const projectQueue = await app.handle(
+      new Request(projectQueueURL, { headers: { cookie: owner.cookie } }),
+    );
+    expect(projectQueue.status).toBe(200);
+    const body = await projectQueue.json();
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({ ...review, issueId: id });
 
     const oldWrite = await app.handle(
       new Request(`http://localhost/agent-runs/${run.id}/factory-phase`, {
