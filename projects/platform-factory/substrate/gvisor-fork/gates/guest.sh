@@ -1,5 +1,5 @@
 # The guest of the isolation-gate template (gates.py puts it in the template's
-# command: /bin/sh -c "<this file>"). It runs in a busybox image. The seed asks
+# command: /bin/sh -c "<this file>"). It runs in an Alpine image (busybox). The seed asks
 # gVisor for a checkpoint and blocks; each fork resumes after the read, learns its
 # mode from its actor name (<mode>-<n>), answers the wakeup probe, runs the mode
 # and prints lines that start with "GATE <actor> ". Nothing here reads a secret.

@@ -1,6 +1,6 @@
 # ActorTemplate (protojson ateapi.ActorTemplate) for the isolation-gate Job
 # (gates.py). gates.py replaces __GUEST__ with guest.sh, as one JSON string, so
-# the script and the template cannot drift. The guest is busybox: a shell that
+# the script and the template cannot drift. The guest is Alpine's busybox: a shell that
 # can ask gVisor for the checkpoint, answer the wakeup probe and run one test
 # mode for each fork (the mode is the actor name's first word).
 #
@@ -10,7 +10,10 @@
 # for gate X7: every child can read a seed's environment (a known rule), so the
 # value must be harmless.
 #
-# image: the linux/amd64 manifest of busybox 1.37.0 on Docker Hub, by digest.
+# image: the linux/amd64 manifest of alpine 3.24.4 (busybox 1.37.0) on Docker Hub,
+# by digest. It needs the mount points /proc, /sys and /dev: the rootfs is read-only,
+# and the plain busybox image has no /proc or /sys (the first run failed with
+# "creating mount point /sys: read-only file system").
 # atelet pulls Docker Hub anonymously (resources/network-policy.yaml).
 metadata:
   atespace: gvisor-fork-gates
@@ -20,7 +23,7 @@ workerSelector:
     workload: gvisor-fork-gates
 containers:
   - name: guest
-    image: docker.io/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4
+    image: docker.io/library/alpine@sha256:0f49f331d9212aff11b932863be4eb01cdf962969aa86dab7d1ee21ac6f5f52b
     command:
       - /bin/sh
       - -c
