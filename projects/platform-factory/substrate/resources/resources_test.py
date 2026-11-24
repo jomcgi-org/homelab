@@ -154,7 +154,7 @@ def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
         "allowPartialMessage": False,
         "packAsBytes": True,
     }
-    assert check["policies"] == {"http": {"requestTimeout": "310ms"}}
+    assert check["policies"] == {"http": {"requestTimeout": "80ms"}}
     assert config == yaml.safe_load((_HERE / "atenet-egress-config.yaml").read_text())
 
 
@@ -792,7 +792,6 @@ def test_spike_script_logs_a_long_golden_error_in_full(
 
 
 _FORK_NS = "substrate-gvisor-fork"
-_GATES_NS = "substrate-gvisor-fork-gates"
 # Every object ../gvisor-fork renders (step 5 of the enable steps). A new object
 # there changes the cluster, so it must be listed here in the same change.
 _FORK_OBJECTS = {
@@ -807,14 +806,6 @@ _FORK_OBJECTS = {
     ("SandboxConfig", None, "gvisor-fork"),
     ("ServiceAccount", _FORK_NS, "fork-worker"),
     ("WorkerPool", _FORK_NS, "gvisor-fork"),
-    # The isolation-gate pool and Job (gvisor-fork/gates/): staged, to be removed.
-    ("CiliumNetworkPolicy", "ate-system", "ate-api-server-gvisor-fork-gates"),
-    ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-gates"),
-    ("CiliumNetworkPolicy", _GATES_NS, "substrate-workers"),
-    ("Job", "ate-system", "gvisor-fork-gates-3"),
-    ("Namespace", None, _GATES_NS),
-    ("ServiceAccount", _GATES_NS, "fork-worker"),
-    ("WorkerPool", _GATES_NS, "gvisor-fork-gates"),
 }
 _GVISOR_DEFAULT = "sandboxconfig.ate.dev/is-class-default"
 
@@ -857,7 +848,6 @@ def test_gvisor_fork_slice_is_wired() -> None:
     assert {k[2].rsplit("-", 1)[0] for k in configmaps} == {
         "gvisor-fork-assets",
         "gvisor-fork-conformance",
-        "gvisor-fork-gates",
     }
     assert rendered - configmaps == _FORK_OBJECTS
     classes = {
@@ -900,42 +890,15 @@ def test_gvisor_fork_slice_is_wired() -> None:
     ]
     assert config_volume["configMap"]["name"] == conformance_map
     assert conformance_map == "gvisor-fork-conformance-tgf4tdtbht"
-    # The staged isolation-gate pool and Job (gvisor-fork/gates/, to be removed).
-    # Same rule as the conformance Job: the Job's config volume names the
-    # generated ConfigMap, whose name carries a hash of gates/. The Job runs
-    # once (unsuspended for the gate run). Its pool is separate from
-    # production: own namespace, own label, tiny requests, one worker.
-    (gates_map,) = [k[2] for k in configmaps if k[2].startswith("gvisor-fork-gates-")]
-    gates_job = _one(docs, "Job", "gvisor-fork-gates-3")
-    (gates_volume,) = [
-        v
-        for v in gates_job["spec"]["template"]["spec"]["volumes"]
-        if v["name"] == "config"
-    ]
-    assert gates_volume["configMap"]["name"] == gates_map
-    assert gates_map == "gvisor-fork-gates-fmhb4ghbdf"
-    assert gates_job["spec"]["suspend"] is False
-    gates_pool = _one(docs, "WorkerPool", "gvisor-fork-gates")
-    assert gates_pool["metadata"]["namespace"] == _GATES_NS
-    assert gates_pool["metadata"]["labels"] == {"workload": "gvisor-fork-gates"}
-    assert gates_pool["spec"]["replicas"] == 1
-    assert gates_pool["spec"]["template"]["resources"]["requests"] == {
-        "cpu": "100m",
-        "memory": "256Mi",
-    }
-    # The production pool's label (the production template's selector) is not
-    # the gate pool's, so neither template can land on the other pool.
-    assert pool["metadata"]["labels"] != gates_pool["metadata"]["labels"]
     assert not [
         d for d in docs if d["metadata"]["name"].startswith("gvisor-fork-latency")
     ]
     # The namespace is kept when the Application goes, like every Namespace.
-    for ns in (_FORK_NS, _GATES_NS):
-        namespace = _one(docs, "Namespace", ns)
-        assert (
-            "Prune=false"
-            in namespace["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
-        )
+    namespace = _one(docs, "Namespace", _FORK_NS)
+    assert (
+        "Prune=false"
+        in namespace["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
+    )
     # The asset Job is a Sync hook, so Argo runs it on the first sync and holds
     # that sync until its pod is scheduled: keep its pod request small
     # (the nodes are request-tight; node-2 had 1981Mi left on 2026-11-23).
@@ -1086,7 +1049,7 @@ def test_fork_seed_gate_is_on() -> None:
         if d["kind"] == "WorkerPool"
         and any(c.get("platform") == "kvm" for c in d["spec"]["sandboxClasses"])
     ]
-    assert sorted(kvm_pools) == ["gvisor-fork", "gvisor-fork-gates"]
+    assert kvm_pools == ["gvisor-fork"]
     # ForkSeed is nowhere else: no other container argument or variable of a
     # rendered workload names it.
     for doc in _docs():
@@ -1109,10 +1072,7 @@ def test_fork_seed_gate_is_on() -> None:
     # does not know ForkSeed. Its --preview must stay as it is with the gate
     # off, which only the build above guarantees.
     for doc in _docs():
-        if doc["kind"] == "WorkerPool" and doc["metadata"]["name"] not in {
-            "gvisor-fork",
-            "gvisor-fork-gates",
-        }:
+        if doc["kind"] == "WorkerPool" and doc["metadata"]["name"] != "gvisor-fork":
             image = doc["spec"]["workerImage"]
             assert image.startswith("ghcr.io/kagent-dev/substrate/ateworker-"), image
             assert ":v1.0.1@sha256:" in image, image
@@ -1188,16 +1148,6 @@ def test_fork_images_share_one_fork_commit_tag() -> None:
         if v["name"] == "cli"
     ]
     refs["conformance/cli"] = cli
-    refs["workerpool/gvisor-fork-gates"] = _one(
-        docs, "WorkerPool", "gvisor-fork-gates"
-    )["spec"]["workerImage"]
-    gates = _one(docs, "Job", "gvisor-fork-gates-3")
-    (gates_cli,) = [
-        v["image"]["reference"]
-        for v in gates["spec"]["template"]["spec"]["volumes"]
-        if v["name"] == "cli"
-    ]
-    refs["gates/cli"] = gates_cli
     tags = {key: ref.split("@")[0].rsplit(":", 1)[1] for key, ref in refs.items()}
     assert set(tags.values()) == {_FORK_TAG}, tags
     for key, ref in refs.items():
@@ -1284,18 +1234,15 @@ def _semgrep_values() -> dict:
 _OBSERVE_ENDPOINT = "http://engine-gate.ate-system.svc:{port}/scan"
 
 
-def _tier_problems(
+def _observe_problems(
     values: dict, service_port: int, max_inflight: int, scanner_replicas: int
 ) -> list[str]:
-    """What the scanner's tier values must say: on, in enforce mode (since
-    2026-11-24, Joe's decision), denying when the engine gives no verdict."""
+    """What the scanner's tier values must say for the observe rollout."""
     bad = []
     if values.get("enabled") is not True:
         bad.append("semgrep.enabled is not true")
-    if values.get("mode") != "enforce":
-        bad.append("semgrep.mode is not enforce")
-    if values.get("failureMode") != "deny":
-        bad.append("semgrep.failureMode is not deny")
+    if values.get("mode") != "observe":
+        bad.append("semgrep.mode is not observe")
     if values.get("endpoint") != _OBSERVE_ENDPOINT.format(port=service_port):
         bad.append("semgrep.endpoint is not the engine-gate Service and its one path")
     if values.get("deadline") != "300ms":
@@ -1330,7 +1277,7 @@ def test_scanner_reaches_the_gate_only_with_per_packet_service_translation() -> 
     )
 
 
-def test_scanner_tier_is_enforced_and_points_at_the_gate() -> None:
+def test_scanner_tier_is_on_in_observe_mode_and_points_at_the_gate() -> None:
     docs = _docs()
     service = _one(docs, "Service", "engine-gate")
     (port,) = service["spec"]["ports"]
@@ -1347,12 +1294,11 @@ def test_scanner_tier_is_enforced_and_points_at_the_gate() -> None:
     )
     replicas = deployment["spec"]["replicas"]
     values = _semgrep_values()
-    assert _tier_problems(values, port["port"], inflight, replicas) == []
+    assert _observe_problems(values, port["port"], inflight, replicas) == []
     # Each mutation must be caught, so that the check cannot pass on a wrong value.
     mutations = {
         "tier off": {"enabled": False},
-        "observe mode": {"mode": "observe"},
-        "failure mode allow": {"failureMode": "allow"},
+        "enforce mode": {"mode": "enforce"},
         "endpoint typo": {"endpoint": "http://engine-gate.ate-system.svc:8080/scn"},
         "wrong host": {"endpoint": "http://engine.ate-system.svc:8080/scan"},
         "no path": {"endpoint": "http://engine-gate.ate-system.svc:8080"},
@@ -1361,11 +1307,11 @@ def test_scanner_tier_is_enforced_and_points_at_the_gate() -> None:
         "concurrency": {"concurrency": 8},
     }
     for name, change in mutations.items():
-        assert _tier_problems({**values, **change}, port["port"], inflight, replicas), (
-            name
-        )
+        assert _observe_problems(
+            {**values, **change}, port["port"], inflight, replicas
+        ), name
     # The endpoint follows the Service port.
-    assert _tier_problems(values, 9999, inflight, replicas)
+    assert _observe_problems(values, 9999, inflight, replicas)
 
 
 def test_gateway_timeout_is_coupled_to_the_semgrep_deadline() -> None:
