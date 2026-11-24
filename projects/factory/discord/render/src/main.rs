@@ -35,7 +35,7 @@ fn diagram_allowed(input: &str) -> bool {
             .any(|word| matches!(word, "click" | "link" | "links" | "callback"))
 }
 
-// invariant: FACT-18
+// invariant: HOME-585-2
 fn worker(route: &str, body: &[u8], input: &Path, output: &Path) -> Result<Command, Failure> {
     if body.len() > LIMIT {
         return Err((413, "Spec exceeds 64 KiB"));
