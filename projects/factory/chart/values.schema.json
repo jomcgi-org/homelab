@@ -628,6 +628,9 @@
                   "$ref": "#/definitions/connectorCheck"
                 }
               },
+              "authorApproved": {
+                "type": "boolean"
+              },
               "skipLabels": {
                 "type": "array",
                 "items": {
