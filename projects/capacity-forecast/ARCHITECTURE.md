@@ -15,6 +15,8 @@ workload when they have no pod label. Each query accepts up to 32 series.
 
 The reviewer profile tracks the largest pod. The Codex profile forecasts
 each pod using that pod's preceding CPU usage as an optional signal.
+The Hindsight profile forecasts the API pod from memory alone. It idles near
+200 MiB and bursts to about 3 GiB, so its request is far below its limit.
 Each batch publishes six five-minute p90 predictions and a rolling p90
 baseline. Missing observations stay missing. A missing or sparse optional
 signal leaves the memory-only prediction available. A profile can set the

@@ -18,3 +18,7 @@ profiles:
     past_covariates:
       - >-
         max by (pod) (rate(pod_cpu_usage_seconds_total{job="kubelet-resource",namespace="factory-r-homelab",pod=~"homelab-codex-.*"}[5m]))
+  - namespace: hindsight
+    workload: hindsight
+    target: >-
+      max by (pod) (pod_memory_working_set_bytes{job="kubelet-resource",namespace="hindsight",pod=~"hindsight-[0-9a-f]+-[a-z0-9]+"})
