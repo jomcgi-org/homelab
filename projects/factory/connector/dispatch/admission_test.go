@@ -1285,3 +1285,44 @@ func TestAdmissionOrderBlockedHighPriorityRunDoesNotTakeASlot(t *testing.T) {
 	}
 	v.held(1)
 }
+
+// The claim phase takes runs from itsaplan only while an agent has a free
+// slot, and at most concurrency+1 per tick. Held runs cost no slot, so the
+// claimed pool grows each time a slot frees (HOME-822).
+func TestQueuedRunsAreClaimedOnlyWhileASlotIsFree(t *testing.T) {
+	v := oneSlotEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Holds the slot.")
+	v.tick(v.e)
+	if v.run(1).State != store.RunDispatched {
+		t.Fatal("the first run did not take the slot")
+	}
+	for id := int64(2); id <= 5; id++ {
+		v.its.add(id, "coder", 100+id, fmt.Sprintf("HL-%d", id), "Queued work.")
+	}
+	claimed := func() (n int) {
+		for id := int64(2); id <= 5; id++ {
+			if _, err := v.st.GetRun(v.ctx, id); err == nil {
+				n++
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				t.Fatal(err)
+			}
+		}
+		return n
+	}
+	for range 5 {
+		v.tick(v.e)
+	}
+	if claimed() != 0 {
+		t.Fatal("runs were claimed while the only slot was busy")
+	}
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Done.", nil)
+	for range 10 {
+		v.tick(v.e)
+		if claimed() > 0 {
+			break
+		}
+	}
+	if n := claimed(); n != 2 {
+		t.Fatalf("claimed %d runs on the first free tick, want concurrency+1 = 2", n)
+	}
+}
