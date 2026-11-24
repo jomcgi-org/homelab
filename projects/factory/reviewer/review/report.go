@@ -1074,6 +1074,7 @@ type State struct {
 	PendingResolutions map[string]string            `json:"pending_resolutions,omitempty"`
 	OptionalIDs        []string                     `json:"optional_ids,omitempty"`
 	Round              int                          `json:"round,omitempty"`
+	DecisionComment    int64                        `json:"decision_comment,omitempty"` // Highest approver comment ID handled on this head.
 	InvariantBase      string                       `json:"invariant_base,omitempty"`
 	Semgrep            *SemgrepStamp                `json:"semgrep,omitempty"`
 	Activation         *github.ActivationAssessment `json:"activation,omitempty"`
