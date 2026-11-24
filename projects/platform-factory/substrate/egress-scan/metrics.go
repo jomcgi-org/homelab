@@ -42,6 +42,7 @@ func newMeteredScanner(scanner *scanner, registry prometheus.Registerer) *metere
 		}
 	}
 	registry.MustRegister(checks, duration)
+	registerDetectorInfo(registry, scanner.host)
 	return &meteredScanner{scanner: scanner, checks: checks, duration: duration}
 }
 
@@ -102,6 +103,21 @@ func newDetectorMetrics(registry prometheus.Registerer) *detectorMetrics {
 	}
 	registry.MustRegister(m.findings, m.failures)
 	return m
+}
+
+// registerDetectorInfo exports the active detector, its mode and its failure
+// mode as one series with the value 1, so a dashboard can show them.
+func registerDetectorInfo(registry prometheus.Registerer, host *detect.Host) {
+	if host == nil {
+		return
+	}
+	info := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "factory_egress_scan_detector_info",
+		Help: "The active detector with its mode (observe or enforce) and failure mode (deny or allow). The value is always 1.",
+	}, []string{"detector", "mode", "failure_mode"})
+	cfg := host.Config()
+	info.WithLabelValues(host.Name(), string(cfg.Mode), string(cfg.FailureMode)).Set(1)
+	registry.MustRegister(info)
 }
 
 func (m *detectorMetrics) record(host *detect.Host, v detect.Verdict, route, source string) {

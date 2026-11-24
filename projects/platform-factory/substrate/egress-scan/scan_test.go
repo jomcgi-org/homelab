@@ -185,10 +185,17 @@ func TestCheckOverGRPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(families) != 2 {
+	if len(families) != 3 {
 		t.Fatalf("unexpected metric families: %v", families)
 	}
 	for _, family := range families {
+		if family.GetName() == "factory_egress_scan_detector_info" {
+			info := family.GetMetric()
+			if len(info) != 1 || info[0].GetGauge().GetValue() != 1 || len(info[0].GetLabel()) != 3 {
+				t.Fatalf("detector info series: %v", info)
+			}
+			continue
+		}
 		for _, sample := range family.GetMetric() {
 			labels := map[string]string{}
 			for _, l := range sample.GetLabel() {
