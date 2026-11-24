@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The admission guard of the engine-gate ServiceAccount. It stays deployed while
+# the gate is not: the router still trusts the ServiceAccount's certificate
+# (values/substrate.yaml) and the atespace access policy still gives it the
+# editor role, until the teardown PRs remove both. The guard leaves with them.
+# ../manifests lists this directory, so the gate's own render still holds it.
+resources:
+  - admission.yaml

@@ -48,7 +48,12 @@ resources:
   # engine-gate (egress-scan/gate/manifests) is not deployed: Joe deferred the
   # Semgrep tier on 2026-11-24 (egress-scan/ARCHITECTURE.md "Decided" 9). The
   # source and the manifests stay in the repository. To deploy the gate again,
-  # list ../egress-scan/gate/manifests here (egress-scan/gate/README.md).
+  # list ../egress-scan/gate/manifests here and restore the Prometheus scrape
+  # job, its egress rule and the alerts from the commit that removed them
+  # (egress-scan/gate/README.md).
+  # The admission guard of its ServiceAccount stays until the router grant and
+  # the editor binding of that ServiceAccount are gone.
+  - ../egress-scan/gate/guard
   - network-policy.yaml
   - kagent-identity-guard.yaml
   - ghcr-pull-secret.yaml

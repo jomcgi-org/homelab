@@ -7,7 +7,12 @@ child. State: **deferred, not deployed**. Joe deferred the Semgrep tier on
 2026-11-24 (ARCHITECTURE.md "Decided" 9), and the gate's manifests left
 `resources/kustomization.yaml`. The source, the tests and this document stay. It
 ran in enforce mode on 2026-11-24 only (see "Enforce mode" and "Enable steps";
-those sections describe the gate when it is deployed). The design is
+those sections describe the gate when it is deployed). To deploy it again, list
+`manifests` in `resources/kustomization.yaml`, and restore the Prometheus scrape
+job, its egress rule and the `EngineGate*` and `EgressScanSemgrepDenying` alerts
+from the commit that removed them (#8658). The admission guard of its
+ServiceAccount (`guard/`) stays deployed until the router grant and the editor
+binding of that ServiceAccount are gone. The design is
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Engine path" (path B).
 
 ```mermaid
