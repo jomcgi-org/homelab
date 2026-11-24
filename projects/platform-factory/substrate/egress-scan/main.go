@@ -32,6 +32,8 @@ func main() {
 	detectorFailure := flag.String("detector-failure-mode", string(detect.FailDeny), "when the detector gives no verdict: deny or allow")
 	detectorDeadline := flag.Duration("detector-deadline", maxScanTime, "detector time for one request; keep the gateway requestTimeout at least 5ms above it")
 	detectorMaxInput := flag.Int("detector-max-input-bytes", maxBody, "largest input in bytes that a detector call takes; larger is a failure")
+	metricRoutes := flag.String("metrics-routes", "", "comma-separated destination host[:port] values that get their own route label; any other value is other. Empty: the first --metrics-max-label-values distinct values, then other")
+	metricMax := flag.Int("metrics-max-label-values", defaultMaxLabelValues, "cap on the distinct values of the route and source labels when no route allowlist is set")
 	detectorData := flag.String("detector-data-path", "", "mounted path of the private data of a detector that holds any")
 	concurrency := flag.Int("concurrency", 8, "maximum simultaneous scans")
 	flag.Parse()
@@ -62,7 +64,7 @@ func main() {
 	}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(maxCheckMessage))
 	registry := prometheus.NewRegistry()
-	authv3.RegisterAuthorizationServer(server, newMeteredScanner(&scanner{host: host, slots: make(chan struct{}, *concurrency)}, registry))
+	authv3.RegisterAuthorizationServer(server, newMeteredScanner(&scanner{host: host, slots: make(chan struct{}, *concurrency), labels: newLabeler(splitList(*metricRoutes), *metricMax)}, registry))
 	metricsListener, err := net.Listen("tcp", *metricsAddr)
 	if err != nil {
 		log.Fatal(err)
@@ -97,4 +99,14 @@ func main() {
 	if err := server.Serve(sock); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, item := range strings.Split(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }

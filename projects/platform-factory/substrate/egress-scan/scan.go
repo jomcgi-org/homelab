@@ -32,6 +32,7 @@ type scanner struct {
 	host    *detect.Host
 	slots   chan struct{}
 	metrics *detectorMetrics
+	labels  *labeler
 }
 
 func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv3.CheckResponse, error) {
@@ -144,7 +145,8 @@ func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv
 	// failure). The budget is what the request has left of the one window that
 	// the JSON decoding above shares with the detector.
 	verdict := s.host.ScanWithin(ctx, s.host.Config().Limits.Deadline-time.Since(begin), inputs...)
-	s.metrics.record(s.host, verdict)
+	route, source := s.labels.labels(check)
+	s.metrics.record(s.host, verdict, route, source)
 	if verdict.Canceled != nil {
 		return nil, verdict.Canceled
 	}

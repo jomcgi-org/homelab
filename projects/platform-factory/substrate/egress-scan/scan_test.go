@@ -132,14 +132,14 @@ func TestDetectorFindingsAndFailuresAreCounted(t *testing.T) {
 				labels[l.GetName()] = l.GetValue()
 			}
 			if family.GetName() == "factory_egress_scan_detector_findings_total" {
-				found[labels["detector"]+"/"+labels["class"]+"/"+labels["mode"]] += sample.GetCounter().GetValue()
+				found[labels["detector"]+"/"+labels["class"]+"/"+labels["mode"]+"/"+labels["route"]+"/"+labels["source"]] += sample.GetCounter().GetValue()
 				if strings.Contains(labels["rule"], fixture) {
 					t.Error("a rule label holds the credential")
 				}
 			}
 		}
 	}
-	if found["gitleaks/block/enforce"] != 1 {
+	if found["gitleaks/block/enforce/other/unknown"] != 1 {
 		t.Fatalf("detector findings: %v", found)
 	}
 }
@@ -190,12 +190,22 @@ func TestCheckOverGRPC(t *testing.T) {
 	}
 	for _, family := range families {
 		for _, sample := range family.GetMetric() {
-			labels := sample.GetLabel()
-			if len(labels) != 1 || labels[0].GetName() != "outcome" {
-				t.Fatal("every scan sample must have only the outcome label")
+			labels := map[string]string{}
+			for _, l := range sample.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			wantLabels := 3 // outcome, route, source
+			if family.GetName() == "factory_egress_scan_check_duration_seconds" {
+				wantLabels = 2 // outcome, route
+			}
+			if len(labels) != wantLabels || labels["route"] != labelOther {
+				t.Fatalf("scan sample labels %v: want outcome and route (other, there is no host) and, for the counter, source", labels)
+			}
+			if _, has := labels["source"]; has && labels["source"] != labelUnknown {
+				t.Fatalf("source %q without a gateway identity", labels["source"])
 			}
 			var want float64
-			if outcome := labels[0].GetValue(); outcome == "allowed" || outcome == "capacity_limited" {
+			if outcome := labels["outcome"]; outcome == "allowed" || outcome == "capacity_limited" {
 				want = 1
 			}
 			var count float64
@@ -208,7 +218,7 @@ func TestCheckOverGRPC(t *testing.T) {
 				t.Fatalf("unexpected metric family %s", family.GetName())
 			}
 			if count != want {
-				t.Fatalf("%s for %s = %v, want %v", family.GetName(), labels[0].GetValue(), count, want)
+				t.Fatalf("%s for %s = %v, want %v", family.GetName(), labels["outcome"], count, want)
 			}
 		}
 	}

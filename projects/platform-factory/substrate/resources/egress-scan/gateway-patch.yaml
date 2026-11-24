@@ -117,7 +117,11 @@ data:
               - condition: destination.hostname == "hindsight-api.hindsight.svc.cluster.local" && destination.port == 8888
                 host: egress-scan.ate-system.svc:8080
                 protocol:
-                  grpc: {}
+                  grpc:
+                    context:
+                      route: hindsight
+                    metadata:
+                      actor: '{"spiffe": source.spiffeId}'
                 failureMode: deny
                 includeRequestBody:
                   maxRequestBytes: 524288
