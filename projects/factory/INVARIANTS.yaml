@@ -56,6 +56,12 @@ invariants:
   - projects/factory/reviewer/review/rules.go
   test: //projects/factory/reviewer/review:review_test
   state: live
+- id: HOME-644-1
+  statement: The choices parser ignores choices inside raw HTML blocks opened after thematic breaks.
+  mechanism:
+  - projects/factory/connector/itsaplan/status.go
+  test: //projects/factory/connector/itsaplan:itsaplan_test
+  state: live
 - id: FACT-575
   statement: Fresh dispatch uses a session pinned to a revision verified against the receipt’s system prompt.
   mechanism:
