@@ -100,7 +100,9 @@ def test_the_removed_tier_values_change_nothing() -> None:
 
 
 def test_the_route_allowlist_and_the_cap_follow_the_values() -> None:
-    args = _scanner("metrics.routes={a.example.com:443,b.example.com}", "metrics.maxLabelValues=8")["args"]
+    args = _scanner(
+        "metrics.routes={a.example.com:443,b.example.com}", "metrics.maxLabelValues=8"
+    )["args"]
     assert "--metrics-routes=a.example.com:443,b.example.com" in args
     assert "--metrics-max-label-values=8" in args
     # No allowlist: the scanner falls back to the cap on distinct values.
