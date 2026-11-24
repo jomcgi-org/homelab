@@ -38,6 +38,7 @@ py_test(
     name = "node_ksm_off_test",
     srcs = ["node_ksm_off_test.py"],
     data = [
+        "factory-ksm-qemu.conf",
         "factory-ksm.conf",
         "ksm-off.sh",
     ],

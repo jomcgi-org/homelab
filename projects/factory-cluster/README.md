@@ -89,9 +89,14 @@ step 2. It restarts one node at a time.
 
 KSM is off on every node (`nodes/ksm-off.sh`, `nodes/factory-ksm.conf`): the
 script writes 0 to `/sys/kernel/mm/ksm/run` and installs a `systemd-tmpfiles`
-entry that does the same at each boot. `install-node.sh` runs it. To change only
-KSM on a running node, copy both files to it and run `sudo ./ksm-off.sh`. To
-undo, delete `/etc/tmpfiles.d/factory-ksm.conf` and write 1 to the sysfs file.
+entry that does the same at each boot. Node-1 has the `qemu-system-common`
+package, whose `qemu-kvm.service` turns KSM on at boot (`KSM_ENABLED=AUTO`), so
+there the script also installs a drop-in (`nodes/factory-ksm-qemu.conf`) that
+writes 0 after that unit's init. `install-node.sh` runs the script. To change
+only KSM on a running node, copy the three files to it and run `sudo ./ksm-off.sh`.
+To undo, delete `/etc/tmpfiles.d/factory-ksm.conf` and
+`/etc/systemd/system/qemu-kvm.service.d/10-factory-ksm.conf`, run
+`systemctl daemon-reload`, and write 1 to the sysfs file.
 
 To turn off zram swap and pod swap, remove them from `nodes/` first. Then, on
 each node, delete the files that `install-node.sh` installed, because a rerun
