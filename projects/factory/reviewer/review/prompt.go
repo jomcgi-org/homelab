@@ -54,6 +54,7 @@ type PromptInput struct {
 	Rules           *Rules
 	// Previous are the blocking and human-gate findings of the review of
 	// PreviousHead.
+	OptionalIDs  []string
 	Previous     []Finding
 	PreviousHead string
 	// Cleared is what reviews of earlier heads cleared.
@@ -226,6 +227,12 @@ func Prompt(in PromptInput) string {
 	if in.PreviousHead != "" {
 		if in.PreviousUnknown == "" {
 			b.WriteString("## Previous review\n\n")
+		}
+		if len(in.OptionalIDs) > 0 {
+			b.WriteString("Check each prior optional finding against this head. Report its ID in previous as fixed only when the defect is gone, or report it again in findings if present.\n")
+			for _, id := range in.OptionalIDs {
+				fmt.Fprintf(&b, "- %s\n", quotePath(id))
+			}
 		}
 		if len(in.Previous) == 0 && in.PreviousUnknown == "" {
 			fmt.Fprintf(&b, "The review of the earlier head %s raised no blocking findings.\n", in.PreviousHead)
@@ -409,6 +416,7 @@ func Prompt(in PromptInput) string {
 		"Read a clipped head message with git before assessing it. Keep the activation string within 4000 bytes.\n\n")
 	b.WriteString("End your reply with exactly one fenced JSON block and nothing after it:\n\n")
 	b.WriteString("```json\n")
+	b.WriteString("Use line only for an actual changed head line. An optional start_line extends the finding to a contiguous range of changed lines ending at line. Omit line for missing tests or other findings without an anchor. Optionally include suggestion with integer start and end on that file and string replacement only if applying it fixes the finding by itself.\n")
 	b.WriteString(`{"summary": "...", "activation": "Remaining action and its precondition, or empty when none.", "invariant_scopes": [{"path": "added/file.go", "uncovered": false, "reason": "..."}], "findings": [{"id": "dir/file.go:correctness", "severity": "medium", "path": "dir/file.go", "line": 12, "title": "...", "detail": "...", "defer": false}], "previous": [{"id": "...", "status": "fixed", "note": "..."}]}`)
 	b.WriteString("\n```\n\n")
 	b.WriteString("- severity: \"critical\", \"high\", \"medium\" or \"low\", rated by the review rules above. Critical, high " +

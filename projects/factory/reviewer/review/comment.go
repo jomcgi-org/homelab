@@ -9,14 +9,17 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"html"
 	"io"
 	"log/slog"
+	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,6 +68,7 @@ var severityLabel = map[string]string{
 
 // CommentUpdate is what a review check write shows in the PR comment.
 type CommentUpdate struct {
+	pendingResolutions map[string]string
 	// body replays a rendered snapshot recovered from a completed check.
 	body    string
 	Verdict Verdict
@@ -172,9 +176,19 @@ func (e *Engine) replayComment(ctx context.Context, b *Binding, pr github.PullRe
 	if queued {
 		return
 	}
-	if body := recordedComment(run.Text); body != "" {
-		e.queueMirror(ctx, b, pr, run, &CommentUpdate{body: body})
+	body := recordedComment(run.Text)
+	pending := recordedResolutions(run.Text)
+	if body != "" || len(pending) > 0 {
+		e.queueMirror(ctx, b, pr, run, &CommentUpdate{body: body, pendingResolutions: pending})
 	}
+}
+
+func recordedResolutions(text string) map[string]string {
+	st, ok := LoadState(text)
+	if !ok || st.Incomplete {
+		return nil
+	}
+	return st.PendingResolutions
 }
 
 // queueCompletedComment uses the same snapshot for live writes and retries.
@@ -184,6 +198,7 @@ func (e *Engine) queueCompletedComment(ctx context.Context, b *Binding, pr githu
 		return
 	}
 	update := *u
+	update.pendingResolutions = recordedResolutions(text)
 	update.body = recordedComment(text)
 	e.queueMirror(ctx, b, pr, run, &update)
 }
@@ -325,7 +340,7 @@ func findingsSection(a Assessment, r *Report) string {
 		}
 		rows = append(rows, rw)
 	}
-	for _, f := range a.Optional {
+	for _, f := range append(slices.Clone(a.Optional), a.ExtraLow...) {
 		rows = append(rows, row{f: f})
 	}
 	for _, f := range a.Deferred {
@@ -349,7 +364,7 @@ func findingsSection(a Assessment, r *Report) string {
 	for omitted := 0; ; omitted++ {
 		shown := rows[:len(rows)-omitted]
 		for _, limit := range []int{maxDetail, 500, 0} {
-			body := findingsTable(shown, omitted, a.DroppedLow) + findingDetails(shown, limit)
+			body := findingsTable(shown, omitted, a.DroppedLow-len(a.ExtraLow)) + findingDetails(shown, limit)
 			if len(body) <= budget || (limit == 0 && len(shown) == 0) {
 				notices := ""
 				if room := budget - len(body) - len("…"); room > 0 {
@@ -370,6 +385,9 @@ func findingsTable(rows []row, omitted, dropped int) string {
 		s.WriteString("| Severity | Finding | Location |\n| :-- | :-- | :-- |\n")
 		for _, rw := range rows {
 			title := mdInline(rw.f.Title, maxTitle, true)
+			if rw.f.threadID > 0 {
+				title += fmt.Sprintf(" · [Thread](#discussion_r%d)", rw.f.threadID)
+			}
 			if rw.tag != "" {
 				title += " · _" + rw.tag + "_"
 			}
@@ -666,7 +684,20 @@ func (e *Engine) queueMirror(ctx context.Context, b *Binding, pr github.PullRequ
 		e.commentReplays[key] = run.ID
 	}
 	e.commentQueue = append(e.commentQueue, func() {
-		if !e.mirror(ctx, b, pr, link, &update) && run != nil {
+		ok := true
+		if update.body != "" || update.Verdict != "" || update.Findings != nil {
+			ok = e.mirror(ctx, b, pr, link, &update)
+		}
+		if w, enabled := e.cfg.Comments.(inlineWriter); enabled && len(update.pendingResolutions) > 0 {
+			retryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commentTimeout)
+			_, err := w.SyncInline(retryCtx, b.repo(), pr.Number, pr.HeadSHA, nil, nil, update.pendingResolutions)
+			cancel()
+			if err != nil {
+				ok = false
+				e.commentFailed(ctx, e.prLog(b, pr), b, "resolve", err)
+			}
+		}
+		if !ok && run != nil {
 			e.commentQueueMu.Lock()
 			if e.commentReplays[key] == run.ID {
 				delete(e.commentReplays, key)
@@ -943,4 +974,149 @@ func closingRun(s string, from, n int) int {
 
 func mentionByte(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
+// addedLines indexes only additions, excluding hunk context and deletions.
+func addedLines(files []github.PullRequestFile) map[string]map[int]bool {
+	out := map[string]map[int]bool{}
+	for _, f := range files {
+		lines := map[int]bool{}
+		out[f.Path] = lines
+		n := 0
+		for line := range strings.SplitSeq(f.Patch, "\n") {
+			if strings.HasPrefix(line, "@@") {
+				n = 0
+				if m := hunkHeader.FindStringSubmatch(line); m != nil {
+					n, _ = strconv.Atoi(m[1])
+				}
+				continue
+			}
+			if n <= 0 || line == "" {
+				continue
+			}
+			switch line[0] {
+			case '+':
+				lines[n] = true
+				n++
+			case ' ':
+				n++
+			}
+		}
+	}
+	return out
+}
+
+func validateSuggestions(r *Report, b *Binding, in *inputs) {
+	lines := addedLines(in.files)
+	for i := range r.Findings {
+		f := &r.Findings[i]
+		q := f.Suggestion
+		if q == nil {
+			continue
+		}
+		f.Suggestion = nil
+		if q.Replacement == nil || q.Start < 1 || q.End < q.Start || q.End-q.Start >= 50 || f.Line < q.Start || f.Line > q.End || !lines[f.Path][q.End] {
+			continue
+		}
+		replacement := *q.Replacement
+		if strings.Count(replacement, "\n") >= 50 || len(replacement) > 16000 || strings.ContainsAny(replacement, "\r\x00") || strings.Contains(replacement, "```") || strings.Contains(replacement, "~~~") || strings.Contains(replacement, markerStart) {
+			continue
+		}
+		if matchAny(b.HumanGatePaths, f.Path) || in.gate != nil && (slices.Contains(in.gate.Paths, f.Path) || len(in.gate.Paths) >= maxGatePaths || len(in.gate.Labels) > 0) {
+			continue
+		}
+		ok := true
+		for n := q.Start; n <= q.End; n++ {
+			if !lines[f.Path][n] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			f.Suggestion = q
+		}
+	}
+}
+
+type inlineWriter interface {
+	SyncInline(context.Context, string, int, string, []github.InlineFinding, []string, map[string]string) (map[string]int64, error)
+}
+
+func inlineKey(id string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(id))) }
+
+func (e *Engine) postInline(ctx context.Context, b *Binding, pr github.PullRequest, a *Assessment, in *inputs, r *Report) map[string]string {
+	writer, ok := e.cfg.Comments.(inlineWriter)
+	if !ok {
+		return in.prior.PendingResolutions
+	}
+	lines := addedLines(in.files)
+	var entries []github.InlineFinding
+	var visible []*Finding
+	var active []string
+	for _, f := range r.Findings {
+		active = append(active, inlineKey(f.ID))
+	}
+	add := func(f *Finding, carried bool) {
+		key := inlineKey(f.ID)
+		active = append(active, key)
+		visible = append(visible, f)
+		if carried || findingKind(*f) != KindDefect || f.Verdict != "" || slices.Contains(ruleSegments(f.ID), "goal") || !lines[f.Path][f.Line] {
+			return
+		}
+		start := f.StartLine
+		if start == 0 {
+			start = f.Line
+		}
+		if start < 1 || start > f.Line || f.Line-start >= len(lines[f.Path]) {
+			return
+		}
+		for n := start; n < f.Line; n++ {
+			if !lines[f.Path][n] {
+				return
+			}
+		}
+		entry := github.InlineFinding{Key: key, Path: f.Path, Start: start, End: f.Line, Body: fmt.Sprintf("**%s** · %s\n\n%s\n\n%s", severityLabel[f.Severity], codeText(f.ID), mdInline(f.Title, maxTitle, false), mdPara(f.Detail, maxDetail))}
+		// Agent prose cannot open its own suggestion block.
+		entry.Body = strings.ReplaceAll(strings.ReplaceAll(entry.Body, "```", "' ' '"), "~~~", "~ ~ ~")
+		if q := f.Suggestion; q != nil {
+			entry.Start, entry.End = q.Start, q.End
+			entry.Body += "\n\n```suggestion\n" + *q.Replacement + "\n```"
+		}
+		entries = append(entries, entry)
+	}
+	for i := range a.Blocking {
+		add(&a.Blocking[i].Finding, a.Blocking[i].Carried)
+	}
+	for i := range a.Optional {
+		add(&a.Optional[i], false)
+	}
+	for i := range a.Deferred {
+		add(&a.Deferred[i], false)
+	}
+	for i := range a.ExtraLow {
+		add(&a.ExtraLow[i], false)
+	}
+	fixed := maps.Clone(in.prior.PendingResolutions)
+	if fixed == nil {
+		fixed = map[string]string{}
+	}
+	for _, p := range r.Previous {
+		if p.Status == StatusFixed {
+			if _, pending := fixed[inlineKey(p.ID)]; !pending {
+				fixed[inlineKey(p.ID)] = pr.HeadSHA
+			}
+		}
+	}
+	for _, key := range active {
+		delete(fixed, key)
+	}
+	links, err := writer.SyncInline(ctx, b.repo(), pr.Number, pr.HeadSHA, entries, active, fixed)
+	if err != nil {
+		e.commentFailed(ctx, e.prLog(b, pr), b, "inline", err)
+		return fixed
+	}
+	for _, f := range visible {
+		f.threadID = links[inlineKey(f.ID)]
+	}
+	return nil
 }

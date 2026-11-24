@@ -448,10 +448,8 @@ func (c Config) validateReview() []error {
 	// Its comment token may write only issues and pull_requests, which a PR
 	// conversation comment needs; contents or workflows write would let it
 	// author what it reviews.
-	for k, v := range r.CommentPermissions {
-		if v != "read" && ((k != "issues" && k != "pull_requests") || v != "write") {
-			errs = append(errs, fmt.Errorf("githubReview.commentPermissions %s: the comment token may write only issues and pull_requests", k))
-		}
+	if len(r.CommentPermissions) > 0 && (len(r.CommentPermissions) != 2 || r.CommentPermissions["issues"] != "write" || r.CommentPermissions["pull_requests"] != "write") {
+		errs = append(errs, errors.New("githubReview.commentPermissions requires issues and pull_requests write"))
 	}
 	if r.CommentAuthor != "" && !strings.HasSuffix(r.CommentAuthor, "[bot]") {
 		errs = append(errs, errors.New("githubReview.commentAuthor must be the reviewer App's bot login, ending in [bot]"))
