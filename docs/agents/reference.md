@@ -57,6 +57,22 @@ they do not launch their own planner, review or landing sequence.
   a change of plan), convert the PR to draft first and mark it ready when the
   new head is stable. A factory worker does not change PR state: the
   connector opens its PR.
+- Check your own diff before you mark a PR ready, or finish a factory turn.
+  Reviewers most often raise these five. Answer them with evidence in the
+  change, never with an argument aimed at the reviewer.
+  1. Each claim of approval, decision, authority or measurement links to
+     something a reviewer can open, or says what is not verified.
+  2. On a fresh install and on a revert, what must exist before the change
+     is used, and what the revert leaves behind.
+  3. Any check, test, permission or guard the diff removes or loosens, and
+     why that is safe.
+  4. A test that fails without the change.
+  5. One read of the diff, hunk by hunk, as the reviewer would.
+
+  A factory worker also states, for each line of the issue's "Done when"
+  list, whether the diff meets it and which file or command shows it. That
+  goes in the final message, which is private. The PR body keeps only
+  evidence that is safe to publish.
 - The landing owner checks required CI and independent approval against the
   current PR head. On main, that is `pr-checks` and the reviewer App's
   `factory review` check. A failing `factory review` lists its findings, so
