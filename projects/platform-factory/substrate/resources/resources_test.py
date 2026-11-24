@@ -1361,9 +1361,9 @@ def test_scanner_tier_is_enforced_and_points_at_the_gate() -> None:
         "concurrency": {"concurrency": 8},
     }
     for name, change in mutations.items():
-        assert _tier_problems(
-            {**values, **change}, port["port"], inflight, replicas
-        ), name
+        assert _tier_problems({**values, **change}, port["port"], inflight, replicas), (
+            name
+        )
     # The endpoint follows the Service port.
     assert _tier_problems(values, 9999, inflight, replicas)
 
