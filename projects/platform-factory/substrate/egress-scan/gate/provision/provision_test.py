@@ -57,9 +57,7 @@ def _job(name: str) -> dict:
     is not listed in the kustomization since 2026-11-24, so it is read from its
     own file."""
     if name == _PROVISION_JOB:
-        (doc,) = [
-            d for d in yaml.safe_load_all((_HERE / "job.yaml").read_text()) if d
-        ]
+        (doc,) = [d for d in yaml.safe_load_all((_HERE / "job.yaml").read_text()) if d]
         return doc
     return _one("Job", name)
 
