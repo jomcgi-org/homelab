@@ -142,8 +142,10 @@ func TestASecretAcrossAnInternalChunkBoundaryIsFound(t *testing.T) {
 // deny. A block finding next to them still denies.
 func TestAuthorizationRulesReportAndOthersBlock(t *testing.T) {
 	d := build(t)
-	h := detect.NewHost(d, detect.Config{Name: Name, Mode: detect.ModeEnforce, FailureMode: detect.FailDeny,
-		Limits: detect.Limits{MaxInputBytes: 512 << 10, Deadline: 5 * time.Second}})
+	h := detect.NewHost(d, detect.Config{
+		Name: Name, Mode: detect.ModeEnforce, FailureMode: detect.FailDeny,
+		Limits: detect.Limits{MaxInputBytes: 512 << 10, Deadline: 5 * time.Second},
+	})
 	byName := map[string]detecttest.Sample{}
 	for _, s := range detecttest.Corpus(20261124) {
 		byName[s.Name] = s
