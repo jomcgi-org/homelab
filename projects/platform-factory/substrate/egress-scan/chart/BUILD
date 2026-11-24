@@ -27,14 +27,6 @@ filegroup(
     ],
 )
 
-# The chart defaults, read by resources_test to couple the gateway timeout to
-# semgrep.deadline. A narrow target keeps chart_test.py out of that test.
-filegroup(
-    name = "values",
-    srcs = ["values.yaml"],
-    visibility = ["//projects/platform-factory/substrate/resources:__pkg__"],
-)
-
 py_test(
     name = "chart_test",
     srcs = ["chart_test.py"],

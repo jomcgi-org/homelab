@@ -6,7 +6,9 @@ that the egress gateway calls before it forwards a request. It matches Gitleaks
 rules in process. A second scan tier (`semgrep.go`) posts the scanned text to one HTTP endpoint
 and merges the engine verdict. This note designs that endpoint: a warm pool of
 single-use gVisor children that run the Semgrep Pro Secrets engine. The tier is
-off since 2026-11-24 (Decided 9), and the design below is deferred.
+off since 2026-11-24 (Decided 9). Its code left the scanner (Decided 10; the last
+commit that holds it is `61a15fffb6`), and the design below is deferred. Names such as
+`semgrep.go`, `engineText` and `factory_egress_scan_semgrep_*` point at that commit.
 
 ```mermaid
 flowchart LR
@@ -534,7 +536,7 @@ them yet.
 | 7 | Skip the X gates (X1 to X7 and X9) for now and wire the scanner now: the tier runs in observe mode for 7 days, then one PR enforces. The X gates run during the observe window, and a failure turns the tier off | Joe, 2026-11-23, in session |
 | 8 | Skip the 7-day observe window and enforce the Semgrep tier now ("lets just get it into prod"): `semgrep.mode: enforce`, failure mode `deny` on both layers, gateway `requestTimeout` 310 ms, body limit 64 KiB (measured, `egress-scan/README.md` "Body limit"). This supersedes the 7 days of row 3 and 7. The X gates keep running. Revert is `mode: observe` and `requestTimeout: 80ms` | Joe, 2026-11-24 |
 | 9 | Defer the DLP expansion (no Pipelock, no git egress scanning, no all-egress scanning, no windowed scan, no HA policy now). Turn the Semgrep tier off and remove the `engine-gate` deployment. Keep the gVisor fork pool, `forkd` and `ForkSeed` for tool calling. Replace Gitleaks with Betterleaks in the scanner. This PR turns the tier off. The rest follows in later PRs. To turn the tier on again, use the values of Decided 8 and the 310 ms timeout, and read `gate/README.md` "Enable steps" | Joe, 2026-11-24 |
-| 10 | Remove the Semgrep tier code from the scanner (one detector call path). Betterleaks becomes the single detector behind a small swappable `Detector` interface, selected by `--detector`; Gitleaks stays one release as the revert lever. The Pro engine converges on Mandoline later, as a detector behind the same interface in a private build. Pipelock, windows, the HTTP engine tier and the HA policy are deferred | Joe, 2026-11-24 |
+| 10 | Remove the Semgrep tier code from the scanner (one detector call path; done in #8662). Next, as separate PRs: Betterleaks becomes the single detector behind a small swappable `Detector` interface, selected by `--detector`, and Gitleaks stays one release as the revert lever. The Pro engine converges on Mandoline later, as a detector behind the same interface in a private build. Pipelock, windows, the HTTP engine tier and the HA policy are deferred | Joe, 2026-11-24 |
 
 The engine body limit (64 KiB) and the Hindsight route timeout (310 ms) are set
 in Decided 8.
