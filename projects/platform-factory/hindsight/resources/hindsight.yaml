@@ -110,7 +110,7 @@ spec:
                   key: retain-token
             - name: HINDSIGHT_API_MCP_EXTENSION
               value: bindings:MemoryTools
-            # invariant: FACT-18
+            # invariant: FACT-21
             - name: MCP_BINDINGS
               value: '{"HOMELAB_MCP_TOKEN":{"bank":"homelab","tools":["recall","retain"]},"HOMELAB_RECALL_TOKEN":{"bank":"homelab","tools":["recall"]}}'
             - name: HOMELAB_RECALL_TOKEN
