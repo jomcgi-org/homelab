@@ -974,10 +974,11 @@ flowchart LR
      `kubectl -n substrate-gvisor-fork get pod`.
 9. Run in the observe window (Joe, 2026-11-23: wire the scanner first). Day 1,
    2026-11-24: the gates that can run without changing the cluster or touching
-   engine-gate's children ran, passively. Results are in "Gate results" below.
+   engine-gate's children ran, passively. Results are in "Gate results" below. The
+   guest-side gates ran on a separate pool: see "Gate pool run".
    They read `/proc`, cgroups and sysfs of the live worker's processes, read
    nodes 2 and 3 over ssh, and use `kubectl` for reads and logs only
-   (`gvisor-fork/xgates/collect.py`, as root on the worker's node). Not run: the gates that need a process inside the guest,
+   (`gvisor-fork/xgates/collect.py`, as root on the worker's node). Not run there: the gates that need a process inside the guest,
    a new template or actor, a restart, a node drain or a forkd crash. The pool
    has one worker, so a restart or a drain is a scanner outage while it runs (the
    tier fails closed). Compare `fork_overhead` with the measured use: the seed
@@ -998,17 +999,19 @@ X1 to X7 and X9 run in the cluster during the scanner's 7-day observe window
 (Joe, 2026-11-23), not before wiring. Joe waived X8, which covers the microVM
 fallback only, for gVisor-only use (2026-11-23). Off-cluster runs on
 node-1 (production mode, real forkd and runsc) covered X1, X3, X4 and X7. The
-first in-cluster run is below. Nothing failed.
+first in-cluster run and the gate pool run (2026-11-24) are below. No isolation
+gate failed. The gate pool's 1000-fork storm had 279 failed forks, a test guest
+artifact (see "Gate pool run").
 
 | Gate | Checks | State |
 | --- | --- | --- |
 | X1 | Child seccomp equals a normal sandbox's except 2 instructions (the control fd number); caps 0; `NoNewPrivs` | partial in cluster (state and namespaces passed); the filter byte diff ran off-cluster only |
 | X2 | No writable `MAP_SHARED` between children; KSM off | passed in cluster, reboot not tested: no writable sharing; KSM off on all three nodes (node-1 since #8639, 2026-11-24) |
 | X3 | No inherited descriptors to the seed or siblings | passed in cluster, with the known gaps (`/dev/null`, read-only rootfs) |
-| X4 | Differs per child: `getrandom`, `urandom`, uuid, `boot_id`. Same in every child: ASLR, stack canary, `AT_RANDOM` | node-1 only; not runnable in cluster without a guest process |
-| X5 | A 512 KiB body through router and atunnel; egress NONE incl. DNS | partial: egress NONE checked from the host side |
-| X6 | `pids.max`, memory charging, kill paths, no leak after 1000 forks | partial: limits, charging, lifetime kill and a 94-fork leak check |
-| X7 | A canary in the seed is readable by children (why the seed holds no secret) | node-1 only; passive no-secret check in cluster |
+| X4 | Differs per child: `getrandom`, `urandom`, uuid, `boot_id`. Same in every child: ASLR, stack canary, `AT_RANDOM` | passed in cluster on the gate pool (3 forks); the `AT_RANDOM` bytes were not compared |
+| X5 | A 512 KiB body through router and atunnel; egress NONE incl. DNS | partial: egress NONE from the host side and from a guest (no DNS, no reply from 1.1.1.1); a TCP connect to 1.1.1.1 completes in the guest, cause open; the 512 KiB body not run |
+| X6 | `pids.max`, memory charging, kill paths, no leak after 1000 forks | passed on the gate pool except the pids cap on its own: memory kill, log cap kill, lifetime kill, no leak after 1000 forks; 279 of 1000 forks failed their probe (guest artifact) |
+| X7 | A canary in the seed is readable by children (why the seed holds no secret) | passed in cluster on the gate pool: a child reads its own template env (known); no host env name or path is visible |
 | X8 | The microVM golden is read-only and hash-checked | waived by Joe (2026-11-23) for gVisor-only use |
 | X9 | Cross-atespace and forged-seed requests refused by API, atelet and worker; altered image refused | partial: API refusal and image hash live; atelet and worker by unit tests |
 
@@ -1047,11 +1050,62 @@ Findings, none an isolation failure:
 - The seed cgroup peaked at 444 MiB of its 512 MiB cap (87%). The cap was never
   reached (`oom_kill` 0). The peak likely includes file cache of the 371 MiB root
   filesystem (`memory.stat` was not read). A larger rule set may need a larger cap.
-- Not run, and why: X4 and X7 (guest-side), the X5 body and DNS, the X6 1000-fork
-  and kill-path tests, and the X9 forged requests need a process in the guest, a
-  new template or credentials, so each is a cluster change. A worker restart, a
-  node drain and a forkd crash take the scanner down. They need a PR and Joe's
-  approval: a dedicated gate pool in its own atespace, or a maintenance window.
+- Not run in this first run: the guest-side gates, the X5 body and the X9 forged
+  requests. The gate pool run below did the guest-side gates. Still not run: the
+  X1 filter byte diff in cluster, the X5 512 KiB body, the X9 forged requests, a
+  worker restart, a node drain and a forkd crash. The last three take the scanner
+  down.
+
+#### Gate pool run
+
+Run on 2026-11-24 from 08:11Z to 08:27Z on a separate pool, `gvisor-fork-gates`:
+its own namespace and atespace, one worker, the production worker image (fork
+`8cf248b96e08`), the production forkd and `runsc`. Joe asked for it
+(2026-11-24) so that the guest-side gates run without touching the scanner
+pool, `engine-gate` or the router. The guest was Alpine's busybox 1.37.0
+running one script (`guest.sh`): each fork learns its mode from its actor name.
+The first attempt (Job `-1`) failed at the seed because the busybox image has
+no `/sys` and the rootfs is read-only (PR #8643 fixed it). Job `-2` ran once
+(`summary result=fail`, from the storm only). This change removes the pool, its Jobs
+and its policies. The code is in git history (PRs #8641, #8642, #8643).
+
+| Gate | Method | Result | Evidence |
+| --- | --- | --- | --- |
+| X4 | `ident` x3: read `boot_id`, `uuid`, `/dev/urandom`, `/proc/self/maps`, `auxv` in 3 forks of one seed | Pass | `boot_id`, `uuid` and 16 random bytes differ in every fork. The stack, heap and vdso ranges and the `auxv` addresses are the same in all three (as designed: ASLR is the seed's). The `AT_RANDOM` bytes were not read. Fork `ident-2` returned `exited before its wakeup probe passed` but had printed all its lines |
+| X7 | `canary`: the template env holds a fake canary; the guest reads its own env, the names of every process env (`/proc/*/environ`), and four host paths | Pass | The child reads the canary in its own env (known: why the seed holds no secret). No host marker is visible (`KUBERNETES`, `POD_UID`, `WORKER_POOL`, `NODE_NAME`, `OTEL_`, `SSL_CERT`: 0 hits). `/var/lib/ate`, `/var/run/secrets`, `/run/podidentity.podcert.ate.dev` and `/sys/fs/cgroup/forkd` do not exist in the guest. The canary was in the template, not in the worker's env |
+| X5 (guest) | `net`: addresses, routes, resolver, `nslookup`, `wget`, `nc` | Partial | The guest has `lo` and `eth0` `169.254.17.2/30`, a default route via `169.254.17.1`, no `/etc/resolv.conf`. `nslookup` (local and 1.1.1.1) times out. `wget http://example.com/` fails on the name. `wget http://1.1.1.1/` ends with `error getting response` and `nc 1.1.1.1 443 -e true` exits 0, so a TCP connect completes inside the guest and no data comes back. Not shown: where that connect ends. The atenet-egress logs have no line for it. To check before any fork gets egress |
+| X6 memory | `mem`: a fork allocates 200 MB under a 64 MiB limit | Pass | The kernel killed the fork's `gvisor_sentry` at 08:12:44Z (`oom-kill` in the pod's cgroup). The worker did not restart (0 restarts); the RPC returned `exited before its wakeup probe passed: oom` |
+| X6 log | `log`: a fork writes 3 MB of stdout, the limit is 1 MiB | Pass | The fork went `RUNNING>CRASHED`; `log survived` never printed |
+| X6 pids | `pids`: a fork starts 400 `sleep` in the background, the limit is 64 | Pass, not by the pids cap | The fork died before `pids spawned` (`RUNNING>CRASHED`). The kernel logged an OOM kill of its sentry at 08:13:19Z. `pids.events` of the pod is `max 0`. The 64-process cap was not seen as the stop |
+| X6 lifetime | `lifetime`: a fork sleeps 3000 s, the limit is 300 s | Pass | `RUNNING>CRASHED>GONE` after 308 s (the worker reports an expiry as a crash) |
+| X6 leak | 1000 forks, 4 at a time (`storm`), then the pod's cgroup, the pod's network namespace, host veths, actor directories | Pass for the leak, see the storm for the failures | After the storm the pod's cgroup tree has only `worker` and `forkd`. The pod namespace has `lo` and `eth0` only. The host has 0 `fdh` veths. Memory peak of the pod: 235 MiB of 768 MiB; `memory.events` `oom_kill 2` (the two kills above, none during the storm). CPU throttled 2 times in 52 min |
+| X1 filter bytes | `hold`: a fork waits 250 s for a ptrace dump on the node | Not run | The `hold` fork ran 253 s. Nobody dumped its filters. The off-cluster byte diff stands |
+| X5 512 KiB body | Through the router | Not run | Needs a router client identity (an `ate-client` grant for Joe to decide) |
+| X9 forged requests | To atelet and the worker | Not run | Needs their certificates. The unit tests stay the evidence |
+
+The storm: 1000 forks of mode `noop`, 4 at a time, 234 s. 721 forks passed the
+wakeup probe and 279 returned `the forked sandbox ended before its wakeup probe
+passed: exited`. The cause is the test guest, not a limit:
+
+- Every failure took 1.06 to 1.29 s (median 1.14 s) in `ForkWorkload`. The guest
+  exits 1 s after it starts (`sleep 1`, then `noop` has no work). A fork whose
+  probe is later than that finds no listener.
+- The 721 passes took 0.05 to 1.14 s (median 0.48 s, p90 0.87 s). At 4 forks at
+  a time each fork starts a shell, pipes and `nc` on a 250m limit; the probe
+  latency is the tail of that.
+- The failure rate is the same in every 100 forks (25, 25, 32, 19, 32, 24, 29,
+  32, 27, 34), so it is not growth. No leak, no OOM and no pids event in the
+  window; the worker did not restart; CPU throttling was 2 events in all.
+- `ident-2` (1 of 3) failed the same way, and `mem-1`, `log-1`, `pids-1` and
+  `lifetime-1` were the intended kills.
+- The production pool ran 42 forks in 3 h with all probes passing in 34 to 73 ms
+  (median 54 ms): its guest is an engine that listens at once and lives for
+  minutes.
+
+So the failures are not a sizing number for the gate pool. No isolation or
+capacity defect shows. The decision (Joe, 2026-11-24): no more gate runs; learn
+from production traffic. Production requests were sized from measured use in a
+separate PR (#8646).
 
 To repeat X1 to X3, run `python3 -I gvisor-fork/xgates/collect.py <outdir> ...` as
 root on the worker's node (x86_64). Pass each child (`pgrep -P <seed sandbox pid>`),
@@ -1059,36 +1113,6 @@ then the template stub, forkd and the worker, as `label=pid`. It never attaches 
 a process. The X5, X6, X7 and X9 reads are by hand: the cgroup files under
 `/sys/fs/cgroup/.../forkd/`, `nsenter -t <child> -n ip -o link`, the process
 environment names, and `sha256sum` of the seed's `rootfs.erofs`.
-
-#### Gate pool (staged)
-
-The gates that need a process in the guest run on a separate, staged pool, so
-the production pool, its atespace and engine-gate are not touched. It is
-`gvisor-fork/gates/` (wired by one line in `gvisor-fork/kustomization.yaml`). Remove
-the line and the directory when the gates have run and this section holds their
-results.
-
-| Part | What |
-| --- | --- |
-| Pool `gvisor-fork-gates` | namespace `substrate-gvisor-fork-gates`, label `workload: gvisor-fork-gates`, one worker, the production worker image, requests 100m and 256Mi, limits 2 CPU and 768Mi |
-| Template `gate` | atespace `gvisor-fork-gates`; alpine 3.24.4 (busybox 1.37.0) by digest; the guest `guest.sh` (the seed asks for the checkpoint, each fork learns its mode from its actor name and answers the probe); fork limits 64 MiB, 64 processes, 1 MiB of log, 300 s |
-| Job `gvisor-fork-gates-3` | run 3: the modes without the storm, with a network capture of `net` (run 1 failed at the seed: the busybox image has no `/sys`; run 2 failed in the storm); `gates.py` runs `ident` x3, `canary`, `net`, `mem`, `log`, `pids`, `hold`, `lifetime`, then no storm (`STORM=0`) |
-
-The production template selects `workload: gvisor-fork` and the gate template
-`workload: gvisor-fork-gates`, so neither lands on the other pool. The pool pod's
-request is 256Mi, a scheduling reservation. Request room on 2026-11-24, before it:
-node-1 3845Mi, node-2 1981Mi, node-3 2713Mi. The request fits every node. The
-pool prefers node-1, where the node-side checks run.
-
-To run: after the pool has a worker, a reviewed change sets `suspend: false` on the
-Job. The Job's log (`grep '^GATES '`) and the gate worker's log (`GATE <actor>`
-lines) hold the guest side. On the worker's node, while the Job runs: dump a
-`hold` fork's seccomp filters with `PTRACE_SECCOMP_GET_FILTER` and compare them
-with the off-cluster filters (`bpfdiff.py` of the design note), and count the
-forkd cgroups, network namespaces and `fdh` veths after the 1000 forks. Not
-covered, because each needs credentials this pool cannot get: a 512 KiB body
-through the router (X5) needs a router client identity, and forged requests to
-atelet and the worker (X9) need their certificates.
 
 Known gaps against a normal sandbox stay open.
 
