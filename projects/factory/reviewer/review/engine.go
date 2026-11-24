@@ -1624,6 +1624,9 @@ type inputs struct {
 	// plan is the session plan of the last message this process built.
 	plan           sessionPlan
 	promptVersions []DecisionStamp
+	// decisionComment is the highest approver comment ID that message put
+	// in the prompt.
+	decisionComment int64
 }
 
 // review drives one head's review to a completed check run. It makes at
@@ -1908,9 +1911,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			switch {
 			case err == nil:
 				rec = recorded{Attempt: attempt, ID: t.ID, Sent: lastSend, QuotaRetry: rec.QuotaRetry}
-				for _, c := range joeDecisions(b, pr, in.comments).Comments {
-					rec.DecisionComment = max(rec.DecisionComment, c.ID)
-				}
+				rec.DecisionComment = in.decisionComment
 				if b.ItsaplanProject != "" {
 					rec.Issues = issueDigest(in.issues)
 				}
@@ -2977,8 +2978,9 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		e.ghError(ctx, l, b, "comments", err)
 		return nil, err
 	}
-	in.promptVersions = nil
+	in.promptVersions, in.decisionComment = nil, 0
 	for _, c := range joeDecisions(b, pr, comments).Comments {
+		in.decisionComment = max(in.decisionComment, c.ID)
 		if c.ID > 0 && c.UpdatedAt != "" {
 			in.promptVersions = append(in.promptVersions, DecisionStamp{ID: c.ID, Hash: bodyHash(c.Body), UpdatedAt: c.UpdatedAt})
 		}
