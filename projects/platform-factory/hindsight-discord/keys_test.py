@@ -207,7 +207,7 @@ def test_api_storage_model_and_credentials(rendered):
     )
     assert env["HINDSIGHT_API_LLM_VISION"] == "true"
     assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
-    assert env["HINDSIGHT_API_LLM_MODEL"] == "openai/gpt-4.1-mini"
+    assert env["HINDSIGHT_API_LLM_MODEL"] == "deepseek/deepseek-v4.1-flash-1017"
     assert env["HINDSIGHT_API_MCP_ENABLED"] == "false"
     assert "HINDSIGHT_API_MCP_AUTH_TOKEN" not in env
     assert "HINDSIGHT_API_SKIP_LLM_VERIFICATION" not in env
