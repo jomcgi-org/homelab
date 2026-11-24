@@ -238,7 +238,6 @@ def test_publisher_login_is_a_managed_read_only_role():
         "spec"
     ]
     assert {
-        "group": "",
         "kind": "Secret",
         "name": "ships-publisher-login",
         "jsonPointers": ["/data"],

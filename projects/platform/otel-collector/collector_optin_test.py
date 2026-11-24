@@ -1071,7 +1071,6 @@ def test_runtime_handoff_survives_argocd_diff_and_sync():
     )
     assert app["spec"]["ignoreDifferences"] == [
         {
-            "group": "",
             "kind": "ConfigMap",
             "namespace": "otel-collector",
             "name": "cnpg-backup-status",
