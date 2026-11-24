@@ -125,7 +125,7 @@ data:
                   packAsBytes: true
                 policies:
                   http:
-                    requestTimeout: 310ms
+                    requestTimeout: 80ms
       - protocol: TLS
         tcpRoutes:
         - backends:

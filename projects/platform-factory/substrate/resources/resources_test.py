@@ -154,7 +154,7 @@ def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
         "allowPartialMessage": False,
         "packAsBytes": True,
     }
-    assert check["policies"] == {"http": {"requestTimeout": "310ms"}}
+    assert check["policies"] == {"http": {"requestTimeout": "80ms"}}
     assert config == yaml.safe_load((_HERE / "atenet-egress-config.yaml").read_text())
 
 
@@ -1231,29 +1231,14 @@ def _semgrep_values() -> dict:
     return values
 
 
-_OBSERVE_ENDPOINT = "http://engine-gate.ate-system.svc:{port}/scan"
-
-
-def _tier_problems(
-    values: dict, service_port: int, max_inflight: int, scanner_replicas: int
-) -> list[str]:
-    """What the scanner's tier values must say: on, in enforce mode (since
-    2026-11-24, Joe's decision), denying when the engine gives no verdict."""
+def _tier_problems(values: dict) -> list[str]:
+    """What the scanner's tier values must say: off (since 2026-11-24, Joe
+    deferred the Semgrep tier). Gitleaks alone scans the Hindsight route."""
     bad = []
-    if values.get("enabled") is not True:
-        bad.append("semgrep.enabled is not true")
-    if values.get("mode") != "enforce":
-        bad.append("semgrep.mode is not enforce")
-    if values.get("failureMode") != "deny":
-        bad.append("semgrep.failureMode is not deny")
-    if values.get("endpoint") != _OBSERVE_ENDPOINT.format(port=service_port):
-        bad.append("semgrep.endpoint is not the engine-gate Service and its one path")
-    if values.get("deadline") != "300ms":
-        bad.append("semgrep.deadline is not 300ms")
-    if values.get("maxBodyBytes") != 65536:
-        bad.append("semgrep.maxBodyBytes is not 65536")
-    if int(values.get("concurrency", 0)) * scanner_replicas > max_inflight:
-        bad.append("scanner concurrency x pods is over the gate's --max-inflight")
+    if values.get("enabled") is not False:
+        bad.append("semgrep.enabled is not false")
+    if values.get("endpoint"):
+        bad.append("semgrep.endpoint is set while the tier is off")
     return bad
 
 
@@ -1280,42 +1265,17 @@ def test_scanner_reaches_the_gate_only_with_per_packet_service_translation() -> 
     )
 
 
-def test_scanner_tier_is_enforced_and_points_at_the_gate() -> None:
-    docs = _docs()
-    service = _one(docs, "Service", "engine-gate")
-    (port,) = service["spec"]["ports"]
-    sts = _one(docs, "StatefulSet", "engine-gate")
-    (container,) = sts["spec"]["template"]["spec"]["containers"]
-    (inflight,) = [
-        int(a.split("=", 1)[1])
-        for a in container["args"]
-        if a.startswith("--max-inflight=")
-    ]
-    manifest = Path(os.environ["SCANNER_MANIFEST"]).read_text()
-    deployment = _one(
-        [d for d in yaml.safe_load_all(manifest) if d], "Deployment", "egress-scan"
-    )
-    replicas = deployment["spec"]["replicas"]
+def test_scanner_tier_is_off() -> None:
     values = _semgrep_values()
-    assert _tier_problems(values, port["port"], inflight, replicas) == []
+    assert _tier_problems(values) == []
     # Each mutation must be caught, so that the check cannot pass on a wrong value.
     mutations = {
-        "tier off": {"enabled": False},
-        "observe mode": {"mode": "observe"},
-        "failure mode allow": {"failureMode": "allow"},
-        "endpoint typo": {"endpoint": "http://engine-gate.ate-system.svc:8080/scn"},
-        "wrong host": {"endpoint": "http://engine.ate-system.svc:8080/scan"},
-        "no path": {"endpoint": "http://engine-gate.ate-system.svc:8080"},
-        "deadline": {"deadline": "3s"},
-        "body limit": {"maxBodyBytes": 524288},
-        "concurrency": {"concurrency": 8},
+        "tier on": {"enabled": True},
+        "tier on in observe mode": {"enabled": True, "mode": "observe"},
+        "endpoint set": {"endpoint": "http://engine-gate.ate-system.svc:8080/scan"},
     }
     for name, change in mutations.items():
-        assert _tier_problems({**values, **change}, port["port"], inflight, replicas), (
-            name
-        )
-    # The endpoint follows the Service port.
-    assert _tier_problems(values, 9999, inflight, replicas)
+        assert _tier_problems({**values, **change}), name
 
 
 def test_gateway_timeout_is_coupled_to_the_semgrep_deadline() -> None:

@@ -6,7 +6,7 @@ that the egress gateway calls before it forwards a request. It matches Gitleaks
 rules in process. A second scan tier (`semgrep.go`, on in observe mode since the wiring) posts the
 scanned text to one HTTP endpoint and merges the engine verdict. This note
 designs that endpoint: a warm pool of single-use gVisor children that run the
-Semgrep Pro Secrets engine. The path runs in enforce mode (Decided 8).
+Semgrep Pro Secrets engine. The Semgrep tier is off since 2026-11-24 (Decided 9); the design below is deferred.
 
 ```mermaid
 flowchart LR
@@ -531,6 +531,7 @@ them yet.
 | 6 | The router grant PR (the `engine-gate` SPIFFE ID in `atenetRouter.ingressAllowedSPIFFEIDs`), the X8 waiver for gVisor-only use, and the grants: the atespace `egress-scan-engine`, the editor binding for `system:serviceaccount:ate-system:engine-gate` and the template `engine`. This supersedes "after the X gates" in rows 1 and 2: the gates X1 to X7 and X9 still run at step 9 of the fork README as a safety check, and no longer gate the merge of these PRs. The PR that wires the provisioning Job runs it when it merges (the Job is not suspended), so Joe merges it after the pool restart. The X gates do not hold it back | Joe, 2026-11-23, in session |
 | 7 | Skip the X gates (X1 to X7 and X9) for now and wire the scanner now: the tier runs in observe mode for 7 days, then one PR enforces. The X gates run during the observe window, and a failure turns the tier off | Joe, 2026-11-23, in session |
 | 8 | Skip the 7-day observe window and enforce the Semgrep tier now ("lets just get it into prod"): `semgrep.mode: enforce`, failure mode `deny` on both layers, gateway `requestTimeout` 310 ms, body limit 64 KiB (measured, `egress-scan/README.md` "Body limit"). This supersedes the 7 days of row 3 and 7. The X gates keep running. Revert is `mode: observe` and `requestTimeout: 80ms` | Joe, 2026-11-24 |
+| 9 | Defer the DLP expansion (no Pipelock, no git egress scanning, no all-egress scanning, no windowed scan, no HA policy now). Turn the Semgrep tier off and remove the `engine-gate` deployment. Keep the gVisor fork pool, `forkd` and `ForkSeed` for tool calling. Replace Gitleaks with Betterleaks in the scanner. Revert of this row is the Application value `semgrep.enabled: true` with the 310 ms timeout | Joe, 2026-11-24 |
 
 The engine body limit (64 KiB) and the Hindsight route timeout (310 ms) are set
 in Decided 8.
