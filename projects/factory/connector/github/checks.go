@@ -85,7 +85,7 @@ func (c *Client) ListCheckRunsWithJournal(ctx context.Context, repo, sha string,
 		if before != nil {
 			guard = func() error { return before(page) }
 		}
-		if err := c.send(ctx, repo, http.MethodGet, path, nil, &out, true, guard); err != nil {
+		if err := c.send(ctx, repo, http.MethodGet, path, nil, &out, true, sendPolicy{before: guard}); err != nil {
 			return nil, err
 		}
 		for _, r := range out.CheckRuns {

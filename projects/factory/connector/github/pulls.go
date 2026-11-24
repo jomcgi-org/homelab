@@ -1328,7 +1328,7 @@ func (c *Client) MergedSince(ctx context.Context, repo, base string, since time.
 	for page := 1; ; page++ {
 		q := url.Values{"base": {base}, "state": {"closed"}, "sort": {"updated"}, "direction": {"desc"}, "per_page": {strconv.Itoa(MaxListed)}, "page": {strconv.Itoa(page)}}
 		var pulls []restPull
-		if err := c.send(ctx, repo, http.MethodGet, repoPath(repo)+"/pulls?"+q.Encode(), nil, &pulls, true, func() error { return before(page) }); err != nil {
+		if err := c.send(ctx, repo, http.MethodGet, repoPath(repo)+"/pulls?"+q.Encode(), nil, &pulls, true, sendPolicy{before: func() error { return before(page) }}); err != nil {
 			return nil, err
 		}
 		for _, p := range pulls {
