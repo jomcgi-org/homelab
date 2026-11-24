@@ -550,6 +550,7 @@ closes.
 | Per-client atespace rule in the router | HOME-TBD | `designed`, replaces the two router grants (Decided 2) |
 | Windowed scan of large bodies, per-route config | HOME-TBD | `designed` ([DESIGN-large-bodies.md](DESIGN-large-bodies.md)) |
 | Detector interface, a decoder chain and Betterleaks beside Gitleaks | HOME-TBD | `designed` ([DESIGN-detectors.md](DESIGN-detectors.md)) |
+| Prior-art check: Pipelock as a detector service | HOME-TBD | `evaluated` ([DESIGN-prior-art.md](DESIGN-prior-art.md)) |
 
 ## Decision history
 

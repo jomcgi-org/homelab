@@ -263,6 +263,9 @@ stays as the second detector. Drop Gitleaks only after a stable v2 tag, or
 after an exact rc pin with a digest, and only if the nightly replay shows
 Betterleaks finds everything Gitleaks finds.
 
+Pending the prior-art result ([DESIGN-prior-art.md](DESIGN-prior-art.md)): do not build these PRs yet.
+Pipelock may replace the decoder chain of PR 2.
+
 | # | PR | Tests |
 | --- | --- | --- |
 | 1 | The `Detector` interface and the Gitleaks matcher behind it. No behavior change. Per-detector counters | Existing scanner tests pass. A fake detector shows merge, deadline and failure mode |
