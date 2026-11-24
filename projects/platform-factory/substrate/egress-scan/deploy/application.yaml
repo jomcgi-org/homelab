@@ -25,6 +25,14 @@ spec:
       targetRevision: 0.14.4
       helm:
         releaseName: egress-scan
+        # The one detector of the scanner. Joe chose Betterleaks on 2026-11-24
+        # (egress-scan/ARCHITECTURE.md "Decided" 10). To go back, set the name to
+        # gitleaks in a PR: the Gitleaks detector stays for one release as the
+        # revert lever. Set values here (helm.valuesObject), not with parameters:
+        # resources_test.py reads them from this block.
+        valuesObject:
+          detector:
+            name: betterleaks
     - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
       path: projects/platform-factory/substrate/resources
