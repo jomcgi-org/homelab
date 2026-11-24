@@ -1,5 +1,7 @@
 # Prior art for the egress scanner
 
+> **Deferred (Joe, 2026-11-24).** The Pipelock trial is deferred. The evaluation stays as a record. Nothing in this note is active work. See ARCHITECTURE.md "Decided" 9 and 10.
+
 Status: evaluation result (2026-11-24). No code or cluster change. It belongs to
 [ARCHITECTURE.md](ARCHITECTURE.md) and follows [DESIGN-detectors.md](DESIGN-detectors.md).
 The build plan in that file is pending this result. Joe asked whether the

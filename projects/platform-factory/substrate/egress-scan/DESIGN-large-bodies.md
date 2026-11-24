@@ -1,5 +1,7 @@
 # Large bodies in the egress scanner
 
+> **Deferred (Joe, 2026-11-24).** The windowed scan, the engine path and the per-route limits are deferred with the Semgrep tier. Nothing in this note is active work. See ARCHITECTURE.md "Decided" 9 and 10.
+
 Status: design, not built. It belongs to [ARCHITECTURE.md](ARCHITECTURE.md),
 section "Large bodies". Joe's direction (2026-11-24) has three parts. The scan
 is generic, and a large payload may take longer. The scanner eventually defers
