@@ -24,3 +24,8 @@ py_test(
     env = {"KUSTOMIZE_BIN": "$(rootpath @multitool//tools/kustomize)"},
     deps = ["@pip//pyyaml"],
 )
+
+exports_files(
+    ["network-policy.yaml"],
+    visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
+)
