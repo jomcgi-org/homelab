@@ -26,7 +26,7 @@ export function BlogPage() {
     ? posts.filter((post) => post.tags.includes(selected))
     : posts;
   return (
-    <Shell>
+    <Shell current="/blog">
       <div className="blog">
         <h1>Blog</h1>
         <nav aria-label="Filter by tag">

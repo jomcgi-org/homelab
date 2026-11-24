@@ -23,7 +23,7 @@ const num = (index: number) => String(index + 1).padStart(2, "0");
 
 export function ScotlandPolicyPage({ doc }: { doc: Policy }) {
   return (
-    <Shell>
+    <Shell current="/scotland">
       <VStack gap={8}>
         <nav aria-label="Sections">
           <Text type="body">/ Index</Text>

@@ -6,7 +6,7 @@ import "./blog.css";
 
 export function BlogPost({ post }: { post: Post }) {
   return (
-    <Shell>
+    <Shell current="/blog">
       <article className="blog">
         <nav aria-label="Blog navigation">
           <a href="/blog">blog</a>

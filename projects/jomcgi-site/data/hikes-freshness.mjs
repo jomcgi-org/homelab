@@ -17,6 +17,11 @@ export function isStale(fetchedAt, now) {
   return at !== null && now - Date.parse(at) >= STALE_MS;
 }
 
+// The statuses of data that is on schedule. The page shows any other status
+// where the reader sees it, and these two only in its freshness details.
+export const FORECAST_ON_SCHEDULE = "Forecast refreshes every 2 hours";
+export const SNAPSHOT_ON_SCHEDULE = "Site refreshes every 30 minutes";
+
 export function forecastStatus(fetchedAt, latestFetchedAt, now) {
   const at = timestamp(fetchedAt);
   if (!at) return "Forecast age unknown · retained weather windows";
@@ -24,7 +29,7 @@ export function forecastStatus(fetchedAt, latestFetchedAt, now) {
   const latest = timestamp(latestFetchedAt);
   if (latest && Date.parse(at) < Date.parse(latest))
     return "Earlier forecast retained · weather windows may be out of date";
-  return "Forecast refreshes every 2 hours";
+  return FORECAST_ON_SCHEDULE;
 }
 
 export function oldestForecast(timestamps) {
@@ -39,5 +44,5 @@ export function snapshotStatus(generatedAt, now) {
   if (!at) return "Snapshot age unknown · published data retained";
   return now - Date.parse(at) >= SNAPSHOT_STALE_MS
     ? "Stale site snapshot · published data retained"
-    : "Site refreshes every 30 minutes";
+    : SNAPSHOT_ON_SCHEDULE;
 }

@@ -564,6 +564,24 @@ html:has(.home) {
     display: none;
   }
 
+  /* The footer links are small text. Each gets a 44px touch area without
+   * changing how the row looks. */
+  .home .foot {
+    row-gap: 0.2rem;
+  }
+  .home .foot .links,
+  .home .foot nav {
+    row-gap: 0;
+  }
+  .home .foot a {
+    position: relative;
+  }
+  .home .foot a::after {
+    content: "";
+    position: absolute;
+    inset: -0.75rem -0.5rem;
+  }
+
   /* Use a finer grille for the smaller portrait. */
   .home .holes {
     -webkit-mask: radial-gradient(

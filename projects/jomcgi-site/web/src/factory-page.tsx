@@ -59,7 +59,7 @@ export function FactoryPage() {
   };
 
   return (
-    <Shell>
+    <Shell current="/factory">
       <div className="factory" onClick={navigate}>
         <a className="skip-link" href="#factory-content">
           Skip to factory content

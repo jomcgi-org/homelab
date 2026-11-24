@@ -24,3 +24,23 @@ it("closes the open menu on Escape and on a press outside it", () => {
   fireEvent.pointerDown(document.body);
   expect(menu().open).toBe(false);
 });
+
+it("marks the link of the page you are on", () => {
+  render(<Shell current="/cv">page</Shell>);
+  const marked = document.querySelectorAll('[aria-current="page"]');
+  expect([...marked].map((link) => link.textContent)).toEqual(["CV"]);
+  // No menu is marked when the page is not inside one.
+  expect(menu().querySelector("summary")?.hasAttribute("data-current")).toBe(
+    false,
+  );
+});
+
+it("marks the menu that holds the current page", () => {
+  render(<Shell current="/hikes">page</Shell>);
+  expect(menu().querySelector("summary")?.hasAttribute("data-current")).toBe(
+    true,
+  );
+  expect(menu().querySelector('[aria-current="page"]')?.textContent).toBe(
+    "Hikes",
+  );
+});

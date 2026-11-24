@@ -270,7 +270,7 @@ export function StarsPage() {
     window.history.replaceState(null, "", url);
   }
   return (
-    <Shell>
+    <Shell current="/stars">
       <header className="stars-heading">
         <h1>Dark-sky stargazing map, Scotland viewing windows</h1>
         <p>

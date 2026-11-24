@@ -1,4 +1,5 @@
 import {
+  coordinates,
   MONTHS,
   monthBars,
   selectedWindows,
@@ -170,8 +171,7 @@ export function StarsCard({
         <a
           href={`https://www.google.com/maps/search/?api=1&query=${site.lat},${site.lon}`}
         >
-          {Math.abs(site.lat).toFixed(3)}°{site.lat >= 0 ? "N" : "S"},{" "}
-          {Math.abs(site.lon).toFixed(3)}°{site.lon >= 0 ? "E" : "W"}
+          {coordinates(site.lat, site.lon)}
         </a>
       </p>
     </section>

@@ -500,9 +500,11 @@ palette rules. `web:factory_built_test` checks the emitted shell and publication
 boundary. `web:budget_test` measures the Factory entry against 150 KiB.
 
 **Why.** HOME-178's "One site" decision places the storyboard in this site.
-HOME-224 keeps `sections.ts` at `live: false`, with no changes to production
-edge routes, charts or deployment files. HOME-225 activates `/factory` and the
-legacy redirects after HOME-213. After the dev deploy, the delivery owner checks
+HOME-224 kept `sections.ts` at `live: false`, with no changes to production
+edge routes, charts or deployment files. HOME-414 routed `/factory*` and its
+data to the Worker, and the nav now links `/factory` (`live: true`, HOME-225),
+so a reader stays on this site. The hub keeps `/slop/factory`. After the dev
+deploy, the delivery owner checks
 `https://next.jomcgi.dev/factory` and `/factory/goals/x` for HTTP 200 and the
 shell's unavailable states. Local build checks do not establish that rollout.
 

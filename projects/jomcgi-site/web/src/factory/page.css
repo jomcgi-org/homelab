@@ -234,7 +234,9 @@
   font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.25;
-  color: var(--color-border-emphasized);
+  /* Secondary text, not the border grey: that grey is 3.5:1 on the page,
+   * under the 4.5:1 that axe checks for text. */
+  color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
 }
 .factory .state-group .count {
@@ -530,6 +532,8 @@
   overflow: hidden;
 }
 .factory .records li {
+  /* Rows fill their card; the 68ch running-text measure is for prose. */
+  max-width: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;

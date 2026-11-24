@@ -48,15 +48,19 @@ export function DocsShell({
   children,
   activeSlug = "",
   toc = [],
+  index = false,
 }: {
   children: ReactNode;
   activeSlug?: string;
   toc?: DocHeading[];
+  /** The docs index lists every project itself, so a phone drops the
+   * sidebar's copy of that list. */
+  index?: boolean;
 }) {
   return (
-    <Shell>
+    <Shell current="/docs">
       <a href="/docs">docs</a>
-      <div className="docs-layout">
+      <div className={index ? "docs-layout docs-layout-index" : "docs-layout"}>
         <aside className="docs-sidebar">
           <DocsSearch />
           <nav aria-label="Projects">

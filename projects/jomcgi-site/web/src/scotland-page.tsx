@@ -18,7 +18,7 @@ import "./scotland.css";
 
 export function ScotlandPage() {
   return (
-    <Shell>
+    <Shell current="/scotland">
       <VStack gap={8}>
         <nav aria-label="Sections">
           <Text type="body">/ Index</Text>

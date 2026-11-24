@@ -190,3 +190,24 @@
   border-radius: var(--radius-container);
   background: var(--color-background-muted);
 }
+
+/* One quiet line says what is shown. A warning appears only when the data is
+ * off schedule; the full timestamps sit in the details below the list. */
+.hikes-summary {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+.hikes-warning {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border-emphasized);
+  border-left-width: 4px;
+  border-radius: var(--radius-element);
+}
+.hikes-freshness {
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+}
+.hikes-freshness p {
+  margin: 0.25rem 0;
+}

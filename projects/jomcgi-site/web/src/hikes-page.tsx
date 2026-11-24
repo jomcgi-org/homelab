@@ -62,7 +62,7 @@ export function HikesPage({
     return () => clearInterval(timer);
   }, []);
   return (
-    <Shell>
+    <Shell current="/hikes">
       <div className="hikes-page">
         <header>
           <Heading level={1}>

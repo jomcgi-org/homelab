@@ -97,17 +97,33 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--spacing-1) 1.25rem;
+  gap: var(--spacing-1) 0.25rem;
+  /* The links carry their own padding for a 44px target; pull the row out
+   * by the same amount so the text lines up with the page edge. */
+  margin-inline: -0.5rem;
   font-size: 0.9375rem;
 }
 
 .site-nav a,
 .site-menu summary {
-  display: inline-block;
-  padding-block: var(--spacing-2);
+  display: inline-flex;
+  align-items: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  padding-inline: 0.5rem;
+  box-sizing: border-box;
   color: var(--color-text-secondary);
   text-decoration: none;
   cursor: pointer;
+}
+
+/* The page you are on: ink, underlined. Colour alone would not do. */
+.site-nav a[aria-current="page"],
+.site-menu summary[data-current] {
+  color: var(--color-text-primary);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.35em;
 }
 
 .site-nav a:hover,
@@ -153,10 +169,16 @@
 }
 
 .site-menu li a {
-  display: block;
+  display: flex;
   padding: var(--spacing-2) var(--spacing-3);
   border-radius: var(--radius-element);
   color: var(--color-text-primary);
+}
+
+.site-menu li a[aria-current="page"] {
+  background: var(--color-background-muted);
+  text-decoration: none;
+  font-weight: 600;
 }
 
 .site-menu li a:hover {
@@ -229,6 +251,15 @@
   padding: 0 var(--spacing-3);
   border: 1px solid var(--color-border);
   font-size: 0.875rem;
+}
+
+/* The profile and each job's intro are Astryx text blocks, not <p>, so the
+ * running-text measure above skips them. Give them the same measure as the
+ * bullets under them, or the first line runs 150 characters wide. */
+.cv-head .astryx-text,
+#profile .astryx-text,
+.cv-job .astryx-text {
+  max-width: 68ch;
 }
 
 .cv-job {

@@ -268,10 +268,32 @@ it("marks a missed site refresh stale after 90 minutes without marking normal we
     mount();
   });
   await advance(SNAPSHOT_STALE_MS);
-  expect(screen.getByText(/Stale site snapshot/)).toBeTruthy();
+  // The warning is where the reader sees it, and the details keep the line.
+  expect(screen.getByRole("alert").textContent).toMatch(/Stale site snapshot/);
+  expect(screen.getAllByText(/Stale site snapshot/)).toHaveLength(2);
   expect(screen.queryByText(/Stale forecast/)).toBeNull();
   expect(button()).toBeTruthy();
   expect(document.body.textContent).not.toContain("unavailable");
+});
+it("keeps on-schedule data quiet: one summary line, no per-walk timestamps", async () => {
+  mockData();
+  await act(async () => {
+    mount();
+  });
+  expect(button()).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
+  const summary = document.querySelector(".hikes-summary")!;
+  expect(summary.textContent).toMatch(/^1 walks · 1 viable today · updated /);
+  // The walk row carries its numbers and nothing about forecast age.
+  const row = document.querySelector(".hikes-results li")!;
+  expect(row.textContent).not.toMatch(/Forecast|T\d\d:\d\d/);
+  // The detail is still one click away, in readable UK time.
+  const details = document.querySelector(".hikes-freshness")!;
+  expect(details.textContent).toContain("Forecast refreshes every 2 hours");
+  expect(details.textContent).not.toMatch(/\d{4}-\d\d-\d\dT/);
+  expect(details.querySelector("time")?.getAttribute("datetime")).toMatch(
+    /^\d{4}-\d\d-\d\dT/,
+  );
 });
 it.each([
   [

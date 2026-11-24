@@ -26,12 +26,27 @@ import {
 } from "./viability";
 import type { HikesMapProps } from "./map";
 import {
+  FORECAST_ON_SCHEDULE,
   forecastStatus,
+  SNAPSHOT_ON_SCHEDULE,
   snapshotStatus,
 } from "../../../data/hikes-freshness.mjs";
 
+// The machine-readable value stays in `dateTime`; the reader sees UK time.
+const ukStamp = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/London",
+  day: "numeric",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 const timestamp = (value: string | null) =>
-  value ? <time dateTime={value}>{value}</time> : "unknown time";
+  value && Number.isFinite(Date.parse(value)) ? (
+    <time dateTime={value}>{ukStamp.format(Date.parse(value))}</time>
+  ) : (
+    "unknown time"
+  );
+const count = new Intl.NumberFormat("en-GB");
 const ukTime = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Europe/London",
   hour: "2-digit",
@@ -157,12 +172,32 @@ export function HikesPlanner() {
       {forecastStatus(fetchedAt, snapshot?.fetchedAt ?? null, now)}
     </span>
   );
+  // A walk whose forecast is on schedule needs no line of its own; one that
+  // is stale, retained or of unknown age says so beside its name.
+  const forecastNote = (fetchedAt: string | null) =>
+    forecastStatus(fetchedAt, snapshot?.fetchedAt ?? null, now) ===
+    FORECAST_ON_SCHEDULE
+      ? null
+      : forecastAge(fetchedAt);
+  const dataStatuses = snapshot
+    ? [
+        forecastStatus(snapshot.asOf, null, now),
+        snapshotStatus(snapshot.generatedAt, now),
+      ]
+    : [];
+  const dataWarnings = dataStatuses.filter(
+    (status) =>
+      status !== FORECAST_ON_SCHEDULE && status !== SNAPSHOT_ON_SCHEDULE,
+  );
   useEffect(() => {
     if (snapshot && !locationPending && filters.walk && !selected) {
       setFilters((previous) => ({ ...previous, walk: "" }));
     }
   }, [snapshot, locationPending, filters.walk, selected]);
   const today = ukDay(now / 1000);
+  const viableToday = walks.filter((walk) =>
+    walk.viable_days.includes(today),
+  ).length;
   const set = (key: keyof Filters, value: string) =>
     setFilters((previous) => ({ ...previous, [key]: value }));
   const select = (id: string) => set("walk", id);
@@ -189,19 +224,20 @@ export function HikesPlanner() {
   return (
     <section aria-label="Walk planner">
       {snapshot ? (
-        <div role="status">
-          <p>
-            Data as of {timestamp(snapshot.asOf)} ·{" "}
-            {forecastStatus(snapshot.asOf, null, now)}
-          </p>
-          <p>
-            Site snapshot: {timestamp(snapshot.generatedAt)} ·{" "}
-            {snapshotStatus(snapshot.generatedAt, now)}
-          </p>
-          <p>Latest forecast fetch: {timestamp(snapshot.fetchedAt)}.</p>
-        </div>
+        <p role="status" className="hikes-summary">
+          {count.format(filtered.length)} walks
+          {filtered.length !== walks.length &&
+            ` of ${count.format(walks.length)}`}{" "}
+          · {count.format(viableToday)} viable today · updated{" "}
+          {timestamp(snapshot.asOf)}
+        </p>
       ) : (
         !error && <p role="status">Loading walks…</p>
+      )}
+      {dataWarnings.length > 0 && (
+        <p role="alert" className="hikes-warning">
+          {dataWarnings.join(" · ")}
+        </p>
       )}
       {error && (
         <p role="status">
@@ -214,11 +250,6 @@ export function HikesPlanner() {
           </button>
         </p>
       )}
-      <p>
-        {walks.length} walks ·{" "}
-        {walks.filter((walk) => walk.viable_days.includes(today)).length} viable
-        today · {filtered.length} shown
-      </p>
       <div className="hikes-controls">
         <label>
           Near
@@ -389,11 +420,30 @@ export function HikesPlanner() {
                 </button>
                 <span>
                   {walk.distance_km} km · {walk.ascent_m} m · {walk.duration_h}{" "}
-                  h · {forecastAge(walk.forecast_fetched_at)}
+                  h
+                  {forecastNote(walk.forecast_fetched_at) && (
+                    <> · {forecastNote(walk.forecast_fetched_at)}</>
+                  )}
                 </span>
               </li>
             ))}
           </ul>
+        </details>
+      )}
+      {snapshot && (
+        <details className="hikes-freshness">
+          <summary>Data freshness</summary>
+          <div role="status">
+            <p>
+              Data as of {timestamp(snapshot.asOf)} ·{" "}
+              {forecastStatus(snapshot.asOf, null, now)}
+            </p>
+            <p>
+              Site snapshot: {timestamp(snapshot.generatedAt)} ·{" "}
+              {snapshotStatus(snapshot.generatedAt, now)}
+            </p>
+            <p>Latest forecast fetch: {timestamp(snapshot.fetchedAt)}.</p>
+          </div>
         </details>
       )}
     </section>

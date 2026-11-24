@@ -32,7 +32,7 @@ export function EngineeringPage() {
   }, []);
 
   return (
-    <Shell>
+    <Shell current="/engineering">
       <div className="engineering-page">
         <nav className="engineering-index" aria-label="Systems">
           <p>/ Index</p>

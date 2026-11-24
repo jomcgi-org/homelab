@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import manifest from "../docs-manifest.json";
 import { DOC_PAGES } from "../docs/_src/pages";
 import sidebar from "../docs/_src/sidebar.json";
-import { DocsIndexPage } from "./docs-index-page";
+import { DocsIndexPage, wholeSentences } from "./docs-index-page";
 import { Root } from "./root";
 import { render as prerender } from "./prerender";
 import { search } from "./docs-search-index";
@@ -126,5 +126,41 @@ describe("static docs", () => {
     expect(first.getAttribute("href")).toMatch(/^\/docs\//);
     fireEvent.keyDown(input, { key: "Escape" });
     expect(screen.queryByRole("list", { name: "Search results" })).toBeNull();
+  });
+});
+
+describe("docs index", () => {
+  it("cuts a truncated excerpt back to its last whole sentence", () => {
+    expect(
+      wholeSentences(
+        "Self-hosted orchestration: a private Lambda on metal you own. An organization sizes (or bounds) a nodepool; it provides placement, fairness,…",
+      ),
+    ).toBe("Self-hosted orchestration: a private Lambda on metal you own.");
+  });
+
+  it("leaves a whole excerpt, and a cut one with no earlier sentence, alone", () => {
+    expect(wholeSentences("A short, whole excerpt.")).toBe(
+      "A short, whole excerpt.",
+    );
+    const long =
+      "One long sentence that never reaches a full stop before the cut, going on and on…";
+    expect(wholeSentences(long)).toBe(long);
+  });
+
+  it("names each project once, in its heading", () => {
+    render(
+      <Root>
+        <DocsIndexPage />
+      </Root>,
+    );
+    const cards = document.querySelectorAll(".docs-project");
+    expect(cards.length).toBeGreaterThan(0);
+    for (const card of cards) {
+      expect(card.querySelectorAll("h2")).toHaveLength(1);
+      // The name leads the card; its document links follow the description.
+      expect(card.firstElementChild?.tagName).toBe("H2");
+      expect(card.lastElementChild?.tagName).toBe("NAV");
+    }
+    expect(document.querySelector(".docs-layout-index")).toBeTruthy();
   });
 });
