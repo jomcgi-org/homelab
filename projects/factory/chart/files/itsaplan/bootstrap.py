@@ -19,6 +19,9 @@ Idempotent; every step reads before it writes:
    key is written only after the key itself proves that access.
 5. Joe's sessions account, invited as a regular member of that project. Its
    password is saved in SESSIONS_SECRET before sign-up and never rotated.
+6. One cron schedule per reviewed planner job (CONFIG plannerSchedules) on the
+   homelab-planner agent. Its prompt only names the job for the connector;
+   a job that leaves CONFIG has its schedule paused, never deleted.
 
 Uses only the standard library and the pod's service account token.
 """
@@ -638,6 +641,8 @@ def ensure_coordinator_permissions(session, team_id, agent, key):
 
 
 def ensure_agents(session, team_id, project_id):
+    """Create or repair every configured agent; return them by username."""
+    ready = {}
     coordinator = CONFIG.get("coordinator", "")
     if coordinator and coordinator not in [a["username"] for a in CONFIG["agents"]]:
         raise SystemExit("coordinator is not a configured bootstrap agent")
@@ -732,6 +737,65 @@ def ensure_agents(session, team_id, project_id):
         )
         if username == coordinator:
             ensure_coordinator_permissions(session, team_id, agent, key)
+        ready[username] = agent
+    return ready
+
+
+PLANNER_AGENT = "homelab-planner"
+PLANNER_SCHEDULE_PREFIX = "planner-"
+PAGE_SIZE = 100
+
+
+def ensure_planner_schedules(session, team_id, agent):
+    """Make the planner agent's cron schedules match CONFIG plannerSchedules.
+
+    Each wanted schedule is a `cron` schedule named planner-<job>, active, with
+    the reviewed cron and the prompt the chart derived from the job name. An
+    existing one is patched only where it differs. A schedule of the agent
+    that the config no longer names is paused, not deleted, so its run history
+    stays. Schedules of other agents and names are never touched.
+    """
+    project = f"/projects/{team_id}.{CONFIG['project']['key']}"
+    base = project + "/agent-schedules"
+    want = {s["name"]: s for s in CONFIG.get("plannerSchedules", [])}
+    for name in want:
+        if not name.startswith(PLANNER_SCHEDULE_PREFIX) or len(name) > 120:
+            raise SystemExit(f"planner schedule {name!r} has an unusable name")
+    have = {}
+    page = 1
+    while True:
+        data = session.call("GET", f"{base}?page={page}&pageSize={PAGE_SIZE}")
+        for item in data["items"]:
+            if item["agentId"] == agent["id"]:
+                have[item["name"]] = item
+        if page * PAGE_SIZE >= data["total"]:
+            break
+        page += 1
+    for name, job in sorted(want.items()):
+        goal = {"cron": job["cron"], "prompt": job["prompt"], "status": "active"}
+        current = have.get(name)
+        if current is None:
+            session.call(
+                "POST",
+                base,
+                {"agentId": agent["id"], "name": name, "type": "cron", **goal},
+            )
+            print(f"created planner schedule {name}")
+            continue
+        if current["type"] != "cron":
+            raise SystemExit(f"planner schedule {name} is not a cron schedule")
+        drift = {k: v for k, v in goal.items() if current.get(k) != v}
+        if drift:
+            session.call("PATCH", f"{base}/{current['id']}", drift)
+            print(f"updated planner schedule {name}: {', '.join(sorted(drift))}")
+    for name, current in sorted(have.items()):
+        if (
+            name.startswith(PLANNER_SCHEDULE_PREFIX)
+            and name not in want
+            and current["status"] != "paused"
+        ):
+            session.call("PATCH", f"{base}/{current['id']}", {"status": "paused"})
+            print(f"paused planner schedule {name}: not in the reviewed config")
 
 
 def main():
@@ -745,8 +809,10 @@ def main():
         project_id = ensure_project(session, team_id)
         ensure_reviewing_column(session, team_id)
         ensure_deferred_labels(session, team_id)
-        ensure_agents(session, team_id, project_id)
+        agents = ensure_agents(session, team_id, project_id)
         ensure_sessions(session, team_id)
+        if PLANNER_AGENT in agents:
+            ensure_planner_schedules(session, team_id, agents[PLANNER_AGENT])
     finally:
         # Ends the session, so reruns leave no session rows behind.
         session.call("POST", "/api/auth/sign-out", {})

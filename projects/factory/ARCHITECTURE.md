@@ -984,6 +984,41 @@ issuer and monolith permission check confine this sender even if it guesses
 another tool or channel. Durable dedupe handles the response-loss case that
 a connector memory cache cannot.
 
+**Scheduled planner identity (HOME-40), staged off.** `planner.enabled` is
+false by default. When set, the chart renders:
+
+- an itsaplan `cron` schedule `planner-<job>` per `connector.plannerSchedules`
+  entry that sets `cron` and `prompt`. The bootstrap Job writes it on the
+  `homelab-planner` agent. Its prompt is `factory-planner-schedule:<job>`: it
+  only names the job for the connector and never reaches a model. The
+  bootstrap pauses, and never deletes, a schedule that leaves the values;
+- one kagent Agent (`agents.planner`) in its own namespace, with a read-only
+  `github-git` token, no memory or MCP server, no push-guard rewrite and no
+  itsaplan or coding key;
+- the connector's `planner` config (agent key, key file, Agent, run timeout),
+  and the planner's key file beside the agents' in the connector's key volume.
+
+```mermaid
+flowchart LR
+  B[bootstrap Job] -->|cron schedule planner-job| I[itsaplan]
+  I -->|run, trigger schedule| C[connector]
+  C -->|fixed prompt from main, fresh session| P[planner Agent]
+  R[broker: reviewer App contents read] -->|github-git| P
+```
+
+**Why.** The planner's token comes from the reviewer App's existing agent
+permission (`contents: read`), through a broker review binding for the planner
+namespace, so no App permission changes. The itsaplan `homelab-planner` agent
+is `readOnly` (work items read) with no triggers; a cron schedule needs
+neither, because `runnerScope: team` lets the admin schedule it
+(`isTriggerableBy`). The `/projects/<key>/agent-schedules` routes exist on the
+live instance (HOME, 2026-11-24: HTTP 200, no schedules yet), so finding 13's
+core schedules need no Pro. A schedule below the workspace's
+`minScheduleIntervalSeconds` is refused by itsaplan and stops the bootstrap.
+To turn it on: add the namespace to `kagent.rbac.namespaces` and to Substrate's
+`credentialProvider.namespacePolicies`, set `planner.enabled`, and give each
+job a `cron` and `prompt`.
+
 ### Factory front page
 
 `factory.jomcgi.dev` shows Needs you, In flight, Shipped recently, then the

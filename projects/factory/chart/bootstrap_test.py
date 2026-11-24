@@ -638,3 +638,169 @@ def test_reviewing_column_bootstrap_preserves_existing_settings(bootstrap):
     with pytest.raises(RuntimeError, match="Reviewing must belong"):
         script.ensure_reviewing_column(session, 7)
     assert len(session.writes) == 1
+
+
+class ScheduleSession:
+    """The agent-schedules routes of itsaplan 1.10.0, in memory."""
+
+    def __init__(self, items=()):
+        self.items = [dict(i) for i in items]
+        self.calls = []
+
+    def call(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        base = f"{_PROJECT}/agent-schedules"
+        if method == "GET":
+            assert urlsplit(path).path == base
+            query = parse_qs(urlsplit(path).query)
+            page, size = int(query["page"][0]), int(query["pageSize"][0])
+            window = self.items[(page - 1) * size : page * size]
+            return {
+                "items": window,
+                "total": len(self.items),
+                "page": page,
+                "pageSize": size,
+            }
+        if method == "POST":
+            assert path == base
+            item = {"id": 100 + len(self.items), "timezone": "UTC", **body}
+            self.items.append(item)
+            return item
+        assert method == "PATCH"
+        item = next(i for i in self.items if path == f"{base}/{i['id']}")
+        item.update(body)
+        return item
+
+
+def _schedule(name, agent=11, **fields):
+    return {
+        "id": fields.pop("id", 1),
+        "agentId": agent,
+        "name": name,
+        "type": "cron",
+        "cron": "0 6 * * *",
+        "prompt": f"factory-planner-schedule:{name.removeprefix('planner-')}",
+        "status": "active",
+        **fields,
+    }
+
+
+def _planner_config(script, *names, cron="0 6 * * *"):
+    script.CONFIG["plannerSchedules"] = [
+        {
+            "name": f"planner-{n}",
+            "cron": cron,
+            "prompt": f"factory-planner-schedule:{n}",
+        }
+        for n in names
+    ]
+
+
+def _writes(session):
+    return [c for c in session.calls if c[0] != "GET"]
+
+
+def test_planner_schedules_are_created_active_and_idempotent(bootstrap):
+    script, _, _ = bootstrap
+    _planner_config(script, "smoke")
+    session = ScheduleSession()
+    script.ensure_planner_schedules(session, 7, {"id": 11})
+    assert _writes(session) == [
+        (
+            "POST",
+            f"{_PROJECT}/agent-schedules",
+            {
+                "agentId": 11,
+                "name": "planner-smoke",
+                "type": "cron",
+                "cron": "0 6 * * *",
+                "prompt": "factory-planner-schedule:smoke",
+                "status": "active",
+            },
+        )
+    ]
+    script.ensure_planner_schedules(session, 7, {"id": 11})
+    assert len(_writes(session)) == 1
+
+
+def test_planner_schedule_drift_is_patched_and_resumed(bootstrap):
+    script, _, _ = bootstrap
+    _planner_config(script, "smoke", cron="30 5 * * 1")
+    session = ScheduleSession(
+        [_schedule("planner-smoke", id=5, prompt="changed by hand", status="paused")]
+    )
+    script.ensure_planner_schedules(session, 7, {"id": 11})
+    assert _writes(session) == [
+        (
+            "PATCH",
+            f"{_PROJECT}/agent-schedules/5",
+            {
+                "cron": "30 5 * * 1",
+                "prompt": "factory-planner-schedule:smoke",
+                "status": "active",
+            },
+        )
+    ]
+
+
+def test_planner_schedule_removed_from_config_is_paused_not_deleted(bootstrap):
+    script, _, _ = bootstrap
+    _planner_config(script, "kept")
+    session = ScheduleSession(
+        [
+            _schedule("planner-kept", id=1),
+            _schedule("planner-gone", id=2),
+            _schedule("planner-already", id=3, status="paused"),
+            # Other agents' schedules and other names are never touched.
+            _schedule("planner-other-agent", id=4, agent=99),
+            _schedule("nightly", id=6),
+        ]
+    )
+    script.ensure_planner_schedules(session, 7, {"id": 11})
+    assert _writes(session) == [
+        ("PATCH", f"{_PROJECT}/agent-schedules/2", {"status": "paused"})
+    ]
+
+
+def test_no_planner_config_pauses_every_planner_schedule(bootstrap):
+    script, _, _ = bootstrap
+    script.CONFIG.pop("plannerSchedules", None)
+    session = ScheduleSession(
+        [_schedule("planner-a", id=1), _schedule("planner-b", id=2)]
+    )
+    script.ensure_planner_schedules(session, 7, {"id": 11})
+    assert [b for _, _, b in _writes(session)] == [
+        {"status": "paused"},
+        {"status": "paused"},
+    ]
+
+
+def test_planner_schedules_are_read_across_pages(bootstrap):
+    script, _, _ = bootstrap
+    _planner_config(script, "late")
+    filler = [_schedule(f"planner-x{i}", id=i, agent=99) for i in range(1, 101)]
+    session = ScheduleSession(filler + [_schedule("planner-late", id=500)])
+    script.ensure_planner_schedules(session, 7, {"id": 11})
+    assert [c[0] for c in session.calls] == ["GET", "GET"]
+
+
+def test_planner_schedule_of_another_type_stops_the_bootstrap(bootstrap):
+    script, _, _ = bootstrap
+    _planner_config(script, "smoke")
+    session = ScheduleSession([_schedule("planner-smoke", type="status")])
+    with pytest.raises(SystemExit, match="not a cron schedule"):
+        script.ensure_planner_schedules(session, 7, {"id": 11})
+
+
+def test_planner_schedule_names_must_be_planner_scoped(bootstrap):
+    script, _, _ = bootstrap
+    script.CONFIG["plannerSchedules"] = [
+        {"name": "delivery", "cron": "0 6 * * *", "prompt": "x"}
+    ]
+    with pytest.raises(SystemExit, match="unusable name"):
+        script.ensure_planner_schedules(ScheduleSession(), 7, {"id": 11})
+
+
+def test_ensure_agents_returns_every_agent_by_username(coordinator):
+    script, _, run = coordinator
+    assert set(run()) == {"factory-coordinator"}

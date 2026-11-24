@@ -258,6 +258,32 @@ py_test(
 )
 
 py_test(
+    name = "planner_test",
+    srcs = ["planner_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.schema.json",
+        "values.yaml",
+        "//projects/factory/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "charts/**",
+        "crds/**",
+        "files/**",
+        "templates/**",
+    ]),
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "semgrep_sync_test",
     srcs = ["semgrep_sync_test.py"],
     data = ["files/semgrep_sync.py"],

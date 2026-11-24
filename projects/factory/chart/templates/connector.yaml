@@ -118,8 +118,27 @@ GitHub tokens the broker mints for that ServiceAccount.
   "bindings" $bindings
   "links" $links
 }}
-{{- with $c.plannerSchedules }}
-{{- $_ := set $config "plannerSchedules" . }}
+{{- /* cron and prompt belong to the planner runtime (planner.enabled); without it the config carries only the filing keys. */}}
+{{- $plannerSchedules := list }}
+{{- range $c.plannerSchedules | default list }}
+{{- $schedule := deepCopy . }}
+{{- if not $.Values.planner.enabled }}
+{{- $_ := unset $schedule "cron" }}
+{{- $_ := unset $schedule "prompt" }}
+{{- end }}
+{{- $plannerSchedules = append $plannerSchedules $schedule }}
+{{- end }}
+{{- if $plannerSchedules }}
+{{- $_ := set $config "plannerSchedules" $plannerSchedules }}
+{{- end }}
+{{- if .Values.planner.enabled }}
+{{- $_ := set $config "planner" (dict
+  "agentKey" (include "factory.plannerAgentKey" .)
+  "apiKeyFile" (include "factory.connectorKeyPath" (include "factory.plannerAgentKey" .))
+  "kagentNamespace" (include "factory.plannerNamespace" .)
+  "kagentAgent" (include "factory.plannerAgentName" .)
+  "runTimeout" .Values.planner.runTimeout
+) }}
 {{- end }}
 {{- $bb := $c.buildbuddy | default dict }}
 {{- if $bb.enabled }}
@@ -379,6 +398,16 @@ spec:
                   items:
                     - key: apiKey
                       path: {{ . }}
+              {{- end }}
+              {{- if .Values.planner.enabled }}
+              # The planner's own key, read per call like the others. It is
+              # in no binding's agent list, so no coding run uses it.
+              - secret:
+                  name: {{ include "factory.itsaplanAgentSecret" (include "factory.plannerAgentKey" .) }}
+                  optional: true
+                  items:
+                    - key: apiKey
+                      path: {{ include "factory.plannerAgentKey" . }}
               {{- end }}
         # kagent reviews this token for its fixed invocation audience; the
         # principal is the ServiceAccount's UID.
