@@ -1,6 +1,6 @@
 apiVersion: v2
 name: ships
-version: 0.29.14
+version: 0.30.34
 description: Pacific Northwest AIS ingestion on factory
 dependencies:
   - name: factory-library
