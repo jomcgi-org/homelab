@@ -33,3 +33,4 @@ export function isStale(
 ): boolean;
 export function summaryHtml(summary: Summary, now?: number): string;
 export function stampSummary(html: string, summary: Summary): string;
+export function coordinates(lat: number, lon: number): string;

@@ -1,5 +1,6 @@
 // Ported from the hub’s stars/heat.js and urlParams.js. Dates remain UK viewing
 // nights: after-midnight hours belong to the preceding evening.
+import { coordinates } from "../../data/stars-summary.mjs";
 export interface Hour {
   time: string;
   dark?: boolean;
@@ -195,11 +196,9 @@ export function writeStarsParams(params: URLSearchParams, view: View) {
     params.set("night", view.selectedNight);
   return params;
 }
-/** The sites are grid cells without place names, so the position is the name:
- * 58.352°N 4.536°W, the same form the site card shows. */
-export const coordinates = (lat: number, lon: number) =>
-  `${Math.abs(lat).toFixed(3)}°${lat >= 0 ? "N" : "S"} ` +
-  `${Math.abs(lon).toFixed(3)}°${lon >= 0 ? "E" : "W"}`;
+/** The sites are grid cells without place names, so the position is the name.
+ * The static summary uses the same form. */
+export { coordinates };
 export const siteName = (site: Site) =>
   site.name || coordinates(site.lat, site.lon);
 export const nightLabel = (night: string) =>

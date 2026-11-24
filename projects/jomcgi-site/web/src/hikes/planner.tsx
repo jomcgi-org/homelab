@@ -225,7 +225,8 @@ export function HikesPlanner() {
     <section aria-label="Walk planner">
       {snapshot ? (
         <p role="status" className="hikes-summary">
-          {count.format(filtered.length)} walks
+          {count.format(filtered.length)}{" "}
+          {filtered.length === 1 ? "walk" : "walks"}
           {filtered.length !== walks.length &&
             ` of ${count.format(walks.length)}`}{" "}
           · {count.format(viableToday)} viable today · updated{" "}
@@ -413,27 +414,27 @@ export function HikesPlanner() {
         <details open>
           <summary>Walks with a weather window ({filtered.length})</summary>
           <ul className="hikes-results">
-            {filtered.map((walk) => (
-              <li key={walk.id}>
-                <button type="button" onClick={() => select(walk.id)}>
-                  {walk.name}
-                </button>
-                <span>
-                  {walk.distance_km} km · {walk.ascent_m} m · {walk.duration_h}{" "}
-                  h
-                  {forecastNote(walk.forecast_fetched_at) && (
-                    <> · {forecastNote(walk.forecast_fetched_at)}</>
-                  )}
-                </span>
-              </li>
-            ))}
+            {filtered.map((walk) => {
+              const note = forecastNote(walk.forecast_fetched_at);
+              return (
+                <li key={walk.id}>
+                  <button type="button" onClick={() => select(walk.id)}>
+                    {walk.name}
+                  </button>
+                  <span>
+                    {walk.distance_km} km · {walk.ascent_m} m ·{" "}
+                    {walk.duration_h} h{note && <> · {note}</>}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </details>
       )}
       {snapshot && (
         <details className="hikes-freshness">
           <summary>Data freshness</summary>
-          <div role="status">
+          <div>
             <p>
               Data as of {timestamp(snapshot.asOf)} ·{" "}
               {forecastStatus(snapshot.asOf, null, now)}
