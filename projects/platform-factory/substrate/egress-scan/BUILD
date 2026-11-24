@@ -42,9 +42,7 @@ go_image(
 
 go_test(
     name = "egress-scan_test",
-    srcs = [
-        "scan_test.go",
-    ],
+    srcs = ["scan_test.go"],
     embed = [":egress-scan_lib"],
     deps = [
         "@com_github_envoyproxy_go_control_plane_envoy//service/auth/v3:auth",
