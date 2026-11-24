@@ -37,8 +37,8 @@ Large through OpenRouter (1,024 dimensions, `data_collection: deny`), and
 TypeSafe Jev 1.14 through OpenRouter's System One endpoint, which ranks recall
 with no local fallback. No model loads in the pod. The `hindsight-preflight`
 Sync hook runs a copy of the factory's `preflight.py` (`keys_test` keeps the
-two equal). It checks the key, that the decision model answers from one
-endpoint, and that stored vectors match the embedding dimension. A failure
+two equal). It checks the key, that the decision model's endpoints belong to one
+provider and answer a zero-retention request, and that stored vectors match the embedding dimension. A failure
 stops the sync and keeps the running pod.
 
 ### Models and rollback

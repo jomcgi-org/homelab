@@ -155,6 +155,8 @@ def main():
         raise SystemExit(f"{model} returns {returned} dimensions, not {dimension}")
     decision = os.environ["DECISION_MODEL"]
     endpoints = decision_endpoints(key, decision)
+    if not endpoints:
+        raise SystemExit(f"{decision} has no endpoint on OpenRouter")
     providers = {tag.split("/")[0] for tag in endpoints}
     if len(providers) != 1:
         raise SystemExit(
