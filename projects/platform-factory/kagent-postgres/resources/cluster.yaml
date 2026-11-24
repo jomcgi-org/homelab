@@ -19,7 +19,11 @@ metadata:
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   monitoring:
+    # The operator adds cnpg-default-monitoring first, so git names it too.
+    # Without it Argo CD saw a diff on every compare.
     customQueriesConfigMap:
+      - name: cnpg-default-monitoring
+        key: queries
       - name: session-claims
         key: queries
   instances: 3
