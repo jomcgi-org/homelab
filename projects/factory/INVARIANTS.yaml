@@ -167,3 +167,9 @@ invariants:
   - projects/factory/chart/templates/reviewer.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: HOME-405-1
+  statement: Browser access to the Codex admin page requires a verified authentik Admins group claim.
+  mechanism:
+  - projects/factory/broker/actorjwt/verifier.go
+  test: //projects/factory/broker/actorjwt:actorjwt_test
+  state: live
