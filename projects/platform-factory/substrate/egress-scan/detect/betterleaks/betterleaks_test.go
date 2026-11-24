@@ -95,8 +95,10 @@ func TestDecodingIsOnAndBounded(t *testing.T) {
 // the deadline: the host fails it (deny with failure mode deny).
 func TestHeavyBodyAtTheCapFailsAtTheDeadline(t *testing.T) {
 	d := build(t)
-	cfg := detect.Config{Name: Name, Mode: detect.ModeEnforce, FailureMode: detect.FailDeny,
-		Limits: detect.Limits{MaxInputBytes: 512 << 10, Deadline: 75 * time.Millisecond}}
+	cfg := detect.Config{
+		Name: Name, Mode: detect.ModeEnforce, FailureMode: detect.FailDeny,
+		Limits: detect.Limits{MaxInputBytes: 512 << 10, Deadline: 75 * time.Millisecond},
+	}
 	h := detect.NewHost(d, cfg)
 	text := make([]byte, 0, 512<<10)
 	const line = "export API_KEY=${API_KEY} # token secret password key auth bearer credential\nsecret_name: app-token, password_hash: 5f4dcc3b5aa765d61d8327deb882cf99, key_id=a1b2c3\n"
