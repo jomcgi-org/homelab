@@ -128,6 +128,12 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: HOME-237-1
+  statement: Each new unverified goal verdict has a labelled explanation in the private review reply.
+  mechanism:
+  - projects/factory/reviewer/review/goal.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
 - id: FACT-15
   statement: The private staging receiver checks new reachable blobs before accepting coder refs, including blobs removed at the tip.
   mechanism:
