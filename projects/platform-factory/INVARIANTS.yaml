@@ -140,7 +140,7 @@ invariants:
   - projects/platform-factory/onepassword/admission.yaml
   test: //projects/platform-factory/onepassword:admission_test
   state: unproven
-- id: PLAT-21
+- id: HOME-544-1
   statement: Factory actor pods cannot submit OTLP directly to the trace gateway.
   mechanism:
   - projects/platform-factory/otel-collector/resources/network-policy.yaml

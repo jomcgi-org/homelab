@@ -70,7 +70,7 @@ spec:
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
-  # invariant: PLAT-15
+  # invariant: HOME-544-1
   name: trace-gateway
   namespace: otel-collector
 spec:
