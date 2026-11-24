@@ -87,6 +87,12 @@ events from each server in Honeycomb.
 To upgrade k3s or gVisor, change the pins in `nodes/install-node.sh` and rerun
 step 2. It restarts one node at a time.
 
+KSM is off on every node (`nodes/ksm-off.sh`, `nodes/factory-ksm.conf`): the
+script writes 0 to `/sys/kernel/mm/ksm/run` and installs a `systemd-tmpfiles`
+entry that does the same at each boot. `install-node.sh` runs it. To change only
+KSM on a running node, copy both files to it and run `sudo ./ksm-off.sh`. To
+undo, delete `/etc/tmpfiles.d/factory-ksm.conf` and write 1 to the sysfs file.
+
 To turn off zram swap and pod swap, remove them from `nodes/` first. Then, on
 each node, delete the files that `install-node.sh` installed, because a rerun
 does not remove them, and release the device:
