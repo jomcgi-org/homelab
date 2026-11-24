@@ -811,7 +811,7 @@ _FORK_OBJECTS = {
     ("CiliumNetworkPolicy", "ate-system", "ate-api-server-gvisor-fork-gates"),
     ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-gates"),
     ("CiliumNetworkPolicy", _GATES_NS, "substrate-workers"),
-    ("Job", "ate-system", "gvisor-fork-gates-2"),
+    ("Job", "ate-system", "gvisor-fork-gates-3"),
     ("Namespace", None, _GATES_NS),
     ("ServiceAccount", _GATES_NS, "fork-worker"),
     ("WorkerPool", _GATES_NS, "gvisor-fork-gates"),
@@ -906,7 +906,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
     # once (unsuspended for the gate run). Its pool is separate from
     # production: own namespace, own label, tiny requests, one worker.
     (gates_map,) = [k[2] for k in configmaps if k[2].startswith("gvisor-fork-gates-")]
-    gates_job = _one(docs, "Job", "gvisor-fork-gates-2")
+    gates_job = _one(docs, "Job", "gvisor-fork-gates-3")
     (gates_volume,) = [
         v
         for v in gates_job["spec"]["template"]["spec"]["volumes"]
@@ -1191,7 +1191,7 @@ def test_fork_images_share_one_fork_commit_tag() -> None:
     refs["workerpool/gvisor-fork-gates"] = _one(
         docs, "WorkerPool", "gvisor-fork-gates"
     )["spec"]["workerImage"]
-    gates = _one(docs, "Job", "gvisor-fork-gates-2")
+    gates = _one(docs, "Job", "gvisor-fork-gates-3")
     (gates_cli,) = [
         v["image"]["reference"]
         for v in gates["spec"]["template"]["spec"]["volumes"]
