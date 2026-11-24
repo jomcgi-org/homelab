@@ -1,4 +1,4 @@
-# invariant: PLAT-14
+# invariant: HOME-581-1
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
