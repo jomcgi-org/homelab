@@ -238,6 +238,7 @@ type Engine struct {
 	groups          map[string]string    // merge group commit: the conclusion of its review check
 	enqueueAfter    map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
 	waiting         map[prKey]*waitingHead
+	readyCache      map[readyKey]readyEntry
 	cleanupChecks   map[int64]cleanupCheck // Running probes by GitHub check run ID.
 	cleanupQueue    []int64                // Oldest unserved request first, across bindings.
 	cleanupRequests map[int64]cleanupRequest
@@ -852,7 +853,7 @@ func (e *Engine) dateWaiting(ctx context.Context, b *Binding, start []candidate)
 		// The same SHA can return from draft between two ready listings.
 		// Backdate only with a current readiness read.
 		w.since = w.observed
-		ready, err := e.gh.PullRequestReadySince(ctx, b.repo(), pr, b.SkipLabels)
+		ready, err := e.readySince(ctx, b, pr)
 		if err == nil && !ready.IsZero() {
 			w.since = w.arrival
 			if ready.After(w.readySince) {
@@ -863,6 +864,67 @@ func (e *Engine) dateWaiting(ctx context.Context, b *Binding, start []candidate)
 			w.since = w.readySince
 		}
 	}
+}
+
+// Cache bounds for readySince. One GraphQL read costs points from a
+// 5,000 points/h budget (HOME-751), so a steady poll must make none.
+const (
+	readyCacheMax = 512
+	readyCacheTTL = time.Hour
+)
+
+type readyKey struct {
+	repo, sha string
+	number    int
+}
+
+// readyStamp is the polled PR data that moves with a label or draft change.
+type readyStamp struct {
+	updated time.Time
+	draft   bool
+	labels  string
+}
+
+type readyEntry struct {
+	stamp readyStamp
+	ready time.Time
+	at    time.Time
+}
+
+// readySince returns PullRequestReadySince from the cache while the head and
+// the polled UpdatedAt, draft state and labels match the cached read, up to
+// readyCacheTTL. Only the polling goroutine calls it. Errors are not cached.
+func (e *Engine) readySince(ctx context.Context, b *Binding, pr github.PullRequest) (time.Time, error) {
+	key := readyKey{repo: b.repo(), sha: pr.HeadSHA, number: pr.Number}
+	stamp := readyStamp{updated: pr.UpdatedAt, draft: pr.Draft, labels: strings.Join(slices.Sorted(slices.Values(pr.Labels)), "\x00")}
+	now := e.cfg.Now()
+	if c, ok := e.readyCache[key]; ok && c.stamp == stamp && now.Sub(c.at) < readyCacheTTL {
+		return c.ready, nil
+	}
+	ready, err := e.gh.PullRequestReadySince(ctx, b.repo(), pr, b.SkipLabels)
+	if err != nil {
+		delete(e.readyCache, key)
+		return ready, err
+	}
+	if e.readyCache == nil {
+		e.readyCache = map[readyKey]readyEntry{}
+	}
+	for len(e.readyCache) >= readyCacheMax {
+		// Drop expired entries first, then the oldest read.
+		var oldest readyKey
+		for k, c := range e.readyCache {
+			if now.Sub(c.at) >= readyCacheTTL {
+				delete(e.readyCache, k)
+			} else if oldest == (readyKey{}) || c.at.Before(e.readyCache[oldest].at) {
+				oldest = k
+			}
+		}
+		if len(e.readyCache) >= readyCacheMax {
+			delete(e.readyCache, oldest)
+		}
+	}
+	e.readyCache[key] = readyEntry{stamp: stamp, ready: ready, at: now}
+	return ready, nil
 }
 
 // invariant: FACT-406
