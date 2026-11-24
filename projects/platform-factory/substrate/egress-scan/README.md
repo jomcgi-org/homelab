@@ -35,11 +35,11 @@ policies:
       packAsBytes: true
     policies:
       http:
-        requestTimeout: 310ms
+        requestTimeout: 80ms
 ```
 
-The timeout is 310 ms since the tier is on in enforce mode (300 ms deadline + 10 ms).
-It is 80 ms with the tier off or in observe mode.
+The timeout is 80 ms: the Semgrep tier is off since 2026-11-24 and Gitleaks alone scans.
+With the tier on in enforce mode it is at least the deadline + 10 ms (310 ms for a 300 ms deadline).
 
 Admit only the gateway to the scanner's listener. The Hindsight pilot and
 its cluster latency check are tracked in
@@ -287,13 +287,15 @@ can never delay the reply.
 enforce mode with failure mode `deny` would answer with 503. Gitleaks still
 denies on its own findings and its own 75 ms deadline in observe mode.
 
-#### Status: enforce since 2026-11-24
+#### Status: off since 2026-11-24 (deferred)
 
-Joe decided on 2026-11-24 to skip the 7-day observe window and to enforce at once
-(ARCHITECTURE.md "Decided" 8). `helm.valuesObject` of the Application sets
+The tier ran in enforce mode on 2026-11-24 (ARCHITECTURE.md "Decided" 8). Joe
+deferred it the same day ("Decided" 9). `helm.valuesObject` of the Application
+sets `semgrep.enabled: false`, and the gateway `requestTimeout` is 80 ms. The text
+below describes the tier when it is on. When it was on, `helm.valuesObject` set
 `mode: enforce`, `failureMode: deny`, the 300 ms deadline, `maxBodyBytes: 65536`
-and `concurrency: 2`, and the gateway `requestTimeout` is 310 ms. An engine
-outage denies the request (503, "secondary scan unavailable") on both layers: the
+and `concurrency: 2`, and the gateway `requestTimeout` was 310 ms. An engine
+outage denied the request (503, "secondary scan unavailable") on both layers: the
 tier's failure mode, and the gateway's `failureMode: deny` when the scanner itself
 does not answer. The table below stays as the reading guide for the data that
 enforce mode produces. To go back to observe mode, set `mode: observe` and
