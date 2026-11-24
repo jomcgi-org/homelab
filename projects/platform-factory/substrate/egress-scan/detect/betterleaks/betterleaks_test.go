@@ -93,7 +93,7 @@ func TestDecodingIsOnAndBounded(t *testing.T) {
 
 // A body at the size cap that makes every rule run cannot hold the call past
 // the deadline: the host fails it (deny with failure mode deny).
-func TestHeavyBodyAtTheCapFailsAtTheDeadline(t *testing.T) {
+func TestHeavyBodyAtTheCapNeverAllowsUnscanned(t *testing.T) {
 	d := build(t)
 	cfg := detect.Config{
 		Name: Name, Mode: detect.ModeEnforce, FailureMode: detect.FailDeny,

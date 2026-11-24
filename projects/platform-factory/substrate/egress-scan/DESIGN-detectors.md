@@ -276,6 +276,11 @@ index) is the planned second plug-in, in a private build, through `PrivateData`.
   crosses a cut is missed. The adapter hands over the whole input as one fragment
   (a test puts a token at six cut offsets). Any detector that reads a stream has
   the same risk: `detect/doc.go` says to pass the whole input.
+- Calls past their deadline keep running until the detector looks at its context.
+  The host bounds the calls in flight (4 for each scan slot, 32 now). If an actor
+  sends bodies that hold the detector past its deadline 32 times, every request
+  fails with reason `budget` and is denied (failure mode deny) until the calls end.
+  That fails closed and shows in `factory_egress_scan_detector_failures_total`.
 - The Gitleaks match budget (64) is per input now: address, body and decoded text
   each get one, where the old code shared one. The deadline still bounds the work.
 - With failure mode allow, a failure on one input lets the whole request through

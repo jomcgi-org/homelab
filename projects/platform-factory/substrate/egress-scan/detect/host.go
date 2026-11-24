@@ -101,6 +101,9 @@ func (h *Host) ScanWithin(ctx context.Context, budget time.Duration, inputs ...I
 	if limit > 0 && (budget < limit) {
 		limit = budget
 	}
+	if err := ctx.Err(); err != nil {
+		return Verdict{Outcome: OutcomeClean, Canceled: err}
+	}
 	callCtx := ctx
 	if h.cfg.Limits.Deadline > 0 {
 		if limit <= 0 {
