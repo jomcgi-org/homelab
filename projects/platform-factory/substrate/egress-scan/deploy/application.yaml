@@ -22,7 +22,7 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: egress-scan
-      targetRevision: 0.7.26
+      targetRevision: 0.8.27
       helm:
         releaseName: egress-scan
         # The second scan tier, in observe mode for the first 7 days (README,
