@@ -91,7 +91,7 @@ def test_qemu_kvm_service_gets_a_drop_in_that_writes_zero_after_its_init(tmp_pat
     ]
     assert lines == [
         "[Service]",
-        "ExecStartPost=/bin/sh -c 'echo 0 > /sys/kernel/mm/ksm/run'",
+        "ExecStartPost=-/bin/sh -c 'echo 0 > /sys/kernel/mm/ksm/run'",
     ]
 
 
