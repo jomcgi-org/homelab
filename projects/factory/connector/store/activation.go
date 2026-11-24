@@ -21,6 +21,14 @@ func (s *Store) RecordActivationFollowup(ctx context.Context, q Querier, workID,
 	return err
 }
 
+// IsActivationFollowup reports whether the connector created this issue as an
+// activation follow-up. Such an issue never gets a follow-up of its own.
+func (s *Store) IsActivationFollowup(ctx context.Context, issueID int64) (bool, error) {
+	var found bool
+	err := s.DB.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM activation_followup WHERE issue_id = $1)`, issueID).Scan(&found)
+	return found, err
+}
+
 // ActivationParent only follows relationships the connector created, never
 // arbitrary dependency links. Completion can propagate one parent at a time.
 func (s *Store) ActivationParent(ctx context.Context, q Querier, issueID int64) (id, workID int64, err error) {

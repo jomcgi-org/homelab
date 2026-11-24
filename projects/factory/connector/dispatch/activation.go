@@ -79,6 +79,47 @@ func (p activationPayload) step() string {
 	return activationPending
 }
 
+const (
+	activationTitlePrefix = "Activate "
+	activationMarkerStart = "<!-- factory-activation work-item="
+)
+
+// isActivationIssue recognizes a follow-up by its title and marker, so an
+// issue the store does not know (a lost write, an older binary) is still
+// never the parent of another follow-up.
+func isActivationIssue(is *itsaplan.Issue) bool {
+	return strings.HasPrefix(is.Title, activationTitlePrefix) && strings.Contains(is.Description, activationMarkerStart)
+}
+
+// activationTicketNote is the comment for an Activate ticket whose own PR
+// still names a step. The tracker keeps one activation level.
+func activationTicketNote(key, step string) string {
+	return "The PR merged, but activation remains: " + step +
+		"\n\nThis issue is itself an activation follow-up, so the factory creates no further activation follow-up. " +
+		"It and the issue it blocks stay open. Complete the step, or split it into a new issue, then move " + key + " to Done."
+}
+
+// openActivationBlocker returns an open Activate ticket that already blocks
+// the parent, so a parent has at most one.
+func openActivationBlocker(parent *itsaplan.Issue, cols []itsaplan.Column) *itsaplan.IssueRef {
+	for i := range parent.Links {
+		l := &parent.Links[i]
+		if !l.BlockedBy() || !strings.HasPrefix(l.Issue.Title, activationTitlePrefix) || l.Issue.Archived {
+			continue
+		}
+		state := ""
+		for _, c := range cols {
+			if c.ID == l.Issue.ColumnID {
+				state = c.StateType
+			}
+		}
+		if state != "canceled" && state != "completed" {
+			return &l.Issue
+		}
+	}
+	return nil
+}
+
 func firstColumn(cols []itsaplan.Column, state string) *itsaplan.Column {
 	var found *itsaplan.Column
 	for i := range cols {
@@ -239,6 +280,9 @@ func (e *Engine) activate(ctx context.Context, it *store.OutboxItem, p activatio
 	if !inProject(original, p.Project) || state == "canceled" || state == "completed" || activationTakenOver(original, delegate) {
 		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "original issue moved or stopped; activation not delegated")
 	}
+	if isActivationIssue(original) {
+		return e.abandonActivationTicket(ctx, it, p)
+	}
 	started := firstColumn(project.Columns, "started")
 	if started == nil {
 		return e.abandonActivation(ctx, it, p, errors.New("project has no started column"))
@@ -269,6 +313,9 @@ func (e *Engine) activate(ctx context.Context, it *store.OutboxItem, p activatio
 			if it.SendStarted {
 				return errors.New("activation create outcome unknown; marker not found; refusing a second create")
 			}
+			if open := openActivationBlocker(original, project.Columns); open != nil {
+				return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "parent already has open activation follow-up "+open.Identifier)
+			}
 			todo := firstColumn(project.Columns, "unstarted")
 			if todo == nil {
 				todo = firstColumn(project.Columns, "backlog")
@@ -293,10 +340,14 @@ func (e *Engine) activate(ctx context.Context, it *store.OutboxItem, p activatio
 			if err := e.beginActivationCall(ctx, it, p.WorkID, "CreateIssue", fmt.Sprint(p.Project)); err != nil {
 				return err
 			}
-			follow, err = e.its.CreateIssue(ctx, p.Project, itsaplan.NewIssue{
+			create := itsaplan.NewIssue{
 				Title: string(title), ColumnID: todo.ID,
 				Description: activationPending + "\n\n" + p.marker(),
-			})
+			}
+			if original.Priority != nil {
+				create.Priority = *original.Priority
+			}
+			follow, err = e.its.CreateIssue(ctx, p.Project, create)
 			if err != nil {
 				if notCreated(err) {
 					if clearErr := e.st.OutboxSendCleared(ctx, it.ID); clearErr != nil {
@@ -415,6 +466,18 @@ func (e *Engine) activate(ctx context.Context, it *store.OutboxItem, p activatio
 		return err
 	}
 	return e.confirmActivationDelegation(ctx, it, p, id)
+}
+
+// abandonActivationTicket explains why an Activate ticket gets no follow-up of
+// its own. It covers outbox items queued before the merge path checked.
+func (e *Engine) abandonActivationTicket(ctx context.Context, it *store.OutboxItem, p activationPayload) error {
+	return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/activation-ticket/%d", p.WorkID), 0, "",
+			commentPayload{IssueID: p.IssueID, Body: activationTicketNote(p.IssueKey, p.step())}); err != nil {
+			return err
+		}
+		return e.st.OutboxAbandon(ctx, tx, it.ID, "issue is an activation follow-up; no further follow-up")
+	})
 }
 
 func (e *Engine) confirmActivationDelegation(ctx context.Context, it *store.OutboxItem, p activationPayload, id int64) error {

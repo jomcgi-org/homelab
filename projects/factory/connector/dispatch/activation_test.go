@@ -41,6 +41,9 @@ func (f *fakeItsaplan) CreateIssue(_ context.Context, project string, n itsaplan
 		Title: n.Title, Description: n.Description, ColumnID: n.ColumnID,
 		AssigneeUserID: f.activationAutoAssignee,
 	}
+	if n.Priority != "" {
+		is.Priority = &n.Priority
+	}
 	if f.issues == nil {
 		f.issues = make(map[int64]*itsaplan.Issue)
 	}
@@ -375,23 +378,91 @@ func TestActivationObservationClearsOutageAfterSuccessfulRead(t *testing.T) {
 	}
 }
 
-func TestActivationFollowupsChainToOriginal(t *testing.T) {
+func TestActivationTicketNeverGetsActivationChild(t *testing.T) {
 	v := newDeliveryEnv(t)
 	v.pendingActivation()
 	v.poll()
-	v.finishActivation(1001, 2, "Enable the final flag after the migration is deployed.")
+	v.mergeActivation(1001, 2, "Enable the final flag after the migration is deployed.")
+	v.poll()
+	for range 3 {
+		v.tick(v.e)
+	}
+	if v.its.activationCreates != 1 {
+		t.Fatalf("an Activate ticket got its own Activate ticket: %d creates", v.its.activationCreates)
+	}
+	// The factory leaves both issues open and says why.
 	for _, id := range []int64{101, 1001} {
 		is, _ := v.its.GetIssue(v.ctx, id)
-		if is.ColumnID != 2 {
-			t.Fatalf("issue %d prematurely completed", id)
+		if is.ColumnID == 3 {
+			t.Fatalf("issue %d completed with a step left", id)
 		}
 	}
-	v.finishActivation(1002, 3, "none")
-	for _, id := range []int64{101, 1001, 1002} {
+	var said bool
+	for _, c := range v.its.Comments() {
+		if c.issueID == 1001 && strings.Contains(c.body, "Enable the final flag") && strings.Contains(c.body, "no further activation follow-up") {
+			said = true
+		}
+	}
+	if !said {
+		t.Fatalf("no comment on the Activate ticket: %+v", v.its.Comments())
+	}
+}
+
+func TestActivationTicketWithNoStepStillCompletesParent(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.pendingActivation()
+	v.poll()
+	v.finishActivation(1001, 2, "none")
+	for _, id := range []int64{101, 1001} {
 		is, _ := v.its.GetIssue(v.ctx, id)
 		if is.ColumnID != 3 {
 			t.Fatalf("issue %d did not complete: %+v", id, is)
 		}
+	}
+}
+
+func TestActivationInheritsParentPriority(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.pendingActivation()
+	high := "high"
+	v.its.issues[101].Priority = &high
+	v.poll()
+	follow, err := v.its.GetIssue(v.ctx, 1001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if follow.Priority == nil || *follow.Priority != "high" {
+		t.Fatalf("priority=%v", follow.Priority)
+	}
+}
+
+func TestParentWithOpenActivationTicketGetsNoSecond(t *testing.T) {
+	for name, column := range map[string]int64{"todo": 1, "started": 2} {
+		t.Run(name, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.pendingActivation()
+			// An earlier Activate ticket, created by another path, still blocks the parent.
+			v.its.issues[900] = &itsaplan.Issue{ID: 900, Identifier: "HL-900", Title: "Activate HL-7: Issue 101 title", ColumnID: column}
+			link := itsaplan.IssueLink{Kind: "blocks", Direction: "inward"}
+			link.Issue = itsaplan.IssueRef{ID: 900, Identifier: "HL-900", Title: "Activate HL-7: Issue 101 title", ColumnID: column}
+			v.its.issues[101].Links = append(v.its.issues[101].Links, link)
+			v.poll()
+			if v.its.activationCreates != 0 {
+				t.Fatal("second open Activate ticket for the same parent")
+			}
+		})
+	}
+}
+
+func TestParentWithCanceledActivationTicketGetsANewOne(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.pendingActivation()
+	link := itsaplan.IssueLink{Kind: "blocks", Direction: "inward"}
+	link.Issue = itsaplan.IssueRef{ID: 900, Identifier: "HL-900", Title: "Activate HL-7: Issue 101 title", ColumnID: 4}
+	v.its.issues[101].Links = append(v.its.issues[101].Links, link)
+	v.poll()
+	if v.its.activationCreates != 1 {
+		t.Fatalf("creates=%d", v.its.activationCreates)
 	}
 }
 

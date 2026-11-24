@@ -1946,6 +1946,18 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		body += "- Delivered head: " + mdLink(short(d.HeadSHA), headURL) + "\n"
 	}
 	commentKey := fmt.Sprintf("comment/merged/%d", wi.ID)
+	// An Activate ticket never gets an Activate ticket: the step stays on
+	// the ticket as a comment and both issues stay open.
+	ticket := false
+	if activation != "none" {
+		var err error
+		if ticket, err = e.st.IsActivationFollowup(ctx, wi.IssueID); err != nil {
+			return err
+		}
+		if ticket {
+			body = activationTicketNote(wi.IssueKey, activation) + "\n\n" + body[strings.Index(body, "- Issue:"):]
+		}
+	}
 	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
 		done, err := e.st.MarkMerged(ctx, tx, pr, merge, at)
 		if err != nil {
@@ -1961,6 +1973,9 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, commentKey, 0, "",
 			commentPayload{IssueID: wi.IssueID, Body: body}); err != nil {
 			return err
+		}
+		if ticket {
+			return nil
 		}
 		if activation != "none" {
 			return e.st.Enqueue(ctx, tx, store.OutboxActivation, fmt.Sprintf("activation/%d", wi.ID), 0, "",

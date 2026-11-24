@@ -28,7 +28,11 @@ and an undelegated follow-up carry a fixed status and the delivered head's link
 **Follow-up.** After the coordinator's HOME-106 grants check, the connector
 creates `Activate HOME-N: <title>` in the first unstarted column with the
 `Refs` line, step, issue, PR and head, links it as `blocks`, then delegates.
-Markers recover lost creates; an ambiguous create is never resent. The parent
+The follow-up copies the parent's priority. Markers recover lost creates; an
+ambiguous create is never resent. An Activate ticket never gets a follow-up,
+and a parent with an open Activate ticket gets no second one. When an Activate
+ticket's own PR names a step, the connector comments it and leaves both issues
+open ([HOME-818](https://factory-plan.jomcgi.dev/factory/issue/HOME-818)). The parent
 completes only while it is still started and linked: stops, cancellation,
 takeover and unlinking prevent it. With no conditional PATCH, a late change can
 race. This policy ships with `Activation: none`, cited from `git log`
