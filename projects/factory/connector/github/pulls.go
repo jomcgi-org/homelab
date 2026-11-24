@@ -36,11 +36,11 @@ type RefActivity struct {
 // Unlike git commit dates, repository activity records when the ref changed.
 // Check the exact ref and SHA so a push racing the PR listing cannot date a
 // different head. Older branch history is not needed for queue ordering.
-func (c *Client) HeadRefChangedAt(ctx context.Context, repo, branch, head string) (time.Time, error) {
+func (c *Client) HeadRefChangedAt(ctx context.Context, bindingRepo, repo, branch, head string) (time.Time, error) {
 	ref := "refs/heads/" + branch
 	q := url.Values{"ref": {ref}, "direction": {"desc"}, "per_page": {"1"}, "page": {"1"}}
 	var events []RefActivity
-	if err := c.doUncached(ctx, repo, http.MethodGet, repoPath(repo)+"/activity?"+q.Encode(), nil, &events); err != nil {
+	if err := c.doUncached(ctx, bindingRepo, http.MethodGet, repoPath(repo)+"/activity?"+q.Encode(), nil, &events); err != nil {
 		return time.Time{}, err
 	}
 	if len(events) != 1 {

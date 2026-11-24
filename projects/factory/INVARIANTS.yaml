@@ -69,6 +69,12 @@ invariants:
   - projects/factory/reviewer/review/engine.go
   test: //projects/factory/reviewer/review:review_test
   state: live
+- id: FACT-406
+  statement: Within an author priority, the reviewer starts the longest eligible head wait across polls and forks. A shared-head hold resets that wait.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
 - id: FACT-10
   statement: An error, a timeout or an unparseable answer gives no pass, no enqueue and no token.
   mechanism:
