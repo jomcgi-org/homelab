@@ -47,7 +47,7 @@ resources:
   - ../egress-scan/gate/provision
   # engine-gate: the service behind the Semgrep tier (egress-scan/gate/README.md
   # "Enable steps"). One replica, its network rules and the admission guard of
-  # its ServiceAccount. The scanner calls it in observe mode (deploy/application.yaml).
+  # its ServiceAccount. The scanner does not call it: the tier is off (deploy/application.yaml).
   - ../egress-scan/gate/manifests
   - network-policy.yaml
   - kagent-identity-guard.yaml
