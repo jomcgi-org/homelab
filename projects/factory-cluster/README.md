@@ -765,7 +765,7 @@ flowchart LR
    | Field | Before | After | Why |
    | --- | --- | --- | --- |
    | limits | 2 CPU, 1280Mi | 9 CPU, 2Gi | seed (1000m, 512 MiB cap) and 8 children (1000m, 144 MiB booked each) |
-   | requests | 100m, 256Mi | 4 CPU, 1Gi (resized 2026-11-24 to 2 CPU, 640Mi) | a scheduling reservation. 2 CPU matches the scanner's 2 scans in flight: a 500m request would give two scans a quarter of a core's shares under contention. 640Mi covers the measured peak of 592 MiB |
+   | requests | 100m, 256Mi | 4 CPU, 1Gi (memory resized 2026-11-24 to 640Mi) | a scheduling reservation. 4 CPU matches the in-flight cap of 4: a 500m request would give four scans half a core's shares under contention. 640Mi covers the measured peak of 592 MiB |
    | `nodeAffinity` | none | prefer `kubernetes.io/hostname: node-1`, weight 100 | Joe asked that the pool land on node-1 (the design has no selector): it has the most request room, and one node keeps latency runs comparable. Soft, so a drained node-1 does not leave the pod pending |
 
    Request room on 2026-11-23, after the re-pin (allocatable minus requests,
@@ -781,8 +781,8 @@ flowchart LR
    starts one pod and nothing rolls: no WorkerPool is edited but this one. Read
    the room again before you merge. `kvm-pool.yaml` states the same numbers.
 
-   Trade-off: the request takes 1Gi of node-1's request room (5237Mi to
-   4213Mi). At the full coder peak (10 to 12 workers at 768Mi each, and a fifth
+   Trade-off (2026-11-23; the memory request is now 640Mi): the request takes
+   1Gi of node-1's request room (5237Mi to 4213Mi). At the full coder peak (10 to 12 workers at 768Mi each, and a fifth
    reviewer) one or two coder workers may stay Pending for lack of request room.
    Nothing is evicted: requests only decide scheduling, and the running pods
    keep their memory. If it hurts, lower the memory request to 768Mi (the seed
@@ -792,7 +792,7 @@ flowchart LR
    change in the same change: `test_kvm_pool_has_one_worker_and_uses_the_fork_config`
    (was `..._has_no_workers_...`, asserted `replicas == 0`),
    `test_kvm_pool_template_sets_only_the_account_the_placement_and_the_resources`
-   and `test_kvm_pool_requests_1gi_and_limits_for_a_seed_and_8_children`. In
+   and `test_kvm_pool_requests_640mi_and_limits_for_a_seed_and_8_children`. In
    `resources_test.py`, the guard asserts `replicas == 1`.
 
    Verify, read-only:
