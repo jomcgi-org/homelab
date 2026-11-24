@@ -5,11 +5,12 @@
 # (GATE <actor> ...). The node-side checks (the filter byte diff, the cgroup and
 # namespace leak counts) run by hand on the worker's node while this Job runs.
 #
-# Created SUSPENDED; set to run in a reviewed change (suspend: false), once the
-# pool had a worker. Set suspend back to true, or delete the Job, to stop a rerun. A Job's pod template is immutable: editing anything
-# under gates/ changes the generated ConfigMap's hash, and so the pod template:
-# bump the run suffix in the name in the same change (resources_test.py pins the
-# hash). A suspended Job keeps the Application in health Suspended.
+# Created SUSPENDED, then run by a reviewed change (suspend: false) once the pool
+# had a worker. It runs once and is not rerun: to stop it, delete the Job. A
+# Job's pod template is immutable: editing anything under gates/ changes the
+# generated ConfigMap's hash, and so the pod template: bump the run suffix in
+# the name in the same change (resources_test.py pins the hash). A suspended Job
+# keeps the Application in health Suspended.
 #
 # It runs as ate-system/ate-client, which the ate API already authorizes
 # (ateApi.authorization.bootstrapOwners in ../../values/substrate.yaml), so it
