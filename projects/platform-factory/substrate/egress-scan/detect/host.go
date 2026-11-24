@@ -198,16 +198,25 @@ func (h *Host) result(found []Finding, err error) callResult {
 	switch {
 	case err == nil:
 		return callResult{found: found}
-	case len(found) > 0 && !errors.Is(err, context.Canceled):
-		// A finding before the error is a verdict: the request is blocked.
+	case hasBlock(found) && !errors.Is(err, context.Canceled):
+		// A block finding before the error is a verdict: the request is blocked.
 		return callResult{found: found}
 	case errors.Is(err, ErrBudget):
-		return callResult{failure: FailureBudget}
+		return callResult{found: found, failure: FailureBudget}
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
-		return callResult{failure: FailureTimeout}
+		return callResult{found: found, failure: FailureTimeout}
 	default:
-		return callResult{failure: FailureError}
+		return callResult{found: found, failure: FailureError}
 	}
+}
+
+func hasBlock(found []Finding) bool {
+	for _, f := range found {
+		if f.Class == ClassBlock {
+			return true
+		}
+	}
+	return false
 }
 
 // String names the verdict for logs. It holds no finding detail.

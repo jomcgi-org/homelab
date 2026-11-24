@@ -54,7 +54,7 @@ value `detector.name`) selects it by name:
 | Name | What it is |
 | --- | --- |
 | `gitleaks` | The Gitleaks rules pinned in `go.mod`, matched by the scanner's own matcher with a context and a work budget. The chart default, and the revert lever for one release |
-| `betterleaks` | The Betterleaks library (`v2.0.0-rc.11`) with its default rules and `detect/betterleaks/extra_rules.toml`. Allow markers off, decode depth 3. The detector of the Application since 2026-11-24 |
+| `betterleaks` | The Betterleaks library (`v2.0.0-rc.11`) with its default rules and `detect/betterleaks/extra_rules.toml`. Allow markers off, decode depth 3. The bearer and basic Authorization rules report and do not deny yet (`detect/betterleaks/extra_rules.toml`). The detector of the Application since 2026-11-24 |
 
 The host enforces the same settings for any detector. Each is a flag and a chart
 value under `detector`:

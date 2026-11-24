@@ -3,6 +3,13 @@
 # They cover what the defaults missed on the spike corpus (2026-11-24): a
 # database URL with a password, and an Authorization header with a bearer token
 # or a basic credential. egress-scan/DESIGN-detectors.md has the corpus result.
+#
+# A rule with the tag "egress:report" gives findings of class report: the scanner
+# counts them and never denies for them. The two Authorization rules carry it at
+# first. The gateway injects the real credential after the scan, so an actor
+# should hold none, but the shape of the placeholder that an actor does send on
+# the Hindsight route is not known to this repository. The counters show it;
+# the tag comes off in a follow-up when real traffic has been seen.
 title = "egress-scan extra rules"
 
 [extend]
@@ -21,6 +28,7 @@ entropy(finding["secret"]) <= 1.5
 [[rules]]
 id = "egress-authorization-bearer"
 description = "An Authorization header or field with a bearer token."
+tags = ["egress:report"]
 regex = '''(?i)\bauthorization["']?[ \t]{0,3}[:=][ \t]{0,3}["']?bearer[ \t]+([A-Za-z0-9._~+/=-]{20,512})'''
 confidence = "high"
 keywords = ["authorization"]
@@ -31,6 +39,7 @@ entropy(finding["secret"]) <= 3.0
 [[rules]]
 id = "egress-authorization-basic"
 description = "An Authorization header or field with a basic credential."
+tags = ["egress:report"]
 regex = '''(?i)\bauthorization["']?[ \t]{0,3}[:=][ \t]{0,3}["']?basic[ \t]+([A-Za-z0-9+/]{16,512}={0,2})'''
 confidence = "high"
 keywords = ["authorization"]
