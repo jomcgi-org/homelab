@@ -6,7 +6,6 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build, createServer } from "vite";
-import { renderDocsDiagrams } from "./render-diagrams.mjs";
 
 import { personLdScript } from "../../monolith/frontend/src/lib/public/seo.js";
 import { hub, posts } from "./site-inputs.mjs";
@@ -84,7 +83,6 @@ try {
   await server.close();
 }
 
-await renderDocsDiagrams();
 // The deploy-time snapshot renders the variable trip/day URLs after reading R2.
 // Keep its Node-only bundle separate from the content-named browser chunks.
 await build({

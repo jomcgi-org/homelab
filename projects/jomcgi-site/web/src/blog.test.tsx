@@ -17,6 +17,9 @@ const manifest: (PostSummary & { content: string })[] = JSON.parse(
   ),
 );
 import { BlogPage } from "./blog-page";
+import { BlogPost } from "./blog-post";
+import { RETIRED_PROJECTS } from "./blog-shared";
+import { retiredTags } from "../site-inputs.mjs";
 import { BlogEmbed, type EmbedKind } from "./blog-embed";
 import { PAGES } from "./pages";
 import { render as prerender } from "./prerender";
@@ -243,4 +246,29 @@ describe("replay intent", () => {
     },
     20000,
   );
+});
+
+describe("retired projects", () => {
+  it("says on a post that its project was retired", () => {
+    const { container } = page(
+      <BlogPost
+        post={{
+          slug: "old",
+          title: "Old",
+          summary: "s",
+          date: "2026-10-02",
+          tags: ["embervm", "tla"],
+          toc: [],
+          html: "<p>body</p>",
+        }}
+      />,
+    );
+    expect(container.querySelector(".blog-note")?.textContent).toMatch(
+      /^EmberVM was retired in November 2026/,
+    );
+  });
+
+  it("keeps the home page and the post notice on the same retired tags", () => {
+    expect(Object.keys(RETIRED_PROJECTS)).toEqual(retiredTags);
+  });
 });

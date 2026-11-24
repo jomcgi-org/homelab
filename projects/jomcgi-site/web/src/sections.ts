@@ -40,12 +40,12 @@ export const SECTIONS: readonly Section[] = [
     summary: "Notes on building and running the homelab.",
   },
   {
-    name: "Docs",
+    name: "Homelab",
     group: "Writing",
-    path: "/docs",
-    legacy: "/docs",
+    path: "/homelab",
+    legacy: "/homelab",
     live: true,
-    summary: "How the pieces fit together.",
+    summary: "What runs, how a threat is contained, and where to read more.",
   },
   {
     name: "Slop",

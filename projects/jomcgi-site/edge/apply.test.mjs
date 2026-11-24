@@ -204,6 +204,8 @@ test("routed pages are served with and without a query string", () => {
     "/docs/",
     "/docs/sextant",
     "/docs/embervm/architecture",
+    "/homelab",
+    "/homelab/",
     "/engineering",
     "/engineering/",
     "/engineering/diagrams",

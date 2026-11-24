@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { homeDefines } from "./site-inputs.mjs";
 import { resolve } from "node:path";
 import { defineConfig } from "vite";
@@ -57,14 +56,7 @@ export default defineConfig({
           ]),
         ),
         "llm-leaderboard": page("llm-leaderboard.html"),
-        docs: page("docs.html"),
-        ...Object.fromEntries(
-          (
-            JSON.parse(readFileSync("docs-manifest.json", "utf8")) as {
-              slug: string;
-            }[]
-          ).map(({ slug }) => [`docs/${slug}`, page(`docs/${slug}.html`)]),
-        ),
+        homelab: page("homelab.html"),
         trips: page("trips.html"),
         trip: page("trip.html"),
         "trip-day": page("trip-day.html"),

@@ -9,7 +9,7 @@ export const posts = JSON.parse(
   ),
 );
 // EmberVM is retired, so its posts stay addressable but leave the home page.
-const retiredTags = ["embervm"];
+export const retiredTags = ["embervm"];
 export function latestPosts(manifest = posts) {
   return [...manifest]
     .filter(({ tags = [] }) => !tags.some((tag) => retiredTags.includes(tag)))

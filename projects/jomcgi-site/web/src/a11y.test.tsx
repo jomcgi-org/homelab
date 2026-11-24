@@ -22,7 +22,6 @@ function htmlEntries(dir = ".", prefix = ""): string[] {
     (entry) => {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (["dist", "node_modules"].includes(entry.name)) return [];
-      // Bazel exposes the generated docs directory as a runfiles symlink.
       if (statSync(join(dir, path)).isDirectory())
         return htmlEntries(dir, path);
       return entry.name.endsWith(".html") ? [path] : [];
@@ -80,11 +79,9 @@ function closure(entry: string): Set<string> {
 
 describe("per-page code", () => {
   // The module that declares each registered page component.
-  const sources = ["src", "docs/_src"].flatMap((dir) =>
-    readdirSync(dir)
-      .filter((f) => /\.tsx?$/.test(f))
-      .map((f) => join(dir, f)),
-  );
+  const sources = readdirSync("src")
+    .filter((f) => /\.tsx?$/.test(f))
+    .map((f) => join("src", f));
   const moduleOf = new Map(
     Object.values(PAGES).map((Page) => [
       Page,

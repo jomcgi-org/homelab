@@ -7,8 +7,7 @@ import { BlogPage } from "./blog-page";
 import { PostEmberConformancePage } from "./blog-ember-conformance-page";
 import { Post125bOnA4090Page } from "./blog-125b-on-a-4090-page";
 import { LlmLeaderboardPage } from "./llm-leaderboard-page";
-import { DOC_PAGES } from "../docs/_src/pages";
-import { DocsIndexPage } from "./docs-index-page";
+import { HomelabPage } from "./homelab-page";
 import { TripsPage } from "./trips-page";
 import { TripPage } from "./trip-page";
 import { TripDayPage } from "./trip-day-page";
@@ -41,8 +40,7 @@ export const PAGES: Record<string, () => React.JSX.Element> = {
   "blog/ember-conformance.html": PostEmberConformancePage,
   "blog/125b-on-a-4090.html": Post125bOnA4090Page,
   "llm-leaderboard.html": LlmLeaderboardPage,
-  "docs.html": DocsIndexPage,
-  ...DOC_PAGES,
+  "homelab.html": HomelabPage,
   "trips.html": TripsPage,
   "trip.html": TripPage,
   "trip-day.html": TripDayPage,
