@@ -1,3 +1,4 @@
+# invariant: PLAT-6
 # The isolation-gate pool: STAGED, TO BE REMOVED. A separate gVisor fork pool for
 # the isolation gates of projects/factory-cluster/README.md (step 9), so the
 # gates can run a guest process without touching the production pool, its

@@ -913,7 +913,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
         if v["name"] == "config"
     ]
     assert gates_volume["configMap"]["name"] == gates_map
-    assert gates_map == "gvisor-fork-gates-72cd5bf9tg"
+    assert gates_map == "gvisor-fork-gates-85h6mf6g5g"
     assert gates_job["spec"]["suspend"] is True
     gates_pool = _one(docs, "WorkerPool", "gvisor-fork-gates")
     assert gates_pool["metadata"]["namespace"] == _GATES_NS
@@ -930,11 +930,12 @@ def test_gvisor_fork_slice_is_wired() -> None:
         d for d in docs if d["metadata"]["name"].startswith("gvisor-fork-latency")
     ]
     # The namespace is kept when the Application goes, like every Namespace.
-    namespace = _one(docs, "Namespace", _FORK_NS)
-    assert (
-        "Prune=false"
-        in namespace["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
-    )
+    for ns in (_FORK_NS, _GATES_NS):
+        namespace = _one(docs, "Namespace", ns)
+        assert (
+            "Prune=false"
+            in namespace["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
+        )
     # The asset Job is a Sync hook, so Argo runs it on the first sync and holds
     # that sync until its pod is scheduled: keep its pod request small
     # (the nodes are request-tight; node-2 had 1981Mi left on 2026-11-23).
@@ -1108,9 +1109,10 @@ def test_fork_seed_gate_is_on() -> None:
     # does not know ForkSeed. Its --preview must stay as it is with the gate
     # off, which only the build above guarantees.
     for doc in _docs():
-        if doc["kind"] == "WorkerPool" and not doc["metadata"]["name"].startswith(
-            "gvisor-fork"
-        ):
+        if doc["kind"] == "WorkerPool" and doc["metadata"]["name"] not in {
+            "gvisor-fork",
+            "gvisor-fork-gates",
+        }:
             image = doc["spec"]["workerImage"]
             assert image.startswith("ghcr.io/kagent-dev/substrate/ateworker-"), image
             assert ":v1.0.1@sha256:" in image, image

@@ -44,7 +44,7 @@ mem)
 	;;
 log)
 	say log start
-	head -c 3000000 /dev/zero | tr '\0' x
+	head -c 3000000 /dev/zero | tr '\0' x | fold -w 200
 	say log survived
 	;;
 pids)

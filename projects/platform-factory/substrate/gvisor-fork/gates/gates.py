@@ -35,6 +35,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -60,6 +61,17 @@ LONG_WAIT = float(os.environ.get("LONG_WAIT_SECONDS", "330"))
 POLL = float(os.environ.get("POLL_SECONDS", "2"))
 CALL_TIMEOUT = float(os.environ.get("CALL_TIMEOUT_SECONDS", "300"))
 LONG_MODES = {"hold", "lifetime"}
+
+
+# gates.py acts as a global owner (ate-client), so it refuses any atespace, pool
+# or template but its own: a mistaken environment must not reach the production
+# pool, engine-gate's atespace or its template.
+GATES_ATESPACE = "gvisor-fork-gates"
+GATES_POOL = "gvisor-fork-gates"
+GATES_TEMPLATE = "gate"
+STORM_STOP_AFTER = 20  # consecutive failed forks that stop the storm
+_consecutive_failures = 0
+_failure_lock = threading.Lock()
 
 
 def log(**fields: object) -> None:
@@ -186,7 +198,12 @@ def run_mode(mode: str, n: int) -> dict:
     name = f"{mode}-{n}"
     start = time.monotonic()
     limit = LONG_WAIT if mode in LONG_MODES else MODE_WAIT
-    ate_ok("create", "actor", name, "-a", ATESPACE, "--template", TEMPLATE)
+    created = ate("create", "actor", name, "-a", ATESPACE, "--template", TEMPLATE)
+    if created.returncode != 0:
+        # Record it and go on: the later modes still have results to give.
+        why = " ".join((created.stderr or created.stdout).split())[-160:]
+        log(event="mode", actor=name, create_rc=created.returncode, note=repr(why))
+        return {"actor": name, "create_rc": created.returncode}
     resumed = ate("resume", "actor", name, "-a", ATESPACE)
     note = " ".join((resumed.stderr or resumed.stdout).split())[-160:]
     if mode == "hold" and resumed.returncode == 0:
@@ -215,7 +232,12 @@ def run_mode(mode: str, n: int) -> dict:
 
 
 def one_fork(i: int) -> bool:
+    global _consecutive_failures
+    with _failure_lock:
+        if _consecutive_failures >= STORM_STOP_AFTER:
+            return False  # the guest is broken: do not run the other forks
     name = f"noop-{i}"
+    ok = False
     try:
         created = ate("create", "actor", name, "-a", ATESPACE, "--template", TEMPLATE)
         resumed = (
@@ -223,9 +245,12 @@ def one_fork(i: int) -> bool:
             if not created.returncode
             else created
         )
-        return resumed.returncode == 0
+        ok = resumed.returncode == 0
+        return ok
     finally:
         ate("delete", "actor", name, "-a", ATESPACE)
+        with _failure_lock:
+            _consecutive_failures = 0 if ok else _consecutive_failures + 1
 
 
 def storm() -> None:
@@ -298,19 +323,36 @@ def run(work: Path) -> None:
     storm()
 
 
+def check_scope() -> None:
+    if (ATESPACE, POOL, TEMPLATE) != (GATES_ATESPACE, GATES_POOL, GATES_TEMPLATE):
+        raise Failed(
+            f"refusing atespace {ATESPACE!r}, pool {POOL!r}, template {TEMPLATE!r}: "
+            f"only {GATES_ATESPACE!r}, {GATES_POOL!r}, {GATES_TEMPLATE!r}"
+        )
+    if f"atespace: {GATES_ATESPACE}\n" not in TEMPLATE_FILE.read_text():
+        raise Failed("the template file names another atespace")
+
+
 def main() -> int:
     log(event="start", endpoint=ENDPOINT, atespace=ATESPACE, pool=POOL, storm=STORM)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     status = "fail"
     work = Path(os.environ.get("WORK_DIR", "/work"))
+    in_scope = (ATESPACE, POOL, TEMPLATE) == (
+        GATES_ATESPACE,
+        GATES_POOL,
+        GATES_TEMPLATE,
+    )
     try:
+        check_scope()
         run(work)
         status = "ok"
     except Failed as err:
         log(event="error", message=repr(str(err)))
     finally:
         try:
-            clean()
+            if in_scope:
+                clean()
         except Failed as err:
             log(event="cleanup_error", message=repr(str(err)))
         log(event="summary", result=status)

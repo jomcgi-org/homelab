@@ -9,7 +9,8 @@ kind: Kustomization
 # since step 7) starts no fork. The asset Job is a
 # Sync hook and runs at once. ../resources/resources_test.py is the wiring guard:
 # it lists the objects rendered here, the off switches and that gvisor-default
-# stays the class default. The enable steps, the isolation gates and the
+# stays the class default. gates/ is a staged, removable pool for the isolation
+# gates (gates/pool.yaml). The enable steps, the isolation gates and the
 # rollback are in projects/factory-cluster/README.md, "gVisor sandbox fork".
 resources:
   - sandboxconfig-gvisor-fork.yaml
