@@ -45,10 +45,10 @@ resources:
   # The engine atespace, its access policy and the fork template (egress scanner
   # engine path, egress-scan/gate/README.md "Enable steps"). One Job runs once.
   - ../egress-scan/gate/provision
-  # engine-gate: the service behind the Semgrep tier (egress-scan/gate/README.md
-  # "Enable steps"). One replica, its network rules and the admission guard of
-  # its ServiceAccount. The scanner does not call it: the tier is off (deploy/application.yaml).
-  - ../egress-scan/gate/manifests
+  # engine-gate (egress-scan/gate/manifests) is not deployed: Joe deferred the
+  # Semgrep tier on 2026-11-24 (egress-scan/ARCHITECTURE.md "Decided" 9). The
+  # source and the manifests stay in the repository. To deploy the gate again,
+  # list ../egress-scan/gate/manifests here (egress-scan/gate/README.md).
   - network-policy.yaml
   - kagent-identity-guard.yaml
   - ghcr-pull-secret.yaml

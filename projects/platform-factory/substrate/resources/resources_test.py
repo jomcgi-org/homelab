@@ -825,7 +825,6 @@ def test_gvisor_fork_slice_is_wired() -> None:
     assert [r for r in listed if r.startswith("..")] == [
         "../gvisor-fork",
         "../egress-scan/gate/provision",
-        "../egress-scan/gate/manifests",
     ]
     docs = _docs()
 
@@ -976,15 +975,19 @@ _GATE_OBJECTS = {
 }
 
 
-def test_engine_gate_is_wired_with_its_image_pinned_to_the_build() -> None:
+def test_engine_gate_is_not_deployed_and_its_pin_follows_the_build() -> None:
+    # Joe deferred the Semgrep tier on 2026-11-24. The gate's manifests stay in
+    # the repository (egress-scan/gate/manifests) and are not listed in
+    # kustomization.yaml, so the wired render holds none of its objects.
     docs = _docs()
 
     def key(d: dict) -> tuple:
         return (d["kind"], d["metadata"].get("namespace"), d["metadata"]["name"])
 
-    # Build the gate's own directory: every object it renders is listed in
-    # _GATE_OBJECTS exactly (a new or a removed object is a cluster change), and
-    # ../resources renders each of them.
+    wired = {key(d) for d in docs}
+    assert not (_GATE_OBJECTS & wired), "engine-gate objects are wired again"
+    # The gate's own directory still renders exactly _GATE_OBJECTS, so that
+    # deploying it again is a one-line change that this test already covers.
     gate_docs = subprocess.run(
         [
             os.environ["KUSTOMIZE_BIN"],
@@ -995,20 +998,15 @@ def test_engine_gate_is_wired_with_its_image_pinned_to_the_build() -> None:
         text=True,
         check=True,
     ).stdout
-    own = {key(d) for d in yaml.safe_load_all(gate_docs) if d}
-    assert own == _GATE_OBJECTS
-    assert own <= {key(d) for d in docs}
-    sts = _one(docs, "StatefulSet", "engine-gate")
-    assert sts["spec"]["replicas"] == 1
+    rendered = [d for d in yaml.safe_load_all(gate_docs) if d]
+    assert {key(d) for d in rendered} == _GATE_OBJECTS
+    sts = _one(rendered, "StatefulSet", "engine-gate")
     (container,) = sts["spec"]["template"]["spec"]["containers"]
     digest = Path(os.environ["GATE_DIGEST"]).read_text().strip()
-    # The pin is the digest of the image that main's CI pushed. A change to the
-    # gate's code or its image config changes the digest: update the pin in
-    # egress-scan/gate/manifests/kustomization.yaml in the same change.
+    # The pin is the digest of the image that main's CI pushed: a change to the
+    # gate's code or its image config changes it, and the pin follows in the
+    # same change (egress-scan/gate/manifests/kustomization.yaml).
     assert container["image"] == f"{_GATE_IMAGE}@{digest}"
-    assert {"name": "ghcr-imagepull-secret"} in sts["spec"]["template"]["spec"][
-        "imagePullSecrets"
-    ]
 
 
 _PREVIEW = ["PerTemplateSnapshotLocation", "GoldenEgressPolicy", "ForkSeed"]

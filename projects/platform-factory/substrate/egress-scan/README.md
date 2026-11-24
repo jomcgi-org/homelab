@@ -1,6 +1,8 @@
 # Egress credential scanner
 
-The scanner is an Envoy External Authorization v3 server. It loads
+The scanner is an Envoy External Authorization v3 server. Its second scan tier
+(the Semgrep engine, `semgrep.*` values) is deferred: the code stays, the tier is
+off and the gate behind it is not deployed (ARCHITECTURE.md "Decided" 9). It loads
 Gitleaks rules before its gRPC health service reports ready. By default it
 uses the Gitleaks rules pinned in `go.mod` that can match HTTP text. Use
 `--rules` to load a TOML file from a trusted mount. Operator rules that

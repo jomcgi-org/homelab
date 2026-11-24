@@ -1,11 +1,13 @@
 # engine-gate
 
 `engine-gate` is the service behind the Semgrep tier of the egress scanner
-(`semgrep.endpoint`, tier merged as #8612, off by default). It keeps a warm pool
-of single-use gVisor fork children of the engine template and sends each scan
-request to one child. State: **still deployed, no longer called**: the scanner's Semgrep tier is off
-since 2026-11-24 (ARCHITECTURE.md "Decided" 9). It ran in enforce mode on that day
-(see "Enforce mode" and "Enable steps"). The design is
+(`semgrep.endpoint`, tier merged as #8612). It keeps a warm pool of single-use
+gVisor fork children of the engine template and sends each scan request to one
+child. State: **deferred, not deployed**. Joe deferred the Semgrep tier on
+2026-11-24 (ARCHITECTURE.md "Decided" 9), and the gate's manifests left
+`resources/kustomization.yaml`. The source, the tests and this document stay. It
+ran in enforce mode on 2026-11-24 only (see "Enforce mode" and "Enable steps";
+those sections describe the gate when it is deployed). The design is
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Engine path" (path B).
 
 ```mermaid
