@@ -250,7 +250,7 @@ flowchart LR
 | --- | --- | --- |
 | 1 | Remove the Semgrep tier code: one detector call path (#8662) | Done |
 | 2 | The `detect` package, the Gitleaks and Betterleaks detectors, `--detector`, the conformance test and the corpus. Default stays `gitleaks` | Done in this change |
-| 3 | Flip `detector.name` to `betterleaks`. Run the synthetic table and the fake corpus against the live scanner. Gitleaks stays for one release as the revert lever | Done in this change (live results in the PR) |
+| 3 | Flip `detector.name` to `betterleaks`. Run the synthetic table and the fake corpus against the live scanner. Gitleaks stays for one release as the revert lever | Flipped in this change. The live results are a comment on the PR |
 | 4 | Remove the Gitleaks adapter after one release | Later |
 
 Deferred (Joe, 2026-11-24), kept as notes only: a second detector joined to the

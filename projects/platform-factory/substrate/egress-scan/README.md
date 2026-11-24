@@ -2,11 +2,11 @@
 
 The scanner is an Envoy External Authorization v3 server. Its second scan tier
 (the Semgrep engine) is deferred and removed from the code: see the last section
-and [ARCHITECTURE.md](ARCHITECTURE.md) "Decided" 9. It loads
-Gitleaks rules before its gRPC health service reports ready. By default it
-uses the Gitleaks rules pinned in `go.mod` that can match HTTP text. Use
-`--rules` to load a TOML file from a trusted mount. Operator rules that
-require a repository file path fail startup.
+and [ARCHITECTURE.md](ARCHITECTURE.md) "Decided" 9. It calls one detector
+(see "Detectors" below) and loads its rules before its gRPC health service
+reports ready. The `gitleaks` detector uses the Gitleaks rules pinned in
+`go.mod` that can match HTTP text. Use `--rules` to load a TOML file from a
+trusted mount. Operator rules that require a repository file path fail startup.
 
 ```mermaid
 flowchart LR
@@ -40,7 +40,7 @@ policies:
         requestTimeout: 80ms
 ```
 
-The timeout is 80 ms: Gitleaks scans for at most 75 ms.
+The timeout is 80 ms: the detector scans for at most 75 ms.
 
 Admit only the gateway to the scanner's listener. The Hindsight pilot and
 its cluster latency check are tracked in
