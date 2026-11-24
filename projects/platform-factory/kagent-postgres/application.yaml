@@ -14,6 +14,10 @@ metadata:
     # The root Application prunes; removing this file must not cascade into
     # the database.
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
+    # The CloudNativePG operator fills in defaults on the Cluster. The API
+    # server dry-run diff knows them; the client-side diff showed the Cluster
+    # OutOfSync with an empty `argocd app diff` (2026-11-24).
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
