@@ -1316,6 +1316,9 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | `FactoryCodexQuotaReadingStale` | The broker's newest Codex quota reading is more than 2 h old, or there is no reading at all, for 15 min, so the quota alerts could not fire |
 | `FactoryWorkerWaitNotHolding` | The connector's send wait recorded a `timeout` or `unknown` in the last 15 min: a send went with no free worker, or with no fresh capacity row. A pool at zero can then fail the send with "no worker has room". Check the reaper and the pool's HPA ([verify steps](../factory/ARCHITECTURE.md#worker-pool-autoscaling)). |
 | `SemgrepSyncFailed` | The newest Semgrep to INTSEC sync Job in its namespace has failed |
+| `EgressScanDetectorFailing` | The egress scanner detector had a call with no verdict (timeout, budget, oversize, error or panic) in the last 5 min (warning). With enforce mode and failure mode deny, each one denied a request. See the [scanner alerts](../platform-factory/substrate/egress-scan/README.md#alerts) |
+| `EgressScanBlockSpike` | The scanner found 5 or more credential block findings for one route in the last 5 min (warning). It counts in observe mode too |
+| `EgressScanScrapeDown` | Fewer than 2 egress scanner pods (the chart replica count) answer the scrape for 5 min (warning) |
 | `AlertRelayDown` | No ready relay replica for 5 min |
 | `FactoryHealthUnhealthy` | The public `health.json` reports a `status` other than `healthy` for 5 min. The message names each down component |
 | `FactoryHealthStale` | The newest `health.json` that Prometheus read has a `generatedAt` more than 10 min old, or Prometheus read none in 15 min, for 2 min |

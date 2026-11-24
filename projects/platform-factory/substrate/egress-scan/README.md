@@ -112,6 +112,20 @@ Expect `route:hindsight` until upstream gives CEL an actor identity (for example
 `source.actor.atespace`). Upstream issue 4289 covers the policy uid and version
 only, not this.
 
+## Alerts
+
+Three warning alerts in `prometheus/resources/rules.yml` read these metrics.
+Each clears within 5 min of the last event.
+
+| Alert | Fires when | First step |
+| --- | --- | --- |
+| `EgressScanDetectorFailing` | `detector_failures_total` grew in the last 5 min. The `reason` label says why | `timeout` or `budget`: check the Handler latency panel and the pod CPU. `oversize`: a request body was over the size limit. `error` or `panic`: read the scanner logs |
+| `EgressScanBlockSpike` | 5 or more `class="block"` findings for one route in 5 min. It counts in observe mode too | Open the dashboard panels Block findings by route and Block findings by source. Do not read request content from the logs: it is not logged |
+| `EgressScanScrapeDown` | Fewer than 2 scanner pods (the chart replica count) answer the scrape for 5 min. A pod that is not running has no target, so it counts too | Check that both pods in `ate-system` are ready. The port is 9090. Change the alert when the replica count changes |
+
+The failure counter starts at the first failure, so Prometheus does not see
+that first event as an increase. The next one fires the alert.
+
 ## Second scan tier (Semgrep engine): deferred, removed from the code
 
 The scanner had an optional second tier that posted the scanned text to a
