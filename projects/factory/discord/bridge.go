@@ -21,10 +21,13 @@ type Limit struct {
 }
 
 // Guild is an allowlisted server. Channels, when set, limits it to those
-// channels. History marks it for the history import (HOME-164).
+// channels. History marks it for the history import (HOME-164). Ingest
+// stores every human message there, tagged or not (Joe, 2026-11-24,
+// HOME-833); it needs the privileged Message Content intent.
 type Guild struct {
 	Channels []string `json:"channels,omitempty"`
 	History  bool     `json:"history,omitempty"`
+	Ingest   bool     `json:"ingest,omitempty"`
 }
 
 // Config is the bridge's policy, from values only.
@@ -55,8 +58,10 @@ const (
 
 // Bridge decides which messages start a turn and runs each turn: recall the
 // channel's memories, ask the agent, reply, and retain the exchange. Only a
-// message that tags the bot in an allowlisted server starts a turn; any
-// other message is neither answered nor retained (contract rule 5).
+// message that tags the bot in an allowlisted server starts a turn. In a
+// server without `ingest`, any other message is neither answered nor
+// retained (contract rule 5). With `ingest`, the Ingestor retains every
+// human message there, and a turn retains only Bosun's reply.
 type Bridge struct {
 	Config  Config
 	Agent   Agent
@@ -64,6 +69,8 @@ type Bridge struct {
 	Replies Replier
 	Log     *slog.Logger
 	Now     func() time.Time
+	// Ingest stores the messages of servers with `ingest`; nil stores none.
+	Ingest *Ingestor
 
 	mu      sync.Mutex
 	botID   string
@@ -115,6 +122,7 @@ func (b *Bridge) Accept(m Message) bool {
 // Handle takes one gateway message. It never blocks the gateway: a turn
 // runs on the channel's queue, one at a time per channel.
 func (b *Bridge) Handle(ctx context.Context, m Message) {
+	b.ingest(m)
 	if !b.Accept(m) {
 		return
 	}
@@ -154,6 +162,40 @@ func (b *Bridge) Handle(ctx context.Context, m Message) {
 	default:
 		b.queueNotice(ctx, notices, m, ReplyBusy)
 	}
+}
+
+// ingesting reports whether a server's messages are stored as they arrive.
+func (b *Bridge) ingesting(guildID string) bool {
+	return b.Ingest != nil && b.Config.Guilds[guildID].Ingest
+}
+
+// ingest buffers a human message of a server with `ingest`: no turn, no
+// reply. Bots, webhooks, the bot itself, system messages and messages
+// without text are skipped. The server and channel come from the gateway
+// event, never from the text.
+func (b *Bridge) ingest(m Message) {
+	if m.GuildID == "" || !b.ingesting(m.GuildID) {
+		return
+	}
+	g := b.Config.Guilds[m.GuildID]
+	if len(g.Channels) > 0 && !contains(g.Channels, m.ChannelID) {
+		return
+	}
+	b.mu.Lock()
+	bot := b.botID
+	b.mu.Unlock()
+	if m.Author.Bot || m.WebhookID != "" || m.Author.ID == "" || m.Author.ID == bot || !conversationTypes[m.Type] {
+		return
+	}
+	text := b.stripMention(m.Content)
+	if text == "" {
+		return
+	}
+	at := SentAt(m)
+	if at.IsZero() {
+		at = b.now()
+	}
+	b.Ingest.Add(m.GuildID, m.ChannelID, m.ID, at, m.Author.Username+" ("+at.UTC().Format(time.RFC3339)+"): "+text)
 }
 
 // queueNotice never blocks the gateway: when the notice queue is full, the
@@ -199,6 +241,13 @@ func (b *Bridge) worker(ctx context.Context, q chan Message) {
 func (b *Bridge) Turn(ctx context.Context, m Message) {
 	text := b.stripMention(m.Content)
 	l := b.Log.With("guild", m.GuildID, "channel", m.ChannelID, "message", m.ID)
+	ingesting := b.ingesting(m.GuildID)
+	if ingesting {
+		// The channel's recent lines are stored before recall reads them.
+		if err := b.Ingest.Flush(ctx, m.GuildID, m.ChannelID); err != nil {
+			l.WarnContext(ctx, "ingest flush failed", "error", err)
+		}
+	}
 	memories, err := b.Memory.Recall(ctx, m.GuildID, m.ChannelID, text)
 	if err != nil {
 		// Answer without memory rather than not at all.
@@ -215,8 +264,13 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	if at.IsZero() {
 		at = b.now()
 	}
-	exchange := m.Author.Username + " (" + at.UTC().Format(time.RFC3339) + "): " + text +
-		"\nBosun (" + b.now().UTC().Format(time.RFC3339) + "): " + answer
+	reply := "Bosun (" + b.now().UTC().Format(time.RFC3339) + "): " + answer
+	if ingesting {
+		// The tagged message itself was ingested; only the reply is new.
+		b.Ingest.Add(m.GuildID, m.ChannelID, "", b.now(), reply)
+		return
+	}
+	exchange := m.Author.Username + " (" + at.UTC().Format(time.RFC3339) + "): " + text + "\n" + reply
 	if err := b.Memory.Retain(ctx, m.GuildID, m.ChannelID, at, exchange); err != nil {
 		l.WarnContext(ctx, "retain failed", "error", err)
 	}

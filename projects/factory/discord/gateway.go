@@ -20,6 +20,23 @@ import (
 // bot, which is all the bridge reads (HOME-162 contract rule 5).
 const Intents = 1<<0 | 1<<9
 
+// IntentMessageContent is the privileged intent that sends the text of every
+// message. A server with `ingest` needs it. Discord closes the gateway with
+// the fatal code 4014 when the application has not enabled it.
+const IntentMessageContent = 1 << 15
+
+// IntentsFor is the gateway intents the policy needs: the message content
+// intent only when a server sets `ingest`, so the bridge never asks for it
+// before Joe enables it for the application (HOME-834).
+func IntentsFor(c Config) int {
+	for _, g := range c.Guilds {
+		if g.Ingest {
+			return Intents | IntentMessageContent
+		}
+	}
+	return Intents
+}
+
 // Gateway opcodes.
 const (
 	opDispatch     = 0
@@ -54,6 +71,8 @@ type Gateway struct {
 	OnReady   func(User)
 	OnMessage func(Message)
 	Log       *slog.Logger
+	// Intents is the identify intents; the package constant Intents when zero.
+	Intents int
 	// Dial opens the connection; websocket.Dial when nil (tests replace it).
 	Dial func(ctx context.Context, url string) (*websocket.Conn, error)
 }
@@ -157,7 +176,7 @@ func (g *Gateway) connect(ctx context.Context, url string, s *session) error {
 	} else {
 		err = write(ctx, conn, opIdentify, map[string]any{
 			"token":   token,
-			"intents": Intents,
+			"intents": g.intents(),
 			"properties": map[string]string{
 				"os": "linux", "browser": "homelab-discord-bridge", "device": "homelab-discord-bridge",
 			},
@@ -290,4 +309,11 @@ func write(ctx context.Context, conn *websocket.Conn, op int, d any) error {
 		return err
 	}
 	return conn.Write(ctx, websocket.MessageText, data)
+}
+
+func (g *Gateway) intents() int {
+	if g.Intents != 0 {
+		return g.Intents
+	}
+	return Intents
 }
