@@ -49,7 +49,7 @@ def _one(kind: str, name: str) -> dict:
 
 _TEMPLATE = (_HERE / "template.yaml").read_text()
 _PROVISION_JOB = "egress-engine-provision-2"
-_TEARDOWN_JOB = "egress-engine-teardown-1"
+_TEARDOWN_JOB = "egress-engine-teardown-2"
 
 
 def _job(name: str) -> dict:
@@ -629,6 +629,34 @@ def test_teardown_names_only_the_engine_atespace(tmp_path: Path) -> None:
         assert by_flag or by_name, call
 
 
+def test_teardown_logs_the_seeds_that_stay(tmp_path: Path) -> None:
+    # A seed that outlives its template fails the run, and the log names the
+    # seed and its state (never its content) so the next run can be planned.
+    import contextlib
+    import io
+
+    mod = _load()
+    fake = _provisioned(mod, tmp_path)
+    fake.actors = [
+        {
+            "metadata": {"name": "seed-abc"},
+            "status": {
+                "state": "ACTOR_STATE_RUNNING",
+                "fork": {"role": "FORK_ROLE_SEED"},
+            },
+        }
+    ]
+    mod.STATE_WAIT = 0.0
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert _run_teardown(mod, fake, tmp_path) == 1
+    text = out.getvalue()
+    assert "event=teardown_wait" in text
+    assert "seed-abc" in text and "ACTOR_STATE_RUNNING" in text
+    # No access policy or atespace delete after a failed wait.
+    assert ("delete", "atespace") not in [c[:2] for c in fake.calls]
+
+
 def test_teardown_fails_when_a_delete_fails(tmp_path: Path) -> None:
     for kind in ("actor", "actor-template", "access-policy", "atespace"):
         mod = _load()
@@ -681,7 +709,7 @@ def test_the_teardown_job_runs_and_the_apply_job_is_not_wired() -> None:
 def test_both_jobs_use_the_ate_client_and_the_right_mode() -> None:
     for name, mode in (
         ("egress-engine-provision-2", "apply"),
-        ("egress-engine-teardown-1", "teardown"),
+        ("egress-engine-teardown-2", "teardown"),
     ):
         job = _job(name)
         assert job["spec"]["backoffLimit"] == 0
@@ -695,7 +723,7 @@ def test_both_jobs_use_the_ate_client_and_the_right_mode() -> None:
 
 
 def test_jobs_are_unprivileged_and_hold_no_secret() -> None:
-    for name in ("egress-engine-provision-2", "egress-engine-teardown-1"):
+    for name in ("egress-engine-provision-2", "egress-engine-teardown-2"):
         pod = _job(name)["spec"]["template"]["spec"]
         assert pod["securityContext"]["runAsNonRoot"] is True
         assert pod["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
@@ -722,7 +750,7 @@ def test_config_map_holds_the_script_and_the_template() -> None:
     assert set(cm["data"]) == {"provision.py", "template.yaml", "template.json"}
     assert cm["data"]["template.yaml"] == _TEMPLATE
     assert cm["data"]["template.json"] == (_HERE / "template.json").read_text()
-    for name in ("egress-engine-provision-2", "egress-engine-teardown-1"):
+    for name in ("egress-engine-provision-2", "egress-engine-teardown-2"):
         vol = [
             v
             for v in _job(name)["spec"]["template"]["spec"]["volumes"]
@@ -757,7 +785,7 @@ def test_jobs_reach_only_the_kubernetes_api_and_the_ate_api() -> None:
         {"matchLabels": {"app": "egress-engine-provision"}}
     ]
     assert rule["toPorts"][0]["ports"] == [{"port": "443", "protocol": "TCP"}]
-    for name in ("egress-engine-provision-2", "egress-engine-teardown-1"):
+    for name in ("egress-engine-provision-2", "egress-engine-teardown-2"):
         labels = _job(name)["spec"]["template"]["metadata"]["labels"]
         assert labels == {"app": "egress-engine-provision"}
 

@@ -916,12 +916,12 @@ def test_gvisor_fork_slice_is_wired() -> None:
     assert max(init, main) <= 256
 
 
-_PROVISION_JOB = "egress-engine-teardown-1"
+_PROVISION_JOB = "egress-engine-teardown-2"
 # The ConfigMap's hash covers provision.py, template.yaml and template.json. The
 # live Job's pod template is immutable: a changed hash makes the apply fail. A
 # change under egress-scan/gate/provision/ must bump the Job's run suffix and
 # this name in the same change.
-_PROVISION_CONFIGMAP = "egress-engine-provision-85g22cb756"
+_PROVISION_CONFIGMAP = "egress-engine-provision-72m597tk9k"
 
 
 def test_engine_provisioning_is_wired_and_runs_once() -> None:
