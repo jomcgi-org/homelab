@@ -4359,6 +4359,42 @@ func TestCappedHighFindingStartsRecut(t *testing.T) {
 	}
 }
 
+// TestHoldLabelKeepsACappedPRFromARecut covers HOME-756: a hold label keeps
+// a capped PR that fails on a high finding open, and starts no re-cut that
+// would force-push over its branch. A decision hold that clears lets the
+// re-cut start.
+func TestHoldLabelKeepsACappedPRFromARecut(t *testing.T) {
+	for _, label := range []string{"human", "needs-human"} {
+		t.Run(label, func(t *testing.T) {
+			v := capEnv(t, 1)
+			v.delivered()
+			head := capRounds(v, 1)
+			v.gh.label(1, label)
+			v.gh.check(head, "semgrep-review", 200, "failure")
+			v.gh.reviewerState(head, true, "high")
+			sends := len(v.kg.Sends())
+			v.poll()
+			if w := v.work(101); w.Recuts != 0 || w.RecutPR != 0 || w.State != store.WorkReview {
+				t.Fatalf("a held capped PR started a re-cut: %+v", w)
+			}
+			if prs := v.gh.PRs(); prs[0].pr.State != "open" {
+				t.Fatalf("a held capped PR was %s", prs[0].pr.State)
+			}
+			if n := len(v.kg.Sends()); n != sends {
+				t.Fatalf("a held capped PR sent %d new turns", n-sends)
+			}
+			if label != "needs-human" {
+				return
+			}
+			v.gh.label(1)
+			v.poll()
+			if w := v.work(101); w.Recuts != 1 || w.RecutPR != 1 {
+				t.Fatalf("the cleared hold did not start the re-cut: %+v", w)
+			}
+		})
+	}
+}
+
 // TestRecutWithoutNewTipOpensNoPR covers HOME-756: a re-cut session that
 // pushes nothing new leaves the rejected head without a replacement PR.
 func TestRecutWithoutNewTipOpensNoPR(t *testing.T) {
