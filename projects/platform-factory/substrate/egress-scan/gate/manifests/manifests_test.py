@@ -68,7 +68,7 @@ def test_pod_is_locked_down() -> None:
     assert sc["readOnlyRootFilesystem"] is True
     assert sc["capabilities"]["drop"] == ["ALL"]
     assert not pod.get("hostNetwork") and not pod.get("hostPID")
-    assert c["resources"]["requests"] == {"cpu": "100m", "memory": "128Mi"}
+    assert c["resources"]["requests"] == {"cpu": "50m", "memory": "32Mi"}
     assert "memory" in c["resources"]["limits"]
 
 

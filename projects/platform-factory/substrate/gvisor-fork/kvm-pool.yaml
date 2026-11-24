@@ -32,10 +32,12 @@
 # (1000m CPU, 128 MiB limit plus 16 MiB overhead) against them. The limits are
 # 9 CPU (the seed and 8 children) and 2Gi (512 + 8 x 144 = 1664 MiB booked).
 # Expected use is 586 MB: seed 358 MB, 4 scanning children at 37 MB, 4 waiting
-# at 4 MB, and 64 MB for forkd and the worker. The request, 1Gi and 4 CPU, is a
-# scheduling reservation only. On 2026-11-23 node-1 had 5237Mi of memory and
-# 8235m of CPU left to request, node-3 2857Mi and node-2 1981Mi; a burst above
-# the request uses free node memory. One replica runs, so a drain is an outage.
+# at 4 MB, and 64 MB for forkd and the worker. The request, 640Mi and 2 CPU, is a
+# scheduling reservation only: it covers the pod's measured peak (592 MiB over
+# 9 h, with the conformance and latency runs) and the scanner's 2 scans at once
+# (one CPU each, the scan limit). A burst above the request uses free node
+# memory. On 2026-11-24 node-1 had 3589Mi of memory and 4515m of CPU left to
+# request, node-3 2969Mi and node-2 2109Mi. One replica runs, so a drain is an outage.
 #
 # The pod prefers node-1: it has the most request room, and a latency run wants
 # one node. The preference is soft, so a drained or tainted node-1 does not leave
@@ -134,5 +136,5 @@ spec:
         cpu: "9"
         memory: 2Gi
       requests:
-        cpu: "4"
-        memory: 1Gi
+        cpu: "2"
+        memory: 640Mi

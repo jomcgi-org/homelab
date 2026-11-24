@@ -452,14 +452,14 @@ def test_kvm_pool_runs_the_fork_worker_image_by_digest() -> None:
     assert "@sha256:" in image
 
 
-def test_kvm_pool_requests_1gi_and_limits_for_a_seed_and_8_children() -> None:
+def test_kvm_pool_requests_640mi_and_limits_for_a_seed_and_8_children() -> None:
     resources = _pool()["spec"]["template"]["resources"]
-    # The egress-scan design (egress-scan/ARCHITECTURE.md, "Capacity"): a
-    # scheduling reservation of 1Gi and 4 CPU: with 4 scans in flight, a
-    # smaller CPU request gives them a fraction of a core's shares under
-    # contention. On 2026-11-23 node-1 had 5237Mi and 8235m left to request,
-    # node-3 2857Mi and 6210m, node-2 1981Mi and 6925m.
-    assert resources["requests"] == {"cpu": "4", "memory": "1Gi"}
+    # A scheduling reservation of 640Mi and 2 CPU (egress-scan/ARCHITECTURE.md,
+    # "Capacity"). Memory: the pod's measured peak is 592 MiB over 9 h. CPU: the
+    # scanner has 2 scans in flight, one CPU each, and a smaller CPU request
+    # gives them a fraction of a core's shares under contention. On 2026-11-24
+    # node-1 had 3589Mi left to request, node-3 2969Mi, node-2 2109Mi.
+    assert resources["requests"] == {"cpu": "2", "memory": "640Mi"}
     # The seed (1000m, 512 MiB cap) and 8 children (1000m, 128 MiB + 16 MiB of
     # overhead each) are booked against the limits.
     assert resources["limits"] == {"cpu": "9", "memory": "2Gi"}

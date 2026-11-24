@@ -220,7 +220,7 @@ equals the Bazel image digest.
 | Replicas | 1 in v1. The pool books 8 children, and a second replica needs its own pool. A rollout or a drain is an outage, so there is no PodDisruptionBudget: it would block drains. |
 | Service | ClusterIP `engine-gate`, port `scan` (8080). It is also the `serviceName`: the pod needs no stable DNS name. The scanner calls `http://engine-gate.ate-system.svc:8080/scan`. |
 | Image | `repository@digest`, pinned in `manifests/kustomization.yaml`. CI pushes the image on main, with a content-stable digest (a digest that is already published is not pushed again). The pin is the one place that is not CI-owned: `resources_test.py` fails when it differs from `//.../gate/image:image.digest`, and its failure shows the new value. A change to the gate's code or its image config updates the pin in the same PR, as for the credential plugin pin (`resources/patches/atelet-image-credentials.yaml`). Packaging the manifests as a Helm chart would let CI own it, and is not done. |
-| Resources | Request 100m CPU and 128Mi. Memory limit 256Mi. The pool pod is another change. |
+| Resources | Request 50m CPU and 32Mi (it uses 1m and 12Mi). Memory limit 256Mi. The pool pod is another change. |
 | Pod | `imagePullSecrets: ghcr-imagepull-secret` and `fsGroup: 65532` (read access to the projected files), as the live scanner and the latency Job. |
 | Egress | The ate API on 443 and the router on 8443. DNS is open to every pod by the cluster-wide default-deny. |
 | Ingress | The scanner on 8080 (`app: egress-scan`). Prometheus on 9090 (`admin`), by `prometheus-scrape-engine-gate`. |
@@ -245,7 +245,7 @@ equals the Bazel image digest.
 Read-only checks, with `KUBECONFIG=~/.kube/factory-sessions.yaml`:
 
 - **DONE:** the provisioning Job succeeded at 23:54Z on 2026-11-23: the atespace `egress-scan-engine`, its access policy and the template `engine` exist, and the log has `step=seed result=ready seconds=12.3` (the private engine image pulled, and the worker is pinned to `egress-scan-engine`). Job `-1` ran then. ArgoCD replaced it by `-2` (a no-op re-run), so read the live one: `kubectl -n ate-system logs job/egress-engine-provision-2 | grep '^PROVISION '` ends with `event=summary mode=apply result=ok`.
-- Node room for the pod (100m CPU, 128Mi memory): `kubectl describe nodes | grep -A8 'Allocated resources'`. If no node has room the pod stays Pending (`EngineGateDown`).
+- Node room for the pod (50m CPU, 32Mi memory): `kubectl describe nodes | grep -A8 'Allocated resources'`. If no node has room the pod stays Pending (`EngineGateDown`).
 - No `edit` or `admin` binding reaches `ate-system`, and nobody holds `create` on `serviceaccounts/token`, `pods/exec` or `pods/ephemeralcontainers` there (the admission guard does not cover them).
 - The priority class: the router, the ate API and the scanner set none, and the repo has no suitable non-system class. The gate sets none.
 - The read login can pull the private engine image (see "Private image pull"), and the gate image exists: `crane manifest ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate@sha256:7cb0f51e767b45eb75de72e75d2788eb7d7d1603b525ea807bfb4da6102e0f83` with the same login resolves (the package is private; main's CI pushed the image when the gate image merged, and the digest is the Bazel image digest that `resources_test.py` checks).
