@@ -1,7 +1,8 @@
 # Route policy read by render_egress_gateway.py.
 # requestTimeout is coupled to the second scan tier of the egress-scan chart.
 # With the tier off it is 80ms. With the tier on in enforce mode it must be at
-# least semgrep.deadline + 10ms. In observe mode the engine is off the request
+# least semgrep.deadline + 10ms: the tier is on in enforce mode since 2026-11-24,
+# so it is 310ms (300ms deadline). In observe mode the engine is off the request
 # path, so it stays at 80ms or more. resources_test.py enforces all three. See
 # egress-scan/README.md.
 conditional:
@@ -16,4 +17,4 @@ conditional:
       packAsBytes: true
     policies:
       http:
-        requestTimeout: 80ms
+        requestTimeout: 310ms

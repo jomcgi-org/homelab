@@ -154,7 +154,7 @@ def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
         "allowPartialMessage": False,
         "packAsBytes": True,
     }
-    assert check["policies"] == {"http": {"requestTimeout": "80ms"}}
+    assert check["policies"] == {"http": {"requestTimeout": "310ms"}}
     assert config == yaml.safe_load((_HERE / "atenet-egress-config.yaml").read_text())
 
 
@@ -1284,15 +1284,18 @@ def _semgrep_values() -> dict:
 _OBSERVE_ENDPOINT = "http://engine-gate.ate-system.svc:{port}/scan"
 
 
-def _observe_problems(
+def _tier_problems(
     values: dict, service_port: int, max_inflight: int, scanner_replicas: int
 ) -> list[str]:
-    """What the scanner's tier values must say for the observe rollout."""
+    """What the scanner's tier values must say: on, in enforce mode (since
+    2026-11-24, Joe's decision), denying when the engine gives no verdict."""
     bad = []
     if values.get("enabled") is not True:
         bad.append("semgrep.enabled is not true")
-    if values.get("mode") != "observe":
-        bad.append("semgrep.mode is not observe")
+    if values.get("mode") != "enforce":
+        bad.append("semgrep.mode is not enforce")
+    if values.get("failureMode") != "deny":
+        bad.append("semgrep.failureMode is not deny")
     if values.get("endpoint") != _OBSERVE_ENDPOINT.format(port=service_port):
         bad.append("semgrep.endpoint is not the engine-gate Service and its one path")
     if values.get("deadline") != "300ms":
@@ -1327,7 +1330,7 @@ def test_scanner_reaches_the_gate_only_with_per_packet_service_translation() -> 
     )
 
 
-def test_scanner_tier_is_on_in_observe_mode_and_points_at_the_gate() -> None:
+def test_scanner_tier_is_enforced_and_points_at_the_gate() -> None:
     docs = _docs()
     service = _one(docs, "Service", "engine-gate")
     (port,) = service["spec"]["ports"]
@@ -1344,11 +1347,12 @@ def test_scanner_tier_is_on_in_observe_mode_and_points_at_the_gate() -> None:
     )
     replicas = deployment["spec"]["replicas"]
     values = _semgrep_values()
-    assert _observe_problems(values, port["port"], inflight, replicas) == []
+    assert _tier_problems(values, port["port"], inflight, replicas) == []
     # Each mutation must be caught, so that the check cannot pass on a wrong value.
     mutations = {
         "tier off": {"enabled": False},
-        "enforce mode": {"mode": "enforce"},
+        "observe mode": {"mode": "observe"},
+        "failure mode allow": {"failureMode": "allow"},
         "endpoint typo": {"endpoint": "http://engine-gate.ate-system.svc:8080/scn"},
         "wrong host": {"endpoint": "http://engine.ate-system.svc:8080/scan"},
         "no path": {"endpoint": "http://engine-gate.ate-system.svc:8080"},
@@ -1357,11 +1361,11 @@ def test_scanner_tier_is_on_in_observe_mode_and_points_at_the_gate() -> None:
         "concurrency": {"concurrency": 8},
     }
     for name, change in mutations.items():
-        assert _observe_problems(
+        assert _tier_problems(
             {**values, **change}, port["port"], inflight, replicas
         ), name
     # The endpoint follows the Service port.
-    assert _observe_problems(values, 9999, inflight, replicas)
+    assert _tier_problems(values, 9999, inflight, replicas)
 
 
 def test_gateway_timeout_is_coupled_to_the_semgrep_deadline() -> None:

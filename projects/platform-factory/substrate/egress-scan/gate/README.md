@@ -4,7 +4,7 @@
 (`semgrep.endpoint`, tier merged as #8612, off by default). It keeps a warm pool
 of single-use gVisor fork children of the engine template and sends each scan
 request to one child. State: **wired, one replica**, called by the scanner in
-observe mode (see "Enable steps"). The design is
+enforce mode since 2026-11-24 (see "Enforce mode" and "Enable steps"). The design is
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Engine path" (path B).
 
 ```mermaid
@@ -235,6 +235,7 @@ equals the Bazel image digest.
 
 | Alert | Look at | Usual cause |
 | --- | --- | --- |
+| `EgressScanSemgrepDenying` | `factory_egress_scan_semgrep_requests_total{outcome}` (`timeout`, `error`, `shed`, `breaker_open`, `oversize`) and the engine-gate alerts | The engine path is down or slow, and in enforce mode Hindsight requests get 503. Fix the gate or the pool first. To stop the denials at once, set `semgrep.mode: observe` and the gateway `requestTimeout: 80ms` in one PR. |
 | `EngineGateDown` | `kubectl -n ate-system get pod -l app=engine-gate`, `describe`, `logs` | Pod Pending (node room), image pull, crash. The metrics port is open to Prometheus only. |
 | `EngineGateNotReady` | The pod log: the startup cleanup (`startup cleanup failed`), the pool (`creating a waiting child failed`), the ate API | The atespace or the template is missing (run the provisioning), the seed is not ready, the ate API is down, or creates fail with no capacity. |
 | `EngineGatePoolEmpty` | `factory_engine_gate_replenish_failures_total{op}`, `factory_engine_gate_children`, the pool worker | The worker has no room (the seed and 8 children book 9 CPU), the seed is rebuilding, or the template was deleted. |
@@ -392,7 +393,8 @@ Each step stays off until the one before it is verified. They follow the
 rollout in ARCHITECTURE.md (step 7 and after). Every change below is its own
 PR. "Cluster effect" is what the cluster does when the PR merges. Joe decided to
 skip the X gates for now and to wire the scanner in observe mode
-(ARCHITECTURE.md "Decided" 6 and 7); they run during the observe window.
+(ARCHITECTURE.md "Decided" 6 and 7), and on 2026-11-24 to skip the observe window and
+enforce ("Decided" 8). The X gates still run.
 
 | # | Change | Cluster effect on merge | Joe approves |
 | --- | --- | --- | --- |
@@ -479,6 +481,19 @@ statefulset/engine-gate` (an update of the StatefulSet) for anyone but ArgoCD.
 To restart, delete the pod: `kubectl -n ate-system delete pod engine-gate-0` (the
 StatefulSet controller makes it again; the gate deletes its children on SIGTERM
 and the new pod cleans up what is left). To change the spec, change git.
+
+**Enforce mode (since 2026-11-24).** Joe skipped the 7-day observe window
+(ARCHITECTURE.md "Decided" 8). The scanner denies a Hindsight request when the
+engine finds a credential, and also when the engine gives no verdict
+(`failureMode: deny`). So an outage of the engine path is an outage of Hindsight
+writes and reads through the gateway. A restart of the gate, a roll of the
+gvisor-fork worker, a rebuild of the seed or a node drain denies Hindsight
+requests with 503 until the pool has a waiting child again (1 to 2 minutes for a
+roll). Plan those changes for a quiet time, and read `EngineGateNotReady`,
+`EngineGatePoolEmpty` and `EgressScanSemgrepDenying` first. The unit tests of the
+failure mode cover the behaviour (`TestEngineFailuresApplyTheFailureMode`,
+`TestSlowEngineAppliesDeadlineAndFailureMode`, `TestOversizeBodyAppliesTheFailureMode`
+in `../semgrep_test.go`); nothing here simulates an outage on the cluster.
 
 **Provisioning Jobs.** `egress-engine-provision-2` runs `provision.py` with
 `MODE=apply`. It waits for an ACTIVE worker of the pool, then makes the three
