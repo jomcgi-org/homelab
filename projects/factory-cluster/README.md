@@ -765,7 +765,7 @@ flowchart LR
    | Field | Before | After | Why |
    | --- | --- | --- | --- |
    | limits | 2 CPU, 1280Mi | 9 CPU, 2Gi | seed (1000m, 512 MiB cap) and 8 children (1000m, 144 MiB booked each) |
-   | requests | 100m, 256Mi | 4 CPU, 1Gi | the design's scheduling reservation. 4 CPU matches the in-flight cap of 4: a 500m request would give four scans half a core's shares under contention |
+   | requests | 100m, 256Mi | 4 CPU, 1Gi (resized 2026-11-24 to 2 CPU, 640Mi) | a scheduling reservation. 2 CPU matches the scanner's 2 scans in flight: a 500m request would give two scans a quarter of a core's shares under contention. 640Mi covers the measured peak of 592 MiB |
    | `nodeAffinity` | none | prefer `kubernetes.io/hostname: node-1`, weight 100 | Joe asked that the pool land on node-1 (the design has no selector): it has the most request room, and one node keeps latency runs comparable. Soft, so a drained node-1 does not leave the pod pending |
 
    Request room on 2026-11-23, after the re-pin (allocatable minus requests,

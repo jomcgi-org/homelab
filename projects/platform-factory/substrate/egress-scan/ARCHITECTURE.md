@@ -298,7 +298,7 @@ the actor. Until then a replacement can be refused.
 | Booked CPU | Seed 1000m + 8 children x 1000m = 9000m | All of the 9000m pod capacity |
 | Booked memory | Seed 512 MiB + 8 x 144 MiB = 1664 MiB | 128 MiB limit plus 16 MiB overhead. Capacity is the pod limit minus a 64 MiB reserve: 1984 MiB for 2 GiB |
 | Expected use | 358 + 4 x 37 + 4 x 4 + 64 = 586 MB | 16 KiB bodies, `forkd` and worker 64 MB |
-| Pod request | 1 GiB memory, 4 CPU | Scheduling reservation. Memory is the tight dimension. CPU requests are 19%, 36% and 49% of the three nodes (design review, 2026-11-23), so 4 CPU fits |
+| Pod request | 640Mi memory, 2 CPU | Scheduling reservation. Memory is the tight dimension. The pod's measured peak is 592 MiB over 9 h (steady 461 MiB), and the scanner keeps 2 scans in flight |
 | Staged pool today | 2 CPU limit, 1280Mi limit, 256Mi request | Books the seed and one child. It cannot hold the engine pool |
 | Latency Jobs, default | K up to 4, batches of 4, one child of headroom: 5 children | 6000m booked with the seed. K=16 needs 17000m and 2816 MiB |
 
@@ -306,10 +306,11 @@ The pool needs a resize before any latency run. That is a change to
 `kvm-pool.yaml`, in its own PR, after a request-room check.
 
 Placement: the pod has no node selector. Node-1 had about 4.9 GiB of memory
-request room and nodes 2 and 3 about 2 GiB. A 1 GiB request fits any node. Under CPU
+request room and nodes 2 and 3 about 2 GiB. A 640Mi request fits any node. Under CPU
 contention a pod gets shares in proportion to its request. A 500m request would
-give four scans the shares of half a core. A 4 CPU request matches the
-in-flight cap. One replica runs in v1, so a drain is an outage.
+give two scans the shares of a quarter core. A 2 CPU request matches the
+scanner's 2 scans in flight, one CPU each. One replica runs in v1, so a drain
+is an outage.
 
 **Atespace pin.** A worker pins the atespace of its first seed for the life of
 the process (`cmd/ateworker-gvisor/fork.go`, `seed`). It refuses a seed of

@@ -114,8 +114,8 @@ spec:
             failureThreshold: 3
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
+              cpu: 50m
+              memory: 32Mi
             limits:
               memory: 256Mi
           securityContext:
