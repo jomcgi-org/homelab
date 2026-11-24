@@ -215,3 +215,85 @@ def test_marker_regressions(tmp_path, monkeypatch, replacement, error):
         return
     with pytest.raises(ValueError, match=error):
         check_markers(docs, "HEAD^")
+
+
+def git(*args):
+    import subprocess
+
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.org", *args],
+        check=True,
+        capture_output=True,
+    )
+
+
+def write_rows(path, *ids):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"invariants": [ROW | {"id": i} for i in ids]}))
+
+
+def stale_pr(tmp_path, monkeypatch, pr_ids, main_ids):
+    """Fork `pr` and `main` from one commit, then add rows on each side."""
+    monkeypatch.chdir(tmp_path)
+    git("init", "-q", "-b", "main")
+    write_rows("INVARIANTS.yaml", "DEMO-1")
+    git("add", ".")
+    git("commit", "-qm", "base")
+    git("checkout", "-qb", "pr")
+    write_rows("pr/INVARIANTS.yaml", *pr_ids)
+    git("add", ".")
+    git("commit", "-qm", "pr")
+    git("checkout", "-q", "main")
+    write_rows("main/INVARIANTS.yaml", *main_ids)
+    git("add", ".")
+    git("commit", "-qm", "main")
+    git("checkout", "-q", "pr")
+
+
+def test_added_id_that_target_has_fails(tmp_path, monkeypatch):
+    import subprocess
+
+    from check_invariants import check
+
+    stale_pr(tmp_path, monkeypatch, ["FACT-19"], ["FACT-19"])
+    sha = subprocess.check_output(
+        ["git", "rev-parse", "--short=12", "main"], text=True
+    ).strip()
+    # The PR's own tree has no duplicate, so the tree-only check passes.
+    check(records_only=True)
+    with pytest.raises(ValueError) as error:
+        check(records_only=True, target="main")
+    message = str(error.value)
+    assert "pr/INVARIANTS.yaml: FACT-19 is new in this PR" in message
+    assert "main/INVARIANTS.yaml on main (" + sha + ")" in message
+
+
+def test_added_id_the_target_lacks_passes(tmp_path, monkeypatch):
+    from check_invariants import check
+
+    stale_pr(tmp_path, monkeypatch, ["FACT-19"], ["FACT-20"])
+    check(records_only=True, target="main")
+
+
+def test_existing_and_moved_ids_are_not_additions(tmp_path, monkeypatch):
+    from check_invariants import check
+
+    stale_pr(tmp_path, monkeypatch, ["FACT-19"], ["FACT-20"])
+    # DEMO-1 is on both sides from the merge base; the PR moves it to a new file.
+    Path("INVARIANTS.yaml").unlink()
+    write_rows("pr/INVARIANTS.yaml", "FACT-19", "DEMO-1")
+    git("add", "-A")
+    git("commit", "-qm", "move")
+    check(records_only=True, target="main")
+
+
+def test_unreadable_target_file_is_skipped(tmp_path, monkeypatch):
+    from check_invariants import check
+
+    stale_pr(tmp_path, monkeypatch, ["FACT-19"], ["FACT-20"])
+    git("checkout", "-q", "main")
+    Path("main/INVARIANTS.yaml").write_text("invariants: [\n")
+    git("commit", "-qam", "break")
+    git("checkout", "-q", "pr")
+    check(records_only=True, target="main")

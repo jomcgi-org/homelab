@@ -177,7 +177,58 @@ def check_markers(documents, base):
             raise ValueError(f"{path}: dropped invariant marker {ident}")
 
 
-def check(records_only=False, base=None):
+def ids_at(revision):
+    """Map each invariant ID on a revision to the file that declares it."""
+    names = subprocess.check_output(
+        ["git", "ls-tree", "-r", "-z", "--name-only", revision]
+    ).split(b"\0")
+    ids = {}
+    for name in sorted(names):
+        path = Path(os.fsdecode(name))
+        if path.name != "INVARIANTS.yaml" or path == TEMPLATE:
+            continue
+        text = subprocess.check_output(["git", "show", f"{revision}:{path}"])
+        try:
+            document = yaml.load(text, Loader=InvariantLoader)
+        except yaml.YAMLError:
+            continue  # The merge target's own file is not this PR's to judge.
+        rows = document.get("invariants") if isinstance(document, dict) else None
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and isinstance(row.get("id"), str):
+                ids.setdefault(row["id"], path)
+    return ids
+
+
+def check_target(documents, target):
+    """Reject an ID this PR adds that the merge target already declares.
+
+    A PR that passed its own tree can still collide once another PR lands, so
+    compare the IDs added since the merge base with the target's IDs.
+    """
+    merge_base = subprocess.check_output(
+        ["git", "merge-base", target, "HEAD"], text=True
+    ).strip()
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "--short=12", target], text=True
+    ).strip()
+    old, upstream = ids_at(merge_base), ids_at(target)
+    errors = []
+    for source, document in documents.items():
+        if source == TEMPLATE:
+            continue
+        for row in document["invariants"]:
+            ident = row["id"]
+            if ident not in old and ident in upstream:
+                errors.append(
+                    f"{source}: {ident} is new in this PR, but {upstream[ident]} "
+                    f"on {target} ({commit}) already declares it. "
+                    "Give a new invariant the ID <issue key>-<n>, such as HOME-123-1"
+                )
+    if errors:
+        raise ValueError("\n".join(errors))
+
+
+def check(records_only=False, base=None, target=None):
     files = subprocess.check_output(
         [
             "git",
@@ -200,6 +251,8 @@ def check(records_only=False, base=None):
     live = validate(documents)
     if base:
         check_markers(documents, base)
+    if target:
+        check_target(documents, target)
     if live and not records_only:
         expression = "set(" + " ".join(sorted(live)) + ")"
         xml = subprocess.check_output(["bazel", "query", "--output=xml", expression])
@@ -223,10 +276,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--base", help="compare committed invariant markers against this revision"
     )
+    parser.add_argument(
+        "--target",
+        help="reject IDs this PR adds that this merge target revision already has",
+    )
     args = parser.parse_args()
     if workspace := os.environ.get("BUILD_WORKSPACE_DIRECTORY"):
         os.chdir(workspace)
     try:
-        check(args.records_only, args.base)
+        check(args.records_only, args.base, args.target)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         sys.exit(str(error))
