@@ -1199,6 +1199,14 @@ def test_the_coupling_check_fails_when_the_gateway_is_too_short() -> None:
         raise AssertionError(f"accepted {deadline} {timeout}")
 
 
+def test_the_application_names_its_detector_explicitly() -> None:
+    # A typo in the key would leave the chart default without a failure.
+    app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
+    given = app["spec"]["sources"][0]["helm"]["valuesObject"]
+    assert set(given) == {"detector"} and set(given["detector"]) == {"name"}
+    assert given["detector"]["name"] in _DETECTORS
+
+
 def test_the_scanner_runs_one_known_detector_in_enforce_mode() -> None:
     values = _detector_values()
     assert values["name"] in _DETECTORS
