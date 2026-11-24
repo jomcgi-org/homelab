@@ -218,7 +218,7 @@ func run(log *slog.Logger) error {
 	}
 	var semgrep *review.Semgrep
 	if s := cfg.Semgrep; s != nil {
-		semgrep = &review.Semgrep{AppID: s.AppID, CheckName: s.CheckName, Wait: time.Duration(s.Wait)}
+		semgrep = &review.Semgrep{APIKey: os.Getenv("SEMGREP_API_KEY"), AppID: s.AppID, CheckName: s.CheckName, Wait: time.Duration(s.Wait)}
 	}
 	eng := review.New(review.Config{
 		Runs:          &github.BrokerRuns{URL: cfg.BrokerURL, Bearer: fileToken(cfg.BrokerTokenFile)},

@@ -161,3 +161,9 @@ invariants:
   - projects/factory/broker/relay/claude.go
   test: //projects/factory/broker/relay:relay_test
   state: live
+- id: HOME-121-1
+  statement: The reviewer service alone receives the reviewer's Semgrep API key. Review sandboxes cannot read it.
+  mechanism:
+  - projects/factory/chart/templates/reviewer.yaml
+  test: //projects/factory/chart:reviewer_test
+  state: live

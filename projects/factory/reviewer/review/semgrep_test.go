@@ -2,7 +2,10 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -521,5 +524,86 @@ func TestSemgrepLateScanKeepsGoalBlockers(t *testing.T) {
 	}
 	if after.Semgrep == nil || !after.Semgrep.Verified || !reflect.DeepEqual(after.Goal, before.Goal) || len(goalTexts(h)) != 2 {
 		t.Fatalf("late scan lost or reran the goal check: %+v", after)
+	}
+}
+
+type semgrepTransport func(*http.Request) (*http.Response, error)
+
+func (f semgrepTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestSemgrepTriageAfterVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		status             int
+		response, feedback string
+	}{
+		{200, `{"num_triaged":1,"triaged_issues":[1]}`, "Ignored in Semgrep: 1."},
+		{200, `{"num_triaged":2,"triaged_issues":[1,999]}`, "Ignored in Semgrep: 1, 999. Semgrep's response did not confirm an update limited to requested finding 1."},
+		{503, "", ""},
+	} {
+		h := semgrepHarness(t)
+		h.cfg.Semgrep.APIKey = "fixture"
+		b := &h.cfg.Bindings[0]
+		writes := 0
+		h.cfg.Semgrep.transport = semgrepTransport(func(req *http.Request) (*http.Response, error) {
+			payload := ""
+			code := 200
+			switch req.URL.Path {
+			case "/api/v1/deployments":
+				payload = `{"deployments":[{"slug":"test"}]}`
+			case "/api/v1/deployments/test/findings":
+				for i := 1; i <= 3; i++ {
+					if i > 1 {
+						payload += ","
+					}
+					payload += fmt.Sprintf(`{"id":%d,"review_comments":[{"external_discussion_id":"%d"}],"status":"open","ref":"refs/heads/test","repository":{"name":%q},"location":{"file_path":"file","line":%d}}`, i, i, b.repo(), i)
+				}
+				payload += fmt.Sprintf(`,{"id":999,"review_comments":[{"external_discussion_id":"999"}],"status":"open","ref":"test","repository":{"name":%q},"location":{"file_path":"file","line":1}}`, b.repo())
+				payload = `{"findings":[` + payload + `]}`
+			case "/api/v1/deployments/test/triage":
+				writes++
+				var body map[string]any
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				want := map[string]any{"issue_type": "sast", "limit": float64(1), "issue_ids": []any{float64(1)}, "new_triage_state": "ignored", "new_triage_reason": "false_positive", "new_note": "validated upstream"}
+				if req.Method != "POST" || !reflect.DeepEqual(body, want) {
+					t.Fatalf("unexpected triage %v", body)
+				}
+				code = tc.status
+				payload = tc.response
+			default:
+				t.Fatalf("unexpected endpoint %s", req.URL.Path)
+			}
+			return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(payload))}, nil
+		})
+		e := h.engine()
+		s := &SemgrepEvidence{}
+		r := &Report{}
+		current := false
+		for i, reason := range []string{"false positive", "fixed", "open"} {
+			s.Comments = append(s.Comments, github.AppComment{Kind: "pulls", ID: int64(i + 1), Path: "file", Line: i + 1, CommitSHA: shaA, Outdated: &current})
+			r.SemgrepDecisions = append(r.SemgrepDecisions, semgrepDecision{CommentID: int64(i + 1), Reason: reason, Note: "validated upstream"})
+		}
+		pr := github.PullRequest{HeadSHA: shaA, HeadRef: "test"}
+		o := Outcome{Conclusion: ConclusionFailure, Comment: &CommentUpdate{Verdict: VerdictHuman}}
+		e.triageSemgrep(context.Background(), b, pr, s, r, &o)
+		o.Conclusion = ConclusionSuccess
+		e.triageSemgrep(context.Background(), b, pr, s, r, &o)
+		o.Comment.Verdict = VerdictApproved
+		r.Findings = []Finding{{Path: "file", Line: 1}}
+		e.triageSemgrep(context.Background(), b, pr, s, r, &o)
+		r.Findings = nil
+		s.Comments[0].ID = 42
+		r.SemgrepDecisions[0].CommentID = 42
+		e.triageSemgrep(context.Background(), b, pr, s, r, &o)
+		if writes != 0 {
+			t.Fatal("triage without an approved, unambiguous withdrawal")
+		}
+		s.Comments[0].ID = 1
+		r.SemgrepDecisions[0].CommentID = 1
+		e.triageSemgrep(context.Background(), b, pr, s, r, &o)
+		if writes != 1 || o.Conclusion != ConclusionSuccess || strings.TrimSpace(o.Output.Summary) != tc.feedback || o.Comment.Note != tc.feedback {
+			t.Fatalf("wrong triage outcome for %d: %+v", tc.status, o)
+		}
 	}
 }

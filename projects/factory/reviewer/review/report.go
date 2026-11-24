@@ -57,8 +57,9 @@ type InvariantScopeAnswer struct {
 // Report is the reviewer agent's findings and optional activation assessment.
 // The service decides the conclusion; any verdict the agent declares is ignored.
 type Report struct {
-	InvariantScopes []InvariantScopeAnswer `json:"-"`
-	Summary         string                 `json:"summary"`
+	SemgrepDecisions []semgrepDecision      `json:"-"`
+	InvariantScopes  []InvariantScopeAnswer `json:"-"`
+	Summary          string                 `json:"summary"`
 	// Activation is independently assessed text, never an instruction copied
 	// blindly from the commit. ActivationHead is set only by the service.
 	Activation     string     `json:"activation,omitempty"`
@@ -246,13 +247,19 @@ func parseReport(reply string, legacy bool) (*Report, error) {
 		return nil, errors.New("the last fenced block holds more than one JSON value")
 	}
 	var probe struct {
-		Findings        json.RawMessage `json:"findings"`
-		InvariantScopes json.RawMessage `json:"invariant_scopes"`
+		SemgrepDecisions json.RawMessage `json:"semgrep_decisions"`
+		Findings         json.RawMessage `json:"findings"`
+		InvariantScopes  json.RawMessage `json:"invariant_scopes"`
 	}
 	if json.Unmarshal([]byte(last[2]), &probe) != nil || probe.Findings == nil || string(probe.Findings) == "null" {
 		return nil, errors.New("the report has no findings list")
 	}
 	// Advisory data cannot invalidate the required findings report.
+	// Optional triage metadata cannot invalidate a review verdict.
+	var decisions []semgrepDecision
+	if json.Unmarshal(probe.SemgrepDecisions, &decisions) == nil {
+		r.SemgrepDecisions = decisions
+	}
 	var answers []json.RawMessage
 	if json.Unmarshal(probe.InvariantScopes, &answers) == nil {
 		for _, raw := range answers {
