@@ -72,7 +72,7 @@ def main():
         else:
             defects += 1
             agent += matched is not None
-            # invariant: FACT-19
+            # invariant: HOME-171-1
             check += failed and matched is not None and matched in blocking
     if args.reviewer:
         with output.open("x", encoding="utf-8") as evidence:
