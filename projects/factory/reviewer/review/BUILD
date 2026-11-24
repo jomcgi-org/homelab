@@ -77,5 +77,6 @@ go_test(
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel_sdk//trace",
         "@io_opentelemetry_go_otel_sdk//trace/tracetest",
+        "@io_opentelemetry_go_otel_trace//noop",
     ],
 )

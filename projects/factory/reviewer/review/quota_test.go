@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
@@ -599,14 +601,26 @@ func TestSupersededParkedRootEndsOnce(t *testing.T) {
 // head before the next process starts. The new head's review completes the
 // old check as cancelled and ends the old head's recorded root once.
 func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
+	var many []string
+	for i := 1; i <= 121; i++ {
+		many = append(many, fmt.Sprintf("%040x", i))
+	}
 	for _, tc := range []struct {
 		name string
 		// pushes are the heads pushed while the reviewer is offline.
 		pushes []string
 		// failOnce makes GitHub refuse the first cancellation of head A.
+		failRead bool
 		failOnce bool
+		shared   bool
+		hidden   bool
 	}{
+		{name: "hold added while head stays shared", pushes: []string{sha40('b')}, shared: true, hidden: true},
+		{name: "shared head then incomplete listing", pushes: []string{sha40('b')}, shared: true},
+		{name: "failed read with newer completed hold", pushes: many[:21], failRead: true},
 		{name: "one push", pushes: []string{sha40('b')}},
+		{name: "21 pushes", pushes: many[:21]},
+		{name: "older timeline page", pushes: many},
 		{name: "two pushes", pushes: []string{sha40('b'), sha40('c')}},
 		{name: "cancellation refused once", pushes: []string{sha40('b')}, failOnce: true},
 	} {
@@ -624,23 +638,51 @@ func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
 			for _, sha := range tc.pushes {
 				h.gh.push(7, sha)
 			}
-			head := tc.pushes[len(tc.pushes)-1]
 			update := fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, h.gh.check(shaA).ID)
-			if tc.failOnce {
+			if tc.failRead {
+				h.gh.addCheck(shaA, "factory review", testAppID, ConclusionFailure)
+				update = "GET /repos/" + testRepo + "/commits/" + shaA + "/check-runs"
+			}
+			if tc.failOnce || tc.failRead {
 				h.gh.failWith(update, 502)
 			}
 			e, ctx, stop = h.start()
-			e.Tick(ctx)
-			eventually(t, "the new head's task", func() bool { return h.taskOn(7, head, 1) != "" })
-			if tc.failOnce {
-				if c := h.gh.check(shaA); c.Status == "completed" {
-					t.Fatal("old head's check completed despite the refused write")
+			if tc.shared {
+				h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+				prs := []github.PullRequest{{Number: 7, HeadSHA: tc.pushes[0]}, {Number: 8, HeadSHA: shaA}}
+				e.recoverRoots(ctx, &e.cfg.Bindings[0], prs, true)
+				e.recoverRoots(ctx, &e.cfg.Bindings[0], prs[:1], false)
+				if c := h.gh.check(shaA); c.Status != "in_progress" || len(reviewSpans(exporter)) != 0 {
+					t.Fatal("shared or unconfirmed head was cancelled")
+				}
+				if tc.hidden {
+					h.gh.addCheck(shaA, "factory review", testAppID, ConclusionFailure)
+					e.recoverRoots(ctx, &e.cfg.Bindings[0], prs, true)
+					e.recoverRoots(ctx, &e.cfg.Bindings[0], prs, true)
+					if h.gh.check(shaA).Conclusion != ConclusionFailure {
+						t.Fatal("newer hold changed")
+					}
+				} else {
+					h.gh.push(8, sha40('c'))
+				}
+			}
+			if !tc.hidden {
+				e.Tick(ctx)
+			}
+			if tc.failOnce || tc.failRead {
+				if c := h.gh.checksOn(shaA)[0]; c.Status == "completed" || len(reviewSpans(exporter)) != 0 {
+					t.Fatal("old root completed despite the refused request")
 				}
 				h.gh.failWith(update, 0)
 			}
-			e.Tick(ctx)
+			if !tc.hidden {
+				e.Tick(ctx)
+			}
 			stop()
-			if c := h.gh.check(shaA); c.Status != "completed" || c.Conclusion != ConclusionCancelled {
+			if tc.failRead && h.gh.check(shaA).Conclusion != ConclusionFailure {
+				t.Fatal("recovery changed the newer completed check")
+			}
+			if c := h.gh.checksOn(shaA)[0]; c.Status != "completed" || c.Conclusion != ConclusionCancelled {
 				t.Fatalf("old head's check = %s %s", c.Status, c.Conclusion)
 			}
 			var old []map[string]string
@@ -653,5 +695,41 @@ func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
 				t.Fatalf("old head's review spans = %v, want one cancelled root", old)
 			}
 		})
+	}
+}
+
+func TestTracingEnabledDuringReview(t *testing.T) {
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(noop.NewTracerProvider())
+	t.Cleanup(func() { otel.SetTracerProvider(previous) })
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	eventually(t, "the task recorded before tracing starts", func() bool {
+		return RecordedTask(h.gh.check(shaA).Summary).ID == task
+	})
+	stop()
+	exporter := captureReviewSpans(t)
+	e, ctx, stop = h.start()
+	e.Tick(ctx)
+	st, _ := LoadState(h.gh.check(shaA).Text)
+	if st.Trace == nil {
+		t.Fatal("reattached review did not checkpoint its root")
+	}
+	stop()
+	e, ctx, stop = h.start()
+	e.Tick(ctx)
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	awaitReviewRoot(t, exporter)
+	stop()
+	spans := reviewSpans(exporter)
+	if len(spans) != 1 || spans[0]["review.verdict"] != ConclusionSuccess {
+		t.Fatalf("review spans = %v", spans)
+	}
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "review" && formatParent(span.SpanContext) != st.Trace.Parent {
+			t.Fatal("exported a different root after restart")
+		}
 	}
 }
