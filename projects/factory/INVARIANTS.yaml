@@ -155,3 +155,9 @@ invariants:
   - projects/factory/broker/grant/manager.go
   test: //projects/factory/broker/relay:relay_test
   state: live
+- id: HOME-424-1
+  statement: Claude relay requests reserve at most 32 MiB of aggregate payload capacity before reading, including full-size reservations for unknown lengths.
+  mechanism:
+  - projects/factory/broker/relay/claude.go
+  test: //projects/factory/broker/relay:relay_test
+  state: live

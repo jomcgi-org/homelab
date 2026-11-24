@@ -460,3 +460,59 @@ func TestClaudeTrace(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeBodyBudget(t *testing.T) {
+	var h *claudeHarness
+	h = newClaudeHarness(t, func(http.ResponseWriter, *http.Request) {
+		if h.calls.Load() != 1 {
+			t.Error("over-budget request reached upstream")
+			return
+		}
+		// The first handler holds its reservation until this upstream returns.
+		next := h.request(t, "/anthropic/v1/messages/count_tokens", claudeBody)
+		unread := strings.NewReader(claudeBody)
+		next.Body = io.NopCloser(unread)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, next)
+		if rec.Code != http.StatusServiceUnavailable || unread.Len() != len(claudeBody) {
+			t.Errorf("saturated relay returned %d and read %d bytes", rec.Code, len(claudeBody)-unread.Len())
+		}
+	})
+	r := h.request(t, "/anthropic/v1/messages", claudeBody)
+	r.ContentLength = -1 // Chunked callers reserve the full possible body.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK || h.calls.Load() != 1 {
+		t.Fatalf("first request returned %d, upstream calls = %d", rec.Code, h.calls.Load())
+	}
+}
+
+func TestClaudeRequestModelIgnoresNestedKeys(t *testing.T) {
+	body := []byte(`{"items":[{"model":"other","text":"},\"model\""}],"m\u006fdel":"allowed"}`)
+	model, ambiguous := claudeRequestModel(body, []string{"allowed"})
+	if model != "allowed" || ambiguous {
+		t.Fatalf("model = %q, ambiguous = %v", model, ambiguous)
+	}
+}
+
+func TestClaudeRejectsOverlongModelToken(t *testing.T) {
+	body := []byte(`{"model":"` + strings.Repeat(`\u0061`, 1<<16) + `"}`)
+	if model, denied := claudeRequestModel(body, []string{"a"}); !denied || model != "" {
+		t.Fatal("overlong model was decoded")
+	}
+}
+
+func TestClaudeUsageAfterLargeContent(t *testing.T) {
+	exporter := traceExporter(t)
+	body := `{"content":[{"text":"` + strings.Repeat("x", 128<<10) + `","usage":{"output_tokens":99}}],"usage":{"input_tokens":7,"output_tokens":3}}`
+	h := newClaudeHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, h.request(t, "/anthropic/v1/messages", claudeBody))
+	spans := exporter.GetSpans()
+	if rec.Body.String() != body || len(spans) != 1 || !slices.Contains(spans[0].Attributes, attribute.Int64("gen_ai.usage.input_tokens", 7)) || !slices.Contains(spans[0].Attributes, attribute.Int64("gen_ai.usage.output_tokens", 3)) {
+		t.Fatal("large response or its usage was lost")
+	}
+}
