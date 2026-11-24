@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -1156,6 +1157,9 @@ func testForkWaitAcrossPolls(t *testing.T, readyAgain bool) {
 		// Both listings see ready. Only the timeline records the intervening transition.
 		h.gh.withLock(func() {
 			h.gh.prs[20].EligibilityEvents = []map[string]any{{"__typename": "ReadyForReviewEvent", "createdAt": now}}
+			// GitHub bumps updated_at on a ready transition, which refreshes the cached read.
+			h.gh.prs[20].Updated = now
+			// GitHub bumps updated_at on a ready transition, which refreshes the cached read.
 		})
 	}
 	h.k.finish(running, kagent.StateCompleted, report(t, passing))
@@ -4692,5 +4696,101 @@ func TestReviewTrace(t *testing.T) {
 		if attrs[k] != v {
 			t.Errorf("%s: got %q, want %q", k, attrs[k], v)
 		}
+	}
+}
+
+// readyStub counts the GraphQL reads dateWaiting makes.
+type readyStub struct {
+	GitHub
+	calls int
+	ready time.Time
+	err   error
+}
+
+func (s *readyStub) HeadRefChangedAt(context.Context, string, string, string, string) (time.Time, error) {
+	return s.ready, nil
+}
+
+func (s *readyStub) PullRequestReadySince(context.Context, string, github.PullRequest, []string) (time.Time, error) {
+	s.calls++
+	return s.ready, s.err
+}
+
+func TestReadySinceCacheSkipsRepeatedReads(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	stub := &readyStub{ready: now.Add(-time.Hour)}
+	e := &Engine{cfg: Config{Now: func() time.Time { return now }}, gh: stub, waiting: map[prKey]*waitingHead{}}
+	b := &Binding{Name: "homelab", Owner: "o", Repo: "r"}
+	pr := github.PullRequest{Number: 20, HeadSHA: shaA, HeadRepo: "o/r", HeadRef: "x", UpdatedAt: now, Labels: []string{"b", "a"}}
+	poll := func(pr github.PullRequest) {
+		e.waiting[prKey{b.Name, pr.Number}] = &waitingHead{sha: pr.HeadSHA, since: now, observed: now}
+		e.dateWaiting(context.Background(), b, []candidate{{pr: pr}})
+		if got := e.waiting[prKey{b.Name, pr.Number}].since; !got.Equal(stub.ready) {
+			t.Fatalf("since = %v, want the ready time %v", got, stub.ready)
+		}
+	}
+	want := func(n int, why string) {
+		t.Helper()
+		if stub.calls != n {
+			t.Fatalf("%s: %d GraphQL reads, want %d", why, stub.calls, n)
+		}
+	}
+	poll(pr)
+	want(1, "first poll")
+	pr.Labels = []string{"a", "b"} // Same set in another order.
+	poll(pr)
+	poll(pr)
+	want(1, "repeat polls of the same head")
+
+	changed := pr
+	changed.HeadSHA = strings.Repeat("b", 40)
+	poll(changed)
+	want(2, "new head")
+
+	changed = pr
+	changed.UpdatedAt = now.Add(time.Second)
+	poll(changed)
+	want(3, "new UpdatedAt")
+
+	changed.Labels = []string{"a"}
+	poll(changed)
+	want(4, "changed labels")
+
+	changed.Draft = true
+	poll(changed)
+	want(5, "draft flip")
+
+	now = now.Add(readyCacheTTL)
+	poll(changed)
+	want(6, "expired entry")
+
+	stub.err = errors.New("boom")
+	changed.UpdatedAt = now.Add(time.Minute)
+	poll2 := changed
+	e.dateWaiting(context.Background(), b, []candidate{{pr: poll2}})
+	e.dateWaiting(context.Background(), b, []candidate{{pr: poll2}})
+	want(8, "failed reads are not cached")
+}
+
+func TestReadySinceCacheIsBounded(t *testing.T) {
+	now := time.Now().UTC()
+	stub := &readyStub{ready: now}
+	e := &Engine{cfg: Config{Now: func() time.Time { return now }}, gh: stub}
+	b := &Binding{Name: "homelab", Owner: "o", Repo: "r"}
+	for n := 1; n <= 2*readyCacheMax; n++ {
+		now = now.Add(time.Second)
+		if _, err := e.readySince(context.Background(), b, github.PullRequest{Number: n, HeadSHA: shaA}); err != nil {
+			t.Fatal(err)
+		}
+		if len(e.readyCache) > readyCacheMax {
+			t.Fatalf("cache holds %d entries, max %d", len(e.readyCache), readyCacheMax)
+		}
+	}
+	// The newest entry stays; the oldest was evicted and reads again.
+	stub.calls = 0
+	_, _ = e.readySince(context.Background(), b, github.PullRequest{Number: 2 * readyCacheMax, HeadSHA: shaA})
+	_, _ = e.readySince(context.Background(), b, github.PullRequest{Number: 1, HeadSHA: shaA})
+	if stub.calls != 1 {
+		t.Fatalf("reads = %d, want 1 (only the evicted entry)", stub.calls)
 	}
 }
