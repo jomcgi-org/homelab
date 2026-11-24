@@ -1,4 +1,4 @@
-// invariant: FACT-18
+// invariant: FACT-21
 // invariant: FACT-10
 // invariant: FACT-11
 package dispatch

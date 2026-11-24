@@ -300,7 +300,7 @@ invariants:
   - projects/factory/chart/templates/discord.yaml
   test: //projects/factory/chart:chart_test
   state: live
-- id: FACT-18
+- id: FACT-21
   statement: Coding agents can only recall shared lessons. The connector retains a lesson for its matching merged head.
   mechanism:
   - projects/factory/connector/migrations/20261124000400_merge_lesson.sql
