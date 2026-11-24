@@ -255,8 +255,8 @@ func TestGoalCheckOfALaterHeadKeepsSettledVerdicts(t *testing.T) {
 	withComments(h)
 	h.k.goalReplies = []string{
 		"PRIVATE-A: both criteria are met by x.go.\n\n```json\n" + `{"criteria":[{"criterion":1,"verdict":"met"},{"criterion":2,"verdict":"met"}],"overall":"met"}` + "\n```",
-		goalReply(`{"criteria":[{"criterion":1,"verdict":"unclear"},{"criterion":2,"verdict":"not_met"}],"overall":"met"}`),
-		goalReply(`{"criteria":[{"criterion":1,"verdict":"not_met"},{"criterion":2,"verdict":"not_met"}],"overall":"met"}`),
+		"Criterion 1: Searched retry_test.go; missing retry test.\n" + goalReply(`{"criteria":[{"criterion":1,"verdict":"unclear"},{"criterion":2,"verdict":"not_met"}],"overall":"met"}`),
+		"Criterion 1: Searched retry_test.go; missing retry test.\n" + goalReply(`{"criteria":[{"criterion":1,"verdict":"not_met"},{"criterion":2,"verdict":"not_met"}],"overall":"met"}`),
 	}
 	e, ctx, _ := h.start()
 	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
