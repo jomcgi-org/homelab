@@ -46,6 +46,33 @@ Admit only the gateway to the scanner's listener. The Hindsight pilot and
 its cluster latency check are tracked in
 [HOME-729](https://factory-plan.jomcgi.dev/factory/issue/HOME-729).
 
+## Detectors
+
+The scanner calls exactly one detector for each request. `--detector` (chart
+value `detector.name`) selects it by name:
+
+| Name | What it is |
+| --- | --- |
+| `gitleaks` | The Gitleaks rules pinned in `go.mod`, matched by the scanner's own matcher with a context and a work budget. The default today |
+| `betterleaks` | The Betterleaks library (`v2.0.0-rc.11`) with its default rules and `detect/betterleaks/extra_rules.toml`. Allow markers off, decode depth 3 |
+
+The host enforces the same settings for any detector. Each is a flag and a chart
+value under `detector`:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--detector-mode` | `enforce` | `enforce`: a finding denies. `observe`: counted, never denies |
+| `--detector-failure-mode` | `deny` | What a call without a verdict does: `deny` or `allow` |
+| `--detector-deadline` | `75ms` | Time for one request. Keep the gateway `requestTimeout` at least 5 ms above it (a test enforces this) |
+| `--detector-max-input-bytes` | `524288` | Largest input of one call. A larger input is a failure, never a skip |
+| `--detector-data-path` | empty | Mounted path of the private data of a detector that holds any |
+| `--rules` | empty | Operator rule file (the `gitleaks` detector only) |
+
+The interface, the swap procedure and the conformance test are in
+`detect/doc.go` and [DESIGN-detectors.md](DESIGN-detectors.md). A private
+detector (for example an exact-match index of known private content) joins by a
+file `detectors_private.go` in a private build: the public code does not change.
+
 ## Second scan tier (Semgrep engine): deferred, removed from the code
 
 The scanner had an optional second tier that posted the scanned text to a
