@@ -53,7 +53,6 @@ func (e *Engine) stepAdmissions(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		e.orderAdmissions(runs)
 		done := make(chan error, 1)
 		e.admissionDone = done
 		go func() {
@@ -68,6 +67,9 @@ func (e *Engine) stepAdmissions(ctx context.Context) error {
 				}
 				done <- err
 			}()
+			// Only runs with no attempt can be admitted. Resumes of running
+			// sessions are never ordered here.
+			var queue []*store.Run
 			for _, r := range runs {
 				if r.Connector() || (r.State != store.RunClaimed && r.State != store.RunWaiting && r.State != store.RunDispatched) {
 					continue
@@ -82,9 +84,12 @@ func (e *Engine) stepAdmissions(ctx context.Context) error {
 					}
 					continue
 				}
-				if a != nil {
-					continue
+				if a == nil {
+					queue = append(queue, r)
 				}
+			}
+			e.orderAdmissions(queue)
+			for _, r := range queue {
 				if span == nil {
 					ctx, span = tracing.StartAdmission(ctx)
 				}
@@ -127,18 +132,6 @@ func (e *Engine) stepAdmission(ctx context.Context, id int64) error {
 		return err
 	}
 	return e.step(ctx, r)
-}
-
-// Rotate held runs by last poll. Claims enter at their arrival time, so older
-// holds precede new claims. Restart discards all in-progress reads and decisions.
-func (e *Engine) orderAdmissions(runs []*store.Run) {
-	last := func(id int64) time.Time {
-		if at, ok := e.admissionPolled.Load(id); ok {
-			return at.(time.Time)
-		}
-		return time.Time{}
-	}
-	sort.SliceStable(runs, func(i, j int) bool { return last(runs[i].ID).Before(last(runs[j].ID)) })
 }
 
 // beginAdmissionRead follows the read-attempt protocol: stable identity,
@@ -237,6 +230,7 @@ func (e *Engine) admit(ctx context.Context, r *store.Run) (bool, error) {
 	if err != nil {
 		return false, e.admissionFailure(ctx, r, "Waiting for the issue brief and dependency relations to be readable.", err, briefNotice(r))
 	}
+	e.admissionRanks.Store(r.ID, rankIssue(root))
 	if root.Identifier != r.IssueKey {
 		return false, e.holdAdmission(ctx, r, "Waiting for the issue to match the claimed repository binding.", nil)
 	}

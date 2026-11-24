@@ -1135,3 +1135,145 @@ func TestAdmissionSweepSharesBlockerReads(t *testing.T) {
 		}
 	}
 }
+
+// queuedRun claims a run whose issue carries a priority and a due date, each
+// optional. It never takes the agent's only slot because the caller holds it.
+func (v *env) queuedRun(run, issue int64, key, priority, due string) {
+	v.t.Helper()
+	v.its.add(run, "coder", issue, key, "Queued work.")
+	v.its.mu.Lock()
+	defer v.its.mu.Unlock()
+	if priority != "" {
+		v.its.issues[issue].Priority = &priority
+	}
+	if due != "" {
+		v.its.issues[issue].DueDate = &due
+	}
+}
+
+// oneSlotEnv returns an env whose coder has one slot, held by run 1 until the
+// test finishes it. Runs queued afterwards wait in admission order.
+func oneSlotEnv(t *testing.T) *env {
+	t.Helper()
+	v := newEnv(t)
+	v.e.Release()
+	v.cfg.Agents[0].Concurrency = 1
+	v.e = v.engine("admission-order")
+	v.its.add(1, "coder", 101, "HL-1", "Holds the slot.")
+	v.tick(v.e)
+	if v.run(1).State != store.RunDispatched {
+		t.Fatal("the first run did not take the slot")
+	}
+	return v
+}
+
+// admitted finishes the running task, freeing the slot, and returns the queued run that takes it next.
+func (v *env) admitted(queued ...int64) int64 {
+	v.t.Helper()
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Done.", nil)
+	var got int64
+	v.tickUntil(time.Second, 20, func() bool {
+		for _, id := range queued {
+			if v.run(id).State == store.RunDispatched {
+				got = id
+				return true
+			}
+		}
+		return false
+	})
+	return got
+}
+
+func TestAdmissionOrderFollowsPriorityWhenSlotsFree(t *testing.T) {
+	v := oneSlotEnv(t)
+	v.queuedRun(2, 102, "HL-2", "low", "")
+	v.queuedRun(3, 103, "HL-3", "", "")
+	v.queuedRun(4, 104, "HL-4", "urgent", "")
+	v.queuedRun(5, 105, "HL-5", "medium", "")
+	// Two polls: the first learns each issue's priority, and no slot is free.
+	v.tick(v.e)
+	v.tick(v.e)
+	for _, id := range []int64{2, 3, 4, 5} {
+		if v.run(id).State == store.RunDispatched {
+			t.Fatalf("run %d started while the only slot was busy", id)
+		}
+	}
+	rest := []int64{2, 3, 4, 5}
+	var order []int64
+	for len(rest) > 0 {
+		next := v.admitted(rest...)
+		order = append(order, next)
+		var left []int64
+		for _, id := range rest {
+			if id != next {
+				left = append(left, id)
+			}
+		}
+		rest = left
+	}
+	want := []int64{4, 5, 2, 3}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("admission order = %v, want %v (urgent, medium, low, none)", order, want)
+		}
+	}
+}
+
+func TestAdmissionOrderDueDateJumpsQueueAndKeepsRunningWork(t *testing.T) {
+	v := oneSlotEnv(t)
+	today := v.clk.Now().UTC().Format(time.DateOnly)
+	soon := v.clk.Now().UTC().AddDate(0, 0, 2).Format(time.DateOnly)
+	far := v.clk.Now().UTC().AddDate(0, 0, 20).Format(time.DateOnly)
+	v.queuedRun(2, 102, "HL-2", "urgent", "")
+	v.queuedRun(3, 103, "HL-3", "low", soon)
+	v.queuedRun(4, 104, "HL-4", "none", today)
+	v.queuedRun(5, 105, "HL-5", "high", far)
+	v.tick(v.e)
+	v.tick(v.e)
+	// A newly urgent run never takes a slot from work already running.
+	if v.run(1).State != store.RunDispatched || v.kg.Executions() != 1 {
+		t.Fatal("queued work displaced the running session")
+	}
+	if got := v.admitted(2, 3, 4, 5); got != 4 {
+		t.Fatalf("first admitted = run %d, want run 4 (due today)", got)
+	}
+	if got := v.admitted(2, 3, 5); got != 3 {
+		t.Fatalf("second admitted = run %d, want run 3 (due in 2 days)", got)
+	}
+	// A due date past the window does not jump: urgent goes before high.
+	if got := v.admitted(2, 5); got != 2 {
+		t.Fatalf("third admitted = run %d, want run 2 (urgent; run 5's date is far)", got)
+	}
+}
+
+func TestAdmissionOrderStarvedLowRunStillRuns(t *testing.T) {
+	v := oneSlotEnv(t)
+	v.queuedRun(2, 102, "HL-2", "low", "")
+	v.queuedRun(3, 103, "HL-3", "urgent", "")
+	v.tick(v.e)
+	v.tick(v.e)
+	// Run 2 waited past the bound; run 3 arrived just now.
+	if _, err := v.st.DB.ExecContext(v.ctx, `UPDATE run SET created_at = $2 WHERE id = $1`,
+		2, v.clk.Now().Add(-7*24*time.Hour-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got := v.admitted(2, 3); got != 2 {
+		t.Fatalf("admitted run %d, want the starved low run 2 before the urgent run 3", got)
+	}
+	if got := v.admitted(3); got != 3 {
+		t.Fatalf("admitted run %d, want run 3", got)
+	}
+}
+
+func TestAdmissionOrderBlockedHighPriorityRunDoesNotTakeASlot(t *testing.T) {
+	v := oneSlotEnv(t)
+	v.queuedRun(2, 102, "HL-2", "urgent", "")
+	v.dependency(102, 109, "HL-9", 1) // blocked_by an open issue
+	v.queuedRun(3, 103, "HL-3", "low", "")
+	v.tick(v.e)
+	v.tick(v.e)
+	if got := v.admitted(2, 3); got != 3 {
+		t.Fatalf("admitted run %d; the blocked urgent run must hold and the low run start", got)
+	}
+	v.held(2)
+}

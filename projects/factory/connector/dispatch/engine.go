@@ -158,6 +158,10 @@ type Config struct {
 	AdmissionBudget time.Duration
 	// AdmissionReadTimeout bounds one request, not a whole dependency graph.
 	AdmissionReadTimeout time.Duration
+	// DueWindow and StarveAfter set the admission order (admission_order.go).
+	// Zero selects 72 hours and 168 hours.
+	DueWindow   time.Duration
+	StarveAfter time.Duration
 
 	PlannerSchedules []planner.Schedule
 	// PlannerTracked assigns fingerprints to the HOME issues that cover them.
@@ -198,7 +202,8 @@ type Engine struct {
 	checked sync.Map // attempt ID -> sessionCheck
 	// workers is the state of the worker wait (workers.go).
 	workers         workerHolds
-	admissionPolled sync.Map // run ID -> wall time; oldest admission is polled first
+	admissionPolled sync.Map // run ID -> wall time; the last tiebreak of the admission order
+	admissionRanks  sync.Map // run ID -> admissionRank from the last admission read
 	admissionCtx    context.Context
 	admissionCancel context.CancelFunc
 	admissionDone   chan error // one worker, owned by Tick and joined by Release
@@ -264,6 +269,12 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 	}
 	if cfg.AdmissionReadTimeout <= 0 {
 		cfg.AdmissionReadTimeout = 30 * time.Second
+	}
+	if cfg.DueWindow <= 0 {
+		cfg.DueWindow = defaultDueWindow
+	}
+	if cfg.StarveAfter <= 0 {
+		cfg.StarveAfter = defaultStarveAfter
 	}
 	if m == nil {
 		m = metrics.New(nil)
@@ -395,6 +406,12 @@ func (e *Engine) pruneLocks(open map[int64]bool) {
 	e.admissionPolled.Range(func(k, v any) bool {
 		if !open[k.(int64)] {
 			e.admissionPolled.Delete(k)
+		}
+		return true
+	})
+	e.admissionRanks.Range(func(k, v any) bool {
+		if !open[k.(int64)] {
+			e.admissionRanks.Delete(k)
 		}
 		return true
 	})

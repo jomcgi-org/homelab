@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "activation.go",
         "admission.go",
+        "admission_order.go",
         "assessment.go",
         "classify.go",
         "deferred.go",
@@ -49,6 +50,7 @@ go_test(
     timeout = "long",
     srcs = [
         "activation_test.go",
+        "admission_order_test.go",
         "admission_test.go",
         "artifact_transcript_test.go",
         "deferred_test.go",

@@ -246,6 +246,8 @@ type Run struct {
 	AdmissionStops  int             // stop counter observed on the first claim, never redelivery
 	AdmissionIssue  *itsaplan.Issue // poll-local issue read; its brief persists only with a delivery attempt
 
+	CreatedAt time.Time // claim time; admission order uses it as wait age
+
 	// Historical runs remain unknown; new runs snapshot their first dispatch.
 	Provenance         provenance.Record
 	ProvenanceRequired bool
@@ -266,7 +268,7 @@ const runCols = `id, agent_key, coalesce(work_item_id, 0), coalesce(issue_id, 0)
 	trigger, prompt, system_prompt, attempt, state, coalesce(event_attempt, 0), event_offset,
 	coalesce(event_task_id, ''), event_task_base, coalesce(last_heartbeat_at, 'epoch'::timestamptz), seen_visible, coalesce(closed_reason, ''),
 	origin, stopped_reason IS NOT NULL, coalesce(stopped_reason, ''), hold_reason, admission_stops, coalesce(model, ''), coalesce(reasoning_effort, ''),
-	coalesce(arm, ''), coalesce(base_sha, ''), coalesce(prompt_hash, ''), coalesce(task_class, ''), provenance_required`
+	coalesce(arm, ''), coalesce(base_sha, ''), coalesce(prompt_hash, ''), coalesce(task_class, ''), provenance_required, created_at`
 
 func scanRun(row interface{ Scan(...any) error }) (*Run, error) {
 	r := &Run{}
@@ -274,7 +276,7 @@ func scanRun(row interface{ Scan(...any) error }) (*Run, error) {
 		&r.Prompt, &r.SystemPrompt, &r.Attempt, &r.State, &r.EventAttempt, &r.EventOffset,
 		&r.EventTaskID, &r.EventTaskBase, &r.LastHeartbeatAt, &r.SeenVisible, &r.ClosedReason, &r.Origin,
 		&r.StopRequested, &r.StoppedReason, &r.HoldReason, &r.AdmissionStops,
-		&r.Provenance.Model, &r.Provenance.ReasoningEffort, &r.Provenance.Arm, &r.Provenance.BaseSHA, &r.Provenance.PromptHash, &r.Provenance.TaskClass, &r.ProvenanceRequired)
+		&r.Provenance.Model, &r.Provenance.ReasoningEffort, &r.Provenance.Arm, &r.Provenance.BaseSHA, &r.Provenance.PromptHash, &r.Provenance.TaskClass, &r.ProvenanceRequired, &r.CreatedAt)
 	return r, err
 }
 
