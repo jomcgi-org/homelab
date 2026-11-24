@@ -14,6 +14,7 @@ py_test(
     name = "manifests_test",
     srcs = ["manifests_test.py"],
     data = glob(["*.yaml"]) + [
+        "//projects/platform-factory/substrate/egress-scan/gate/guard:kustomize_inputs",
         "@multitool//tools/kustomize",
     ],
     env = {

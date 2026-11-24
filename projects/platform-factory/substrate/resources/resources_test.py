@@ -825,6 +825,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
     assert [r for r in listed if r.startswith("..")] == [
         "../gvisor-fork",
         "../egress-scan/gate/provision",
+        "../egress-scan/gate/guard",
     ]
     docs = _docs()
 
@@ -985,7 +986,11 @@ def test_engine_gate_is_not_deployed_and_its_pin_follows_the_build() -> None:
         return (d["kind"], d["metadata"].get("namespace"), d["metadata"]["name"])
 
     wired = {key(d) for d in docs}
-    assert not (_GATE_OBJECTS & wired), "engine-gate objects are wired again"
+    # Only the admission guard of the ServiceAccount stays wired: the router
+    # still trusts that ServiceAccount's certificate, so nobody else may run a
+    # pod as it. The guard leaves with the router grant.
+    guard = {k for k in _GATE_OBJECTS if k[0].startswith("ValidatingAdmission")}
+    assert _GATE_OBJECTS & wired == guard, "engine-gate objects are wired"
     # The gate's own directory still renders exactly _GATE_OBJECTS, so that
     # deploying it again is a one-line change that this test already covers.
     gate_docs = subprocess.run(

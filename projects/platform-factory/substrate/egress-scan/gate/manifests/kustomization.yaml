@@ -1,15 +1,16 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# engine-gate, wired by ../../../resources (egress-scan/deploy/application.yaml,
-# path projects/platform-factory/substrate/resources). manifests_test.py checks
-# what this directory renders, and ../../../resources/resources_test.py checks
-# the image pin and what the wired render holds. The rollout, the checks and the
+# engine-gate. Not deployed since 2026-11-24 (../../../resources does not list
+# this directory). manifests_test.py checks what this directory renders, and
+# ../../../resources/resources_test.py checks the image pin and that the wired
+# render holds none of it except ../guard. The rollout, the checks and the
 # rollback are in ../README.md, "Enable steps".
 resources:
   - statefulset.yaml
   - networkpolicy.yaml
-  - admission.yaml
+  # The admission guard is its own directory: it stays deployed without the gate.
+  - ../guard
 
 images:
   - name: engine-gate

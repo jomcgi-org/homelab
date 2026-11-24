@@ -46,6 +46,7 @@ py_test(
         "//projects/platform-factory/substrate/egress-scan/deploy:application.yaml",
         "//projects/platform-factory/substrate/egress-scan/deploy:manifests/all.yaml",
         "//projects/platform-factory/substrate/egress-scan/gate/image:image_digest",
+        "//projects/platform-factory/substrate/egress-scan/gate/guard:kustomize_inputs",
         "//projects/platform-factory/substrate/egress-scan/gate/manifests:kustomize_inputs",
         "//projects/platform-factory/substrate/egress-scan/gate/provision:kustomize_inputs",
         "//projects/platform-factory/substrate/gvisor-fork:kustomize_inputs",
