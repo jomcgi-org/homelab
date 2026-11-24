@@ -173,6 +173,9 @@ clusterDomain: cluster.local
 # Enable after the forwarding scope, broker and Authentik callback deploy.
 codexAdminRouteEnabled: false
 
+edge:
+  codexAdminRouteEnabled: false
+
 codexTrial:
   image:
     repository: ghcr.io/jomcgi/homelab/projects/factory/codex-code-mode

@@ -429,7 +429,8 @@ func (v *Verifier) AdminSubject(ctx context.Context, raw string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	if c.Subject == "" || (!slices.Contains(c.Groups, "authentik Admins") && !slices.Contains(c.Groups, "factory-operators")) {
+	// invariant: HOME-405-1
+	if c.Subject == "" || !slices.Contains(c.Groups, "authentik Admins") {
 		return "", reject(ReasonSubject)
 	}
 	return c.Subject, nil
