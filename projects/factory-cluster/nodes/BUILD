@@ -38,8 +38,8 @@ py_test(
     name = "node_ksm_off_test",
     srcs = ["node_ksm_off_test.py"],
     data = [
-        "factory-ksm-qemu.conf",
         "factory-ksm.conf",
+        "factory-ksm-qemu.conf",
         "ksm-off.sh",
     ],
     deps = ["@pip//pytest"],
