@@ -1254,6 +1254,28 @@ def _observe_problems(
     return bad
 
 
+def test_scanner_reaches_the_gate_only_with_per_packet_service_translation() -> None:
+    # The scanner pods run under gVisor. Cilium's default socket-level Service
+    # translation never sees a connect() from a gVisor sandbox, so they reach no
+    # ClusterIP (DNS included, and the gate) unless Cilium translates per packet
+    # for pods: socketLB.hostNamespaceOnly (#8636). Reverting it makes every
+    # Semgrep call fail (egress-scan/gate/README.md, "The scanner runs under gVisor").
+    manifest = Path(os.environ["SCANNER_MANIFEST"]).read_text()
+    scanner = _one(
+        [d for d in yaml.safe_load_all(manifest) if d], "Deployment", "egress-scan"
+    )
+    runs_in_gvisor = scanner["spec"]["template"]["spec"].get("runtimeClassName") == "gvisor"
+    tier_on = bool(_semgrep_values()["enabled"])
+    cilium = yaml.safe_load(Path(os.environ["CILIUM_VALUES"]).read_text())
+    translated_per_packet = cilium.get("socketLB", {}).get("hostNamespaceOnly") is True
+    # Only a gVisor scanner that calls the gate needs the value, so turning the
+    # tier off (the rollback) does not trip this.
+    assert translated_per_packet or not (runs_in_gvisor and tier_on), (
+        "the scanner runs under gVisor with the Semgrep tier on, so Cilium needs "
+        "socketLB.hostNamespaceOnly: true (projects/platform-factory/cilium/values.yaml)"
+    )
+
+
 def test_scanner_tier_is_on_in_observe_mode_and_points_at_the_gate() -> None:
     docs = _docs()
     service = _one(docs, "Service", "engine-gate")
