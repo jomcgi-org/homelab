@@ -42,19 +42,12 @@ resources:
   # holds no seed, the conformance Job is suspended and no template sets
   # fork_config, so ForkSeed (on since step 7) starts no fork.
   - ../gvisor-fork
-  # The teardown of the engine atespace, its access policy and the fork template
-  # (egress-scan/gate/README.md "Teardown"). One Job runs once, then a later PR
-  # removes this line.
-  - ../egress-scan/gate/provision
-  # engine-gate (egress-scan/gate/manifests) is not deployed: Joe deferred the
-  # Semgrep tier on 2026-11-24 (egress-scan/ARCHITECTURE.md "Decided" 9). The
-  # source and the manifests stay in the repository. To deploy the gate again,
-  # list ../egress-scan/gate/manifests here and restore the Prometheus scrape
-  # job, its egress rule and the alerts from the commit that removed them
-  # (egress-scan/gate/README.md).
-  # The admission guard of its ServiceAccount stays until the router grant and
-  # the editor binding of that ServiceAccount are gone.
-  - ../egress-scan/gate/guard
+  # Deferred, not deployed (Joe, 2026-11-24, egress-scan/ARCHITECTURE.md
+  # "Decided" 9): engine-gate (../egress-scan/gate/manifests), its provisioning
+  # and teardown Jobs (../egress-scan/gate/provision) and the admission guard of
+  # its ServiceAccount (../egress-scan/gate/guard). The source stays in the
+  # repository. To deploy the gate again, read egress-scan/gate/README.md: it
+  # lists what to restore (this list, the router grant, the Prometheus pieces).
   - network-policy.yaml
   - kagent-identity-guard.yaml
   - ghcr-pull-secret.yaml
