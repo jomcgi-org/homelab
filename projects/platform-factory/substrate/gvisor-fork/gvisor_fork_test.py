@@ -941,9 +941,9 @@ def test_guest_script_fits_one_argument_and_parses() -> None:
         assert f"\n{mode})" in guest, mode
 
 
-def test_gate_job_is_suspended_and_runs_as_ate_client() -> None:
+def test_gate_job_runs_as_ate_client() -> None:
     job = _one(_docs(), "Job", "gvisor-fork-gates-1")
-    assert job["spec"]["suspend"] is True
+    assert job["spec"]["suspend"] is False
     assert job["spec"]["backoffLimit"] == 0
     assert job["spec"]["activeDeadlineSeconds"] <= 3600
     pod = job["spec"]["template"]["spec"]

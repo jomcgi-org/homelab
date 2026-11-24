@@ -5,8 +5,8 @@
 # (GATE <actor> ...). The node-side checks (the filter byte diff, the cgroup and
 # namespace leak counts) run by hand on the worker's node while this Job runs.
 #
-# Created SUSPENDED. Set suspend to false in a reviewed change to run it, after
-# the pool has a worker. A Job's pod template is immutable: editing anything
+# Created SUSPENDED; set to run in a reviewed change (suspend: false), once the
+# pool had a worker. Set suspend back to true, or delete the Job, to stop a rerun. A Job's pod template is immutable: editing anything
 # under gates/ changes the generated ConfigMap's hash, and so the pod template:
 # bump the run suffix in the name in the same change (resources_test.py pins the
 # hash). A suspended Job keeps the Application in health Suspended.
@@ -25,7 +25,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  suspend: true
+  suspend: false
   backoffLimit: 0
   # The worker wait (900 s), the seed (600 s), 10 modes (the two long ones wait up
   # to 330 s each), 1000 forks at 4 at a time and the checks around them.

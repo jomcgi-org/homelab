@@ -902,8 +902,8 @@ def test_gvisor_fork_slice_is_wired() -> None:
     assert conformance_map == "gvisor-fork-conformance-tgf4tdtbht"
     # The staged isolation-gate pool and Job (gvisor-fork/gates/, to be removed).
     # Same rule as the conformance Job: the Job's config volume names the
-    # generated ConfigMap, whose name carries a hash of gates/. The Job is created
-    # suspended, and its pool is separate from production: own namespace, own
+    # generated ConfigMap, whose name carries a hash of gates/. The Job runs
+    # once (unsuspended for the gate run), and its pool is separate from production: own namespace, own
     # label, tiny requests, one worker.
     (gates_map,) = [k[2] for k in configmaps if k[2].startswith("gvisor-fork-gates-")]
     gates_job = _one(docs, "Job", "gvisor-fork-gates-1")
@@ -914,7 +914,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
     ]
     assert gates_volume["configMap"]["name"] == gates_map
     assert gates_map == "gvisor-fork-gates-85h6mf6g5g"
-    assert gates_job["spec"]["suspend"] is True
+    assert gates_job["spec"]["suspend"] is False
     gates_pool = _one(docs, "WorkerPool", "gvisor-fork-gates")
     assert gates_pool["metadata"]["namespace"] == _GATES_NS
     assert gates_pool["metadata"]["labels"] == {"workload": "gvisor-fork-gates"}
