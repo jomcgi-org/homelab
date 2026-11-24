@@ -89,6 +89,7 @@ query, header value, match or actor name):
 | `factory_egress_scan_checks_total` | `outcome`, `route`, `source` |
 | `factory_egress_scan_check_duration_seconds` | `outcome`, `route` |
 | `factory_egress_scan_detector_findings_total` | `detector`, `rule`, `class` (`block` or `report`), `mode`, `route`, `source` |
+| `factory_egress_scan_detector_info` | `detector`, `mode`, `failure_mode` (the value is 1) |
 | `factory_egress_scan_detector_failures_total` | `detector`, `reason` (`timeout`, `budget`, `oversize`, `error`, `panic`), `mode`, `route`, `source` |
 
 **Route.** The Host header comes from the client. When the Host is not on the
