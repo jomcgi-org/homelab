@@ -1520,3 +1520,40 @@ tests:
       - eval_time: 25m
         alertname: EngineGateFailing
         exp_alerts: []
+
+  # egress-scan: three denials by the failure mode in 10 min, for 5 min, is
+  # critical. One blip and the allow action do not fire.
+  - interval: 1m
+    input_series:
+      - series: 'factory_egress_scan_semgrep_failure_mode_total{job="egress-scan", pod="egress-scan-a", action="deny"}'
+        values: "0 0 0 1 2 3 4 5 6 7 8 9 10 11 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12"
+      - series: 'factory_egress_scan_semgrep_failure_mode_total{job="egress-scan", pod="egress-scan-a", action="allow"}'
+        values: "0+5x29"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: EgressScanSemgrepDenying
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: EgressScanSemgrepDenying
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              action: "Read the failing outcome (timeout, error, shed, breaker_open, oversize) and check the engine-gate alerts and pod."
+              graph: 'sum by (outcome) (increase(factory_egress_scan_semgrep_requests_total{job="egress-scan",outcome=~"timeout|error|shed|breaker_open|oversize"}[10m]))'
+              threshold: "3"
+              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/gate/README.md#alerts"
+              summary: "The scanner denied 8.889 request(s) in 10 min because the engine gave no verdict (threshold 3)"
+              description: 'The Semgrep tier is in enforce mode with failure mode deny, so an engine outage denies Hindsight requests through the egress gateway (503, "secondary scan unavailable"). To stop the denials at once, set semgrep.mode observe and the gateway requestTimeout 80ms in one PR.'
+      - eval_time: 28m
+        alertname: EgressScanSemgrepDenying
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'factory_egress_scan_semgrep_failure_mode_total{job="egress-scan", pod="egress-scan-a", action="deny"}'
+        values: "0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: EgressScanSemgrepDenying
+        exp_alerts: []

@@ -421,6 +421,30 @@ groups:
           runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/ARCHITECTURE.md#worker-pool-autoscaling"
           summary: "The connector's worker wait ended as {{ $labels.outcome }} {{ $value | humanize }} time(s) in the last 15 min"
 
+  - name: egress-scan
+    rules:
+      # In enforce mode with failureMode deny, a call with no verdict from the
+      # engine (timeout, error, shed, breaker open, oversize) denies the request
+      # with 503. The failure-mode counter counts each one. A few in 10 min is a
+      # blip. A run of them means Hindsight requests are being denied: read the
+      # outcome in factory_egress_scan_semgrep_requests_total.
+      - alert: EgressScanSemgrepDenying
+        expr: sum(increase(factory_egress_scan_semgrep_failure_mode_total{job="egress-scan", action="deny"}[10m])) >= 3
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          action: "Read the failing outcome (timeout, error, shed, breaker_open, oversize) and check the engine-gate alerts and pod."
+          graph: 'sum by (outcome) (increase(factory_egress_scan_semgrep_requests_total{job="egress-scan",outcome=~"timeout|error|shed|breaker_open|oversize"}[10m]))'
+          threshold: "3"
+          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/gate/README.md#alerts"
+          summary: "The scanner denied {{ $value | humanize }} request(s) in 10 min because the engine gave no verdict (threshold 3)"
+          description: >-
+            The Semgrep tier is in enforce mode with failure mode deny, so an
+            engine outage denies Hindsight requests through the egress gateway
+            (503, "secondary scan unavailable"). To stop the denials at once,
+            set semgrep.mode observe and the gateway requestTimeout 80ms in one PR.
+
   - name: engine-gate
     rules:
       # engine-gate (projects/platform-factory/substrate/egress-scan/gate) holds
