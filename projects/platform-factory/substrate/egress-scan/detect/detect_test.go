@@ -241,3 +241,20 @@ func TestAbandonedCallsAreBounded(t *testing.T) {
 	}
 	t.Error("the slots were not released after the calls returned")
 }
+
+// A report finding before an error is not a verdict: the call has no verdict.
+func TestReportFindingBeforeAnErrorIsAFailure(t *testing.T) {
+	h := NewHost(&fake{name: "fake", detect: func(context.Context, Input) ([]Finding, error) {
+		return []Finding{{RuleID: "r", Class: ClassReport}}, ErrBudget
+	}}, cfg(ModeEnforce, FailDeny))
+	v := h.Scan(context.Background(), in("x"))
+	if v.Outcome != OutcomeFailed || v.Failure != FailureBudget || !v.Deny || len(v.Findings) != 1 {
+		t.Errorf("got %s", v)
+	}
+	h = NewHost(&fake{name: "fake", detect: func(context.Context, Input) ([]Finding, error) {
+		return []Finding{{RuleID: "r"}}, ErrBudget
+	}}, cfg(ModeEnforce, FailDeny))
+	if v := h.Scan(context.Background(), in("x")); v.Outcome != OutcomeBlocked || !v.Deny {
+		t.Errorf("a block finding before an error is a verdict: %s", v)
+	}
+}

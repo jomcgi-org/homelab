@@ -137,3 +137,34 @@ func TestASecretAcrossAnInternalChunkBoundaryIsFound(t *testing.T) {
 		}
 	}
 }
+
+// The two Authorization rules report for now: a finding is counted and does not
+// deny. A block finding next to them still denies.
+func TestAuthorizationRulesReportAndOthersBlock(t *testing.T) {
+	d := build(t)
+	h := detect.NewHost(d, detect.Config{Name: Name, Mode: detect.ModeEnforce, FailureMode: detect.FailDeny,
+		Limits: detect.Limits{MaxInputBytes: 512 << 10, Deadline: 5 * time.Second}})
+	byName := map[string]detecttest.Sample{}
+	for _, s := range detecttest.Corpus(20261124) {
+		byName[s.Name] = s
+	}
+	for _, name := range []string{"bearer-40", "basic-auth"} {
+		v := h.Scan(context.Background(), detect.Input{Bytes: []byte(byName[name].Text)})
+		if v.Deny || len(v.Findings) == 0 || v.Findings[0].Class != detect.ClassReport {
+			t.Errorf("%s: want a report finding and no deny, got %s", name, v)
+		}
+	}
+	for _, name := range []string{"database-url", "plain-github", "jwt"} {
+		if v := h.Scan(context.Background(), detect.Input{Bytes: []byte(byName[name].Text)}); !v.Deny {
+			t.Errorf("%s: want a deny, got %s", name, v)
+		}
+	}
+	both := byName["bearer-40"].Text + "\n" + byName["plain-github"].Text
+	if v := h.Scan(context.Background(), detect.Input{Bytes: []byte(both)}); !v.Deny {
+		t.Errorf("a block finding next to a report finding must deny: %s", v)
+	}
+	both = byName["plain-github"].Text + "\n" + byName["bearer-40"].Text
+	if v := h.Scan(context.Background(), detect.Input{Bytes: []byte(both)}); !v.Deny {
+		t.Errorf("a block finding after a report finding must deny: %s", v)
+	}
+}

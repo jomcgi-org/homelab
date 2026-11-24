@@ -267,11 +267,15 @@ index) is the planned second plug-in, in a private build, through `PrivateData`.
 - More rules (483 against 203) can raise false positives on real agent text. The
   corpus and the synthetic replay measure it before the flip, and the revert is
   one value.
-- The extra Authorization rules deny a bearer or basic credential that the actor
-  sends in a header or a body. The gateway injects the real credential after the
-  scanner, so an actor holds none (the placeholder `Bearer -` stays allowed). The
-  flip PR checks the live counters and Hindsight health, and the revert is one
-  value.
+- The extra Authorization rules (bearer, basic) have class `report` at first: the
+  scanner counts a finding and does not deny. The gateway injects the real
+  credential after the scanner, so an actor should hold none, but this repository
+  does not show what placeholder an actor sends on the Hindsight route. If that
+  placeholder looked like a bearer token, a `block` rule would deny every
+  Hindsight call. The counters (`factory_egress_scan_detector_findings_total`,
+  rule `egress-authorization-*`) show it on real traffic. The `egress:report` tag
+  comes off the two rules in a follow-up when real requests have been seen. The
+  database URL rule blocks from the start.
 - The library scans a stream in chunks of about 100,000 bytes, and a secret that
   crosses a cut is missed. The adapter hands over the whole input as one fragment
   (a test puts a token at six cut offsets). Any detector that reads a stream has

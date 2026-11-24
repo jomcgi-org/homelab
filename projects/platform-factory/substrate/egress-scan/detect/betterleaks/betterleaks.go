@@ -64,6 +64,18 @@ func New() (detect.Detector, error) {
 // (the tokenizer, the keyword matcher) are ready before the first request.
 const warmUp = "token secret password key auth bearer credential authorization postgres://u:p@h/d curl -H"
 
+// reportTag on a rule makes its findings class report: counted, never denied.
+const reportTag = "egress:report"
+
+func classOf(tags []string) detect.Class {
+	for _, t := range tags {
+		if t == reportTag {
+			return detect.ClassReport
+		}
+	}
+	return detect.ClassBlock
+}
+
 type adapter struct{ s *blscan.Scanner }
 
 // whole yields the input as one fragment. sources.Reader cuts a stream into
@@ -86,18 +98,25 @@ var errFound = errors.New("finding")
 func (a *adapter) Detect(ctx context.Context, in detect.Input) ([]detect.Finding, error) {
 	var found []detect.Finding
 	_, err := a.s.Scan(ctx, whole{text: string(in.Bytes)}, func(f report.Finding) error {
-		// Only the rule ID leaves this function: not the match, not the line.
-		found = append(found, detect.Finding{RuleID: f.RuleID, Class: detect.ClassBlock, Start: detect.NoOffset, End: detect.NoOffset})
-		return errFound
+		// Only the rule ID and the class leave this function: not the match, not
+		// the line.
+		class := classOf(f.Tags)
+		found = append(found, detect.Finding{RuleID: f.RuleID, Class: class, Start: detect.NoOffset, End: detect.NoOffset})
+		if class == detect.ClassBlock {
+			return errFound // the host denies on this one: stop
+		}
+		return nil // a report finding: keep looking for a block finding
 	})
-	if len(found) > 0 {
-		return found, nil
+	for _, f := range found {
+		if f.Class == detect.ClassBlock {
+			return found, nil // a block finding is a verdict, whatever else happened
+		}
 	}
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
+			return found, ctxErr
 		}
-		return nil, errors.New("betterleaks scan failed")
+		return found, errors.New("betterleaks scan failed")
 	}
-	return nil, nil
+	return found, nil
 }
