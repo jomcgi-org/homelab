@@ -1236,8 +1236,9 @@ func TestAdmissionOrderDueDateJumpsQueueAndKeepsRunningWork(t *testing.T) {
 	if got := v.admitted(1, 2, 3, 4); got != 3 {
 		t.Fatalf("first admitted = run %d, want run 3 (due today)", got)
 	}
-	// A newly urgent run never takes a slot from work already running, and
-	// itsaplan hands it out only once a slot frees.
+	// A newly urgent run never takes a slot from work already running. It is
+	// not even claimed: released runs that wait for a slot count toward the
+	// agent's concurrency, so itsaplan hands out nothing until they drain.
 	v.queuedRun(5, 105, "HL-5", "urgent", day(-1))
 	v.its.moveTo(900, 3, "")
 	for range 5 {
@@ -1246,17 +1247,21 @@ func TestAdmissionOrderDueDateJumpsQueueAndKeepsRunningWork(t *testing.T) {
 	if v.run(3).State != store.RunDispatched || v.kg.Executions() != 1 {
 		t.Fatal("a queued run displaced the running session")
 	}
-	// Run 5 is claimed at this free slot with no rank yet, so run 2 (due in
-	// 2 days) takes it. Run 5 then ranks first as overdue.
-	if got := v.admitted(1, 2, 4, 5); got != 2 {
-		t.Fatalf("second admitted = run %d, want run 2 (due in 2 days)", got)
+	if _, err := v.st.GetRun(v.ctx, 5); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("run 5 was claimed while released runs waited for the slot: %v", err)
 	}
-	if got := v.admitted(1, 4, 5); got != 5 {
-		t.Fatalf("third admitted = run %d, want run 5 (overdue)", got)
+	if got := v.admitted(1, 2, 4); got != 2 {
+		t.Fatalf("second admitted = run %d, want run 2 (due in 2 days)", got)
 	}
 	// A date past the window does not jump: urgent goes before high.
 	if got := v.admitted(1, 4); got != 1 {
-		t.Fatalf("fourth admitted = run %d, want run 1 (urgent; run 4's date is far)", got)
+		t.Fatalf("third admitted = run %d, want run 1 (urgent; run 4's date is far)", got)
+	}
+	if got := v.admitted(4); got != 4 {
+		t.Fatalf("fourth admitted = run %d, want run 4", got)
+	}
+	if got := v.admitted(5); got != 5 {
+		t.Fatalf("fifth admitted = run %d, want run 5 once the queue drained", got)
 	}
 }
 
