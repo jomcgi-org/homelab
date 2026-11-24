@@ -1009,7 +1009,7 @@ effect (see "Gate pool run").
 | X2 | No writable `MAP_SHARED` between children; KSM off | passed in cluster, reboot not tested: no writable sharing; KSM off on all three nodes (node-1 since #8639, 2026-11-24) |
 | X3 | No inherited descriptors to the seed or siblings | passed in cluster, with the known gaps (`/dev/null`, read-only rootfs) |
 | X4 | Differs per child: `getrandom`, `urandom`, uuid, `boot_id`. Same in every child: ASLR, stack canary, `AT_RANDOM` | passed in cluster on the gate pool (3 forks); the `AT_RANDOM` bytes were not compared |
-| X5 | A 512 KiB body through router and atunnel; egress NONE incl. DNS | partial: egress NONE from the host side; in a guest, no DNS, and a TCP connect to 1.1.1.1 completes but no data returns (see "Gate pool run"); the 512 KiB body not run |
+| X5 | A 512 KiB body through router and atunnel; egress NONE incl. DNS | partial: egress NONE from the host side; in a guest, no DNS, and a TCP connect to 1.1.1.1 completes in the worker pod and nothing leaves (see "Where the connect ends"); the 512 KiB body not run |
 | X6 | `pids.max`, memory charging, kill paths, no leak after 1000 forks | passed on the gate pool except the pids cap on its own: memory kill, log cap kill, lifetime kill, no leak after 1000 forks; 279 of 1000 forks failed their probe (guest artifact) |
 | X7 | A canary in the seed is readable by children (why the seed holds no secret) | passed in cluster on the gate pool: a child reads its own template env (known); no host env name or path is visible |
 | X8 | The microVM golden is read-only and hash-checked | waived by Joe (2026-11-23) for gVisor-only use |
@@ -1073,7 +1073,7 @@ and its policies. The code is in git history (PRs #8641, #8642, #8643).
 | --- | --- | --- | --- |
 | X4 | `ident` x3: read `boot_id`, `uuid`, `/dev/urandom`, `/proc/self/maps`, `auxv` in 3 forks of one seed | Pass | `boot_id`, `uuid` and 16 bytes of `/dev/urandom` differ in every fork. Two mapped ranges and the `auxv` addresses are the same in all three (as designed: the layout is the seed's). `getrandom` and the `AT_RANDOM` bytes were not read. `ident-2` printed all its lines, then its RPC returned `exited` |
 | X7 | `canary`: the template env holds a fake canary; the guest reads its own env and `/proc/$$/environ`, greps all `/proc/*/environ` for host markers, and lists four host paths | Pass | The child reads the canary in its own env (known: why the seed holds no secret). No host marker is visible (`KUBERNETES`, `POD_UID`, `WORKER_POOL`, `NODE_NAME`, `OTEL_`, `SSL_CERT`: 0 hits). `/var/lib/ate`, `/var/run/secrets`, `/run/podidentity.podcert.ate.dev` and `/sys/fs/cgroup/forkd` do not exist in the guest. The canary was in the template, not in the worker's env |
-| X5 (guest) | `net`: addresses, routes, resolver, `nslookup`, `wget`, `nc` | Partial | The guest has `lo`, `eth0` `169.254.17.2/30` and a default route via `169.254.17.1`. It has no `/etc/resolv.conf`. `nslookup` times out. `wget http://example.com/` fails on the name. `wget http://1.1.1.1/` ends with `error getting response`. `nc 1.1.1.1 443 -e true` exits 0: a TCP connect completes in the guest, and no data comes back. See "Where the connect ends" |
+| X5 (guest) | `net`: addresses, routes, resolver, `nslookup`, `wget`, `nc` | Partial | The guest has `lo`, `eth0` `169.254.17.2/30` and a default route via `169.254.17.1`. It has no `/etc/resolv.conf`. `nslookup` times out. `wget http://example.com/` fails on the name. `wget http://1.1.1.1/` ends with `error getting response`. `nc 1.1.1.1 443 -e true` exits 0: a TCP connect completes in the guest, and no data comes back. The connect ends in the worker pod: 0 packets on node-1, 0 flows from the worker (see "Where the connect ends") |
 | X6 memory | `mem`: a fork allocates 200 MB under a 64 MiB limit | Pass | The kernel killed the fork's `gvisor_sentry` at 08:12:44Z (`oom-kill` in the pod's cgroup). The worker did not restart (0 restarts); the RPC returned `exited before its wakeup probe passed: oom` |
 | X6 log | `log`: a fork writes 3 MB of stdout, the limit is 1 MiB | Pass | The fork went `RUNNING>CRASHED`; `log survived` never printed |
 | X6 pids | `pids`: a fork starts 400 `sleep` in the background, the limit is 64 | Pass, not by the pids cap | The fork died before `pids spawned` (`RUNNING>CRASHED`). The kernel logged an OOM kill of its sentry at 08:13:19Z. `pids.events` of the pod is `max 0`. The 64-process cap was not seen as the stop |
@@ -1106,6 +1106,39 @@ So the failures are not a sizing number for the gate pool. No isolation or
 capacity defect shows. The decision (Joe, 2026-11-24): no more gate runs; learn
 from production traffic. Production requests were sized from measured use in a
 separate PR (#8646).
+
+Run 3 (Job `-3`, 09:03Z to 09:15Z, no storm, `summary result=ok`) repeated the
+modes with the same outcomes: `mem-1` and `pids-1` were killed, `hold-1` ran 253
+s, `lifetime-1` ended at 308.6 s. `ident-2`, `ident-3` and `log-1` returned
+`exited before its wakeup probe passed`, the same probe-late effect as the storm
+(`log-1` also hits its log cap).
+
+##### Where the connect ends
+
+The connect in `net-1` ends in the worker pod, not outside it. Both templates
+(the gate's and the engine's) set `FORK_EGRESS_NONE`, and both pools run the same
+worker image (`ateworker-gvisor` fork `8cf248b96e08`).
+
+- Source (the deployed commit): the worker gives a forked actor `eth0`
+  `169.254.17.2/30` and redirects its TCP to the worker's own egress listener in
+  a gateway namespace (`internal/ateworker/actornet`). `ActivateEgress` with no
+  egress is a no-op, so the listener has no dialer. It accepts the connection and
+  closes it at once (`internal/atunnel/egress/egress.go`, `handle`: "the actor
+  sees this as a connection that closes right away"). It never dials out.
+- Evidence of a second run (Job `-3`, 09:04:40Z to 09:04:53Z, same guest result:
+  `nc 1.1.1.1 443 -e true` exits 0, `wget http://1.1.1.1/` gives
+  `error getting response`): `tcpdump -i any host 1.1.1.1` on node-1 saw 0
+  packets, and a second `tcpdump` for any TCP SYN to a non-private address saw 0.
+  A `curl` from node-1 itself at 09:05:39Z showed in the first capture, so the
+  capture works. `hubble observe --ip <worker pod IP>` showed only the kubelet's
+  probes of the worker, and no flow from the worker to anything else.
+- A second layer: the namespace's `substrate-workers` policy lets a worker send to
+  `atenet-egress` on 8443 only. Cilium drops any other egress from the worker pod.
+- Production: the engine's template has `FORK_EGRESS_NONE` and the same worker
+  code, so its children have the same path: a connect completes in the worker
+  and ends there, and the request bodies a child holds cannot leave by this
+  path. The engine template itself was not run on the gate pool: that would
+  need a second template in the engine's atespace, which engine-gate owns.
 
 To repeat X1 to X3, run `python3 -I gvisor-fork/xgates/collect.py <outdir> ...` as
 root on the worker's node (x86_64). Pass each child (`pgrep -P <seed sandbox pid>`),
