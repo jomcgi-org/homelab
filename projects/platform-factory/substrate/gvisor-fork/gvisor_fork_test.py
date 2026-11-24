@@ -478,9 +478,30 @@ def test_kvm_pool_namespace_allows_only_the_router_and_the_gateway() -> None:
     assert namespace["metadata"]["labels"] == {
         "factory.jomcgi.dev/substrate-workers": "true"
     }
-    account = _one(docs, "ServiceAccount", "fork-worker")
+    (account,) = [
+        d
+        for d in docs
+        if d["kind"] == "ServiceAccount"
+        and d["metadata"]["name"] == "fork-worker"
+        and d["metadata"]["namespace"] == _NS
+    ]
     assert account["automountServiceAccountToken"] is False
-    policy = _one(docs, "CiliumNetworkPolicy", "substrate-workers")["spec"]
+    (policy,) = [
+        d["spec"]
+        for d in docs
+        if d["kind"] == "CiliumNetworkPolicy"
+        and d["metadata"]["name"] == "substrate-workers"
+        and d["metadata"]["namespace"] == _NS
+    ]
+    # The gate pool's namespace has the same allowlist.
+    (gates_policy,) = [
+        d["spec"]
+        for d in docs
+        if d["kind"] == "CiliumNetworkPolicy"
+        and d["metadata"]["name"] == "substrate-workers"
+        and d["metadata"]["namespace"] == "substrate-gvisor-fork-gates"
+    ]
+    assert gates_policy == policy
     assert policy["endpointSelector"]["matchExpressions"] == [
         {"key": "ate.dev/worker-pool", "operator": "Exists"}
     ]
@@ -833,6 +854,205 @@ def test_each_conformance_variant_breaks_exactly_its_own_rule() -> None:
         assert got == [expected[name]], name
         # The reason the Job requires in the API's refusal names that rule.
         assert re.search(module.VARIANT_REASON[name], expected[name]), name
+
+
+# The staged isolation-gate pool, template, guest and Job (gates/, to be removed).
+
+_GATES = _HERE / "gates"
+_GATES_NS = "substrate-gvisor-fork-gates"
+
+
+def _gates_template(guest: str | None = None) -> dict:
+    module = _gates_module()
+    text = (_GATES / "template.yaml").read_text()
+    return yaml.safe_load(
+        module.render_template(text, guest or (_GATES / "guest.sh").read_text())
+    )
+
+
+def _gates_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "gates_under_test", _GATES / "gates.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_gate_template_satisfies_every_api_fork_rule() -> None:
+    assert _fork_template_errors(_gates_template()) == []
+
+
+def test_gate_template_is_separate_from_the_production_pool() -> None:
+    template = _gates_template()
+    pool = _one(_docs(), "WorkerPool", "gvisor-fork-gates")
+    prod = _pool()
+    # The template selects only the gate pool, and no other template's selector
+    # matches the gate pool's label.
+    assert template["workerSelector"]["matchLabels"] == pool["metadata"]["labels"]
+    assert pool["metadata"]["labels"] != prod["metadata"]["labels"]
+    assert (
+        yaml.safe_load(_TEMPLATE.read_text())["workerSelector"]
+        != template["workerSelector"]
+    )
+    assert template["metadata"]["atespace"] == "gvisor-fork-gates"
+    assert pool["metadata"]["namespace"] == _GATES_NS
+    # The same fork worker image as production, and tiny, with one worker.
+    assert pool["spec"]["workerImage"] == prod["spec"]["workerImage"]
+    assert pool["spec"]["replicas"] == 1
+    resources = pool["spec"]["template"]["resources"]
+    assert resources["requests"] == {"cpu": "100m", "memory": "256Mi"}
+    assert resources["limits"] == {"cpu": "2", "memory": "768Mi"}
+    (klass,) = pool["spec"]["sandboxClasses"]
+    assert klass["platform"] == "kvm" and klass["configRef"] == {"name": "gvisor-fork"}
+
+
+def test_gate_template_names_no_secret_and_no_engine_gate_atespace() -> None:
+    template = _gates_template()
+    text = yaml.safe_dump(template)
+    assert "egress-scan" not in text
+    (container,) = template["containers"]
+    assert [e["name"] for e in container["env"]] == ["GATE_CANARY"]
+    assert "@sha256:" in container["image"]
+    # It limits the fork to what the tests need: egress NONE, single use.
+    assert template["forkConfig"]["egress"] == "FORK_EGRESS_NONE"
+    assert template["forkConfig"]["singleUse"] is True
+
+
+def test_guest_script_fits_one_argument_and_parses() -> None:
+    guest = (_GATES / "guest.sh").read_text()
+    # An argv string is limited to 4096 characters (the API).
+    assert len(guest) <= 4096
+    assert (
+        subprocess.run(["sh", "-n", str(_GATES / "guest.sh")], check=False).returncode
+        == 0
+    )
+    # The seed asks for the checkpoint and blocks; the answer is read once.
+    assert "/proc/gvisor/checkpoint" in guest and "echo 1 >&3" in guest
+    assert "/proc/gvisor/spec_environ" in guest
+    # The probe the template names.
+    assert "HTTP/1.1 200 OK" in guest and "-p 8080" in guest
+    # Every mode gates.py runs has a branch in the guest.
+    for mode in _gates_module().MODES:
+        assert f"\n{mode})" in guest, mode
+
+
+def test_gate_job_is_suspended_and_runs_as_ate_client() -> None:
+    job = _one(_docs(), "Job", "gvisor-fork-gates-1")
+    assert job["spec"]["suspend"] is True
+    assert job["spec"]["backoffLimit"] == 0
+    assert job["spec"]["activeDeadlineSeconds"] <= 3600
+    pod = job["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "ate-client"
+    (container,) = pod["containers"]
+    assert container["command"] == ["python3", "-I", "/config/gates.py"]
+    assert container["resources"]["requests"]["memory"] == "64Mi"
+    env = {e["name"]: e["value"] for e in container["env"]}
+    assert env["STORM"] == "1000"
+    # The same kubectl-ate and token as the conformance Job.
+    conformance = _conformance_job()["spec"]["template"]["spec"]["volumes"]
+    gates = pod["volumes"]
+    for name in ("cli", "ate-token"):
+        assert [v for v in gates if v["name"] == name] == [
+            v for v in conformance if v["name"] == name
+        ]
+
+
+def test_gate_job_reaches_only_the_ate_api_and_the_kube_api() -> None:
+    docs = _docs()
+    policy = _one(docs, "CiliumNetworkPolicy", "gvisor-fork-gates")["spec"]
+    assert policy["endpointSelector"]["matchLabels"] == {"app": "gvisor-fork-gates"}
+    assert len(policy["egress"]) == 2
+    api = _one(docs, "CiliumNetworkPolicy", "ate-api-server-gvisor-fork-gates")["spec"]
+    (ingress,) = api["ingress"]
+    assert ingress["fromEndpoints"] == [{"matchLabels": {"app": "gvisor-fork-gates"}}]
+
+
+_FAKE_GATES = """\
+import fcntl, json, os, sys
+S = os.environ["FAKE_STATE"]
+_lock = open(S + ".lock", "w")
+fcntl.flock(_lock, fcntl.LOCK_EX)
+st = json.load(open(S)) if os.path.exists(S) else {"calls": [], "actors": {}, "polls": {}, "tmpl": 0}
+a = sys.argv[1:]
+while a and a[0] in ("--endpoint", "--token-file", "--preview"):
+    a = a[1:] if a[0] == "--preview" else a[2:]
+st["calls"].append(" ".join(a))
+def save(): json.dump(st, open(S, "w"))
+def out(o): save(); print(json.dumps(o)); sys.exit(0)
+def flag(n): return a[a.index(n) + 1] if n in a else None
+v = a[:2]
+if v == ["get", "workers"]:
+    out({"workers": [{"workerPool": "gvisor-fork-gates", "status": {"state": "WORKER_STATE_ACTIVE", "seeds": [{"seedActor": {"atespace": "gvisor-fork-gates"}, "templateUid": "u1"}]}}]})
+if v == ["create", "atespace"]: out({})
+if v == ["create", "actor-template"]:
+    text = open(a[3]).read()
+    if "__GUEST__" in text or "GATE" not in text: print("bad template", file=sys.stderr); save(); sys.exit(1)
+    st["tmpl"] = 1; out({})
+if v == ["get", "actor-template"] and len(a) > 2: out({"metadata": {"uid": "u1"}, "containers": []})
+if v == ["create", "actor"]: st["actors"][a[2]] = 1; out({})
+if v == ["resume", "actor"]:
+    if a[2].startswith("mem-"): print("rpc error: code = Aborted desc = actor crashed", file=sys.stderr); save(); sys.exit(1)
+    out({})
+if v == ["get", "actor"]:
+    n = a[2]; st["polls"][n] = st["polls"].get(n, 0) + 1
+    if n not in st["actors"] or st["polls"][n] > 2: save(); print("NotFound", file=sys.stderr); sys.exit(1)
+    out({"metadata": {"name": n}, "status": {"state": "ACTOR_STATE_RUNNING"}})
+if v == ["get", "actors"]: out({"actors": []})
+if v == ["delete", "actor"]: st["actors"].pop(a[2], None); out({})
+if v in (["delete", "actor-template"], ["delete", "atespace"]): out({})
+save(); print("fake: unknown " + " ".join(a), file=sys.stderr); sys.exit(2)
+"""
+
+
+def test_gates_script_runs_every_mode_and_the_storm_against_a_fake_cli(
+    tmp_path,
+) -> None:
+    fake = tmp_path / "kubectl-ate"
+    fake.write_text(f"#!{sys.executable}\n" + _FAKE_GATES)
+    fake.chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+    state = tmp_path / "state.json"
+    run = subprocess.run(
+        [sys.executable, "-I", str(_GATES / "gates.py")],
+        env={
+            "ATE_BIN": str(fake),
+            "FAKE_STATE": str(state),
+            "TEMPLATE_FILE": str(_GATES / "template.yaml"),
+            "GUEST_FILE": str(_GATES / "guest.sh"),
+            "WORK_DIR": str(work),
+            "POLL_SECONDS": "0.01",
+            "STORM": "5",
+            "CONCURRENCY": "2",
+            "MODE_WAIT_SECONDS": "5",
+            "LONG_WAIT_SECONDS": "5",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    for mode in ("ident", "canary", "net", "mem", "log", "pids", "hold", "lifetime"):
+        assert f"event=mode actor={mode}-1 " in run.stdout, mode
+    assert "event=mode actor=ident-3 " in run.stdout
+    assert "event=hold_ready actor=hold-1" in run.stdout
+    # A fork that dies at once (the memory kill) is recorded, not an error.
+    assert "actor=mem-1 resume_rc=1" in run.stdout
+    assert "event=storm_done forks=5 ok=5 failed=0" in run.stdout
+    assert "event=summary result=ok" in run.stdout
+    calls = json.loads(state.read_text())["calls"]
+    assert calls[-1] == "delete atespace gvisor-fork-gates"
+    # The template the CLI got is the rendered one: the guest, not the placeholder.
+    assert any(c.startswith("create actor-template -f ") for c in calls)
+
+
+def test_gates_script_refuses_a_template_without_the_guest_slot() -> None:
+    module = _gates_module()
+    with pytest.raises(module.Failed):
+        module.render_template("containers: []\n", "echo x")
 
 
 # conformance.py against a fake kubectl-ate that answers in the API's JSON shapes:

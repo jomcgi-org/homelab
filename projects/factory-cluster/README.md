@@ -1058,6 +1058,36 @@ a process. The X5, X6, X7 and X9 reads are by hand: the cgroup files under
 `/sys/fs/cgroup/.../forkd/`, `nsenter -t <child> -n ip -o link`, the process
 environment names, and `sha256sum` of the seed's `rootfs.erofs`.
 
+#### Gate pool (staged)
+
+The gates that need a process in the guest run on a separate, staged pool, so
+the production pool, its atespace and engine-gate are not touched. It is
+`gvisor-fork/gates/` (wired by one line in `gvisor-fork/kustomization.yaml`). Remove
+the line and the directory when the gates have run and this section holds their
+results.
+
+| Part | What |
+| --- | --- |
+| Pool `gvisor-fork-gates` | namespace `substrate-gvisor-fork-gates`, label `workload: gvisor-fork-gates`, one worker, the production worker image, requests 100m and 256Mi, limits 2 CPU and 768Mi |
+| Template `gate` | atespace `gvisor-fork-gates`; busybox 1.37.0 by digest; the guest `guest.sh` (the seed asks for the checkpoint, each fork learns its mode from its actor name and answers the probe); fork limits 64 MiB, 64 processes, 1 MiB of log, 300 s |
+| Job `gvisor-fork-gates-1` | created suspended; `gates.py` runs `ident` x3, `canary`, `net`, `mem`, `log`, `pids`, `hold`, `lifetime`, then 1000 `noop` forks, 4 at a time |
+
+The production template selects `workload: gvisor-fork` and the gate template
+`workload: gvisor-fork-gates`, so neither lands on the other pool. The pool pod's
+request is 256Mi, a scheduling reservation. Request room on 2026-11-24, before it:
+node-1 3845Mi, node-2 1981Mi, node-3 2713Mi. The request fits every node. The
+pool prefers node-1, where the node-side checks run.
+
+To run: after the pool has a worker, a reviewed change sets `suspend: false` on the
+Job. The Job's log (`grep '^GATES '`) and the gate worker's log (`GATE <actor>`
+lines) hold the guest side. On the worker's node, while the Job runs: dump a
+`hold` fork's seccomp filters with `PTRACE_SECCOMP_GET_FILTER` and compare them
+with the off-cluster filters (`bpfdiff.py` of the design note), and count the
+forkd cgroups, network namespaces and `fdh` veths after the 1000 forks. Not
+covered, because each needs credentials this pool cannot get: a 512 KiB body
+through the router (X5) needs a router client identity, and forged requests to
+atelet and the worker (X9) need their certificates.
+
 Known gaps against a normal sandbox stay open.
 
 - Each child runs with only the small seccomp filter for 20 to 50 ms after the

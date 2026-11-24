@@ -5,6 +5,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # through the glob below.
 # gazelle:exclude assets
 # gazelle:exclude conformance
+# gazelle:exclude gates
 # gazelle:exclude latency
 # gazelle:exclude xgates
 
@@ -15,6 +16,7 @@ filegroup(
         "*.yaml",
         "assets/*",
         "conformance/*",
+        "gates/*",
     ]),
     visibility = ["//projects/platform-factory/substrate/resources:__pkg__"],
 )
@@ -26,6 +28,7 @@ py_test(
         "*.yaml",
         "assets/*",
         "conformance/*",
+        "gates/*",
         "latency/*",
     ]) + [
         "@multitool//tools/kustomize",
