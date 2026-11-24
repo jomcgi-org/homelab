@@ -961,12 +961,16 @@ flowchart LR
      `/dev/kvm`) and that `memory`, `pids` and `cpu` are delegated below
      `/sys/fs/cgroup/forkd`. The worker's pod name comes from
      `kubectl -n substrate-gvisor-fork get pod`.
-9. Deferred into the observe window (Joe, 2026-11-23): wire the scanner first,
-   and run X1 to X7 and X9 during its 7-day observe window. The procedure stays
-   as written: run X1 to X7 and X9 inside the pod from node-1. Add a worker
-   restart, a node drain and a forkd crash. Compare `fork_overhead` with the
-   measured use. The pool has one worker, so a restart or a drain is a scanner
-   outage while it runs (the tier fails closed).
+9. Run in the observe window (Joe, 2026-11-23: wire the scanner first). Day 1,
+   2026-11-24: the gates that can run without changing the cluster or touching
+   engine-gate's children ran, passively. Results are in "Gate results" below.
+   They read `/proc`, cgroups and sysfs of the live worker's processes and use
+   `kubectl` for reads and logs only (`gvisor-fork/xgates/collect.py`, as root on
+   the worker's node). Not run: the gates that need a process inside the guest,
+   a new template or actor, a restart, a node drain or a forkd crash. The pool
+   has one worker, so a restart or a drain is a scanner outage while it runs (the
+   tier fails closed). Compare `fork_overhead` with the measured use: the seed
+   peaked at 444 MiB of its 512 MiB cap.
 10. Joe allows factory use of fork templates. Joe approved it for the egress
     scanner's engine on 2026-11-23, with the X8 waiver, and decided that X1 to X7
     and X9 run in the observe window instead of before wiring. Creating a fork template needs the
@@ -982,20 +986,58 @@ flowchart LR
 X1 to X7 and X9 run in the cluster during the scanner's 7-day observe window
 (Joe, 2026-11-23), not before wiring. Joe waived X8, which covers the microVM
 fallback only, for gVisor-only use (2026-11-23). Off-cluster runs on
-node-1 (production mode, real forkd and runsc) covered X1, X3, X4 and X7. No
-gate has run in the cluster yet.
+node-1 (production mode, real forkd and runsc) covered X1, X3, X4 and X7. The
+first in-cluster run is below. Nothing failed.
 
 | Gate | Checks | State |
 | --- | --- | --- |
-| X1 | Child seccomp equals a normal sandbox's except 2 instructions (the control fd number); caps 0; `NoNewPrivs` | node-1 only |
-| X2 | No writable `MAP_SHARED` between children; KSM off | partial |
-| X3 | No inherited descriptors to the seed or siblings | node-1 only |
-| X4 | Differs per child: `getrandom`, `urandom`, uuid, `boot_id`. Same in every child: ASLR, stack canary, `AT_RANDOM` | node-1 only |
-| X5 | A 512 KiB body through router and atunnel; egress NONE incl. DNS | partial |
-| X6 | `pids.max`, memory charging, kill paths, no leak after 1000 forks | partial |
-| X7 | A canary in the seed is readable by children (why the seed holds no secret) | node-1 only |
+| X1 | Child seccomp equals a normal sandbox's except 2 instructions (the control fd number); caps 0; `NoNewPrivs` | passed in cluster (state and namespaces); the filter byte diff ran off-cluster only |
+| X2 | No writable `MAP_SHARED` between children; KSM off | passed in cluster; finding: KSM `run=1` on node-1 (inert) |
+| X3 | No inherited descriptors to the seed or siblings | passed in cluster |
+| X4 | Differs per child: `getrandom`, `urandom`, uuid, `boot_id`. Same in every child: ASLR, stack canary, `AT_RANDOM` | node-1 only; not runnable in cluster without a guest process |
+| X5 | A 512 KiB body through router and atunnel; egress NONE incl. DNS | partial: egress NONE checked from the host side |
+| X6 | `pids.max`, memory charging, kill paths, no leak after 1000 forks | partial: limits, charging, lifetime kill and a 94-fork leak check |
+| X7 | A canary in the seed is readable by children (why the seed holds no secret) | node-1 only; passive no-secret check in cluster |
 | X8 | The microVM golden is read-only and hash-checked | waived by Joe (2026-11-23) for gVisor-only use |
-| X9 | Cross-atespace and forged-seed requests refused by API, atelet and worker; altered image refused | worker only |
+| X9 | Cross-atespace and forged-seed requests refused by API, atelet and worker; altered image refused | partial: API refusal and image hash live; atelet and worker by unit tests |
+
+#### Gate results
+
+Run 2026-11-24 from 06:29Z to 06:33Z, on day 1 of the observe window. Target:
+worker pod `gvisor-fork-747b9686df-spvtx` on node-1 (image `779fb7dd…`, `runsc`
+sha256 `c05198aa…` as pinned, `forkd/1`), seed of atespace `egress-scan-engine`,
+three live children of engine-gate sampled over two snapshots, 94 forks served
+since the pod started. Each child holds the Pro engine; nothing was sent to or
+read from a child. The off-cluster comparison is `results7/data/iso-full` of the
+design note.
+
+| Gate | Method | Result | Evidence |
+| --- | --- | --- | --- |
+| X1 | Read `/proc/<pid>/status` of every thread of every child, the seed, forkd and the worker; `/proc/<pid>/ns` | Pass | Every thread of every child: `Seccomp: 2` with 2 filters, `CapPrm`, `CapEff`, `CapBnd` and `CapAmb` all 0, `NoNewPrivs: 1`. Each child has its own ipc, mnt, net, pid and uts namespaces and shares the seed's user namespace (known gap). The seed sandbox holds `CAP_SYS_ADMIN` only (`0x200000`), as in the off-cluster run. forkd and the worker are unfiltered (known gap). forkd also attests every child after the fork (`attestChild`): no `ERROR` line in 94 forks. Not run: the filter byte diff (`PTRACE_SECCOMP_GET_FILTER` stops a thread of a live child). |
+| X2 | `collect.py`: `/proc/<pid>/smaps` of the children and the seed, matched on (device, inode); `/sys/kernel/mm/ksm`, `/proc/<pid>/ksm_stat` | Pass, with a finding | The only mapping that two processes share is `rootfs.erofs`, `r--s` and 380 MB (clean seed pages, known gap). No writable shared mapping is shared: the `rw-s` mappings are per-process (`kvm-vcpu`, a `memfd`). KSM: node-1 has `run=1`, but `pages_shared` and `pages_sharing` are 0, no VMA of the seed or a child has the `mg` flag, and `ksm_rmap_items` is 0 for all of them, so nothing merges. Nodes 2 and 3 have `run=0`. |
+| X3 | `collect.py`: `kcmp(KCMP_FILE)` for every fd pair of different processes (43 pairs of one open file); namespace and fd lists | Pass | Child to child and child to seed share only `/dev/null` (read-only and read-write: known gap) and the read-only `rootfs.erofs` fd. Child to forkd shares two per-child result files that no sibling holds. No `kvm-vm`, `kvm-vcpu`, `memfd`, socket or pipe is shared: each child has its own `kvm-vm`. Each child has its own pid namespace. |
+| X4 | Not run in cluster | Not run | Needs a process inside the guest (`getrandom`, `urandom`, uuid, `boot_id`, `AT_RANDOM`). Reaching it means `runsc exec` into a production child or a new test template, which changes the cluster. The off-cluster result stands. |
+| X5 | `nsenter -n` into each child's network namespace (read-only) | Partial | Egress NONE holds structurally: the child's namespace has one link, `lo`, down, no address and no route, so a process that left the sentry has no path out. The pod's own namespace holds only `eth0`. Not run: a 512 KiB body (the tier's `maxBodyBytes` is 524288, but no metric records the largest body served, and sending one needs the latency-data Job and its router grant) and a DNS lookup from inside the guest. |
+| X6 | Read the cgroup files of the container, `forkd`, the seed and two children; the worker log; conformance `-6` | Partial | A child: `pids.max` 256 (the template's `pidsLimit`), `memory.max` 144 MiB (128 MiB plus 16 MiB overhead), `memory.swap.max` 0, `cpu.max` 1 CPU, and 3.8 to 4.0 MB in use. The seed: `memory.max` 512 MiB and 420 MB in use, so the shared pages are charged to the seed. `memory.events` `oom_kill` 0 and `pids.events` `max` 0 in the container, `forkd` and the seed cgroups. Lifetime kill: conformance `-6` C7 (forks reaped at their 120 s lifetime, 131.9 s). Leak: 94 `ForkWorkload`, 92 `TerminateWorkload`, 2 live children; 2 child cgroups, 2 child state directories, no other network namespace or veth. Not run: 1000 forks, the log-cap kill, the memory kill. |
+| X7 | Environment names of the host-visible processes (names only); the template | Not run (passive check passed) | The canary test needs a canary in a seed, which means a new template. Passive check: the seed, children, forkd and worker environments hold no `TOKEN`, `KEY`, `SECRET` or `PASSWORD` name, and the engine template names no env. |
+| X9 | Conformance `-6` C5; `sha256sum` of the seed's `rootfs.erofs` against the hash atelet passed; unit tests | Partial | API: a create of an actor in another atespace was refused (`PermissionDenied`, 2026-11-23 23:01Z). Integrity: `rootfs.erofs` is mode 0444, root-owned, and its sha256 `950e2bf9…` equals the `rootfs_sha256` in the worker's `SeedWorkload`. Not run live: a cross-atespace or forged seed request to atelet or the worker, and an altered image (they need those components' credentials). Unit tests cover them: worker `TestForkManagerForkRefusals`, `TestForkManagerSeedRefusals`, `TestForkManagerSeedsServeOneAtespace`, `TestRealForkdAtespaceChecks`; atelet `TestSeedRefusals`, `TestSeedRefusesAnImageThatChanged`. |
+
+Findings, none an isolation failure:
+
+- KSM is on at node-1 (`run=1`). It merges nothing today. Set it to 0 on node-1 so
+  that a later `MADV_MERGEABLE` or `PR_SET_MEMORY_MERGE` cannot start merging guest
+  pages. This is a node change for Joe to approve; nodes 2 and 3 are off.
+- The seed's memory peaked at 444 MiB of its 512 MiB cap (87%). A larger rule set
+  needs a larger cap.
+- Not run, and why: X4 and X7 (guest-side), the X5 body and DNS, the X6 1000-fork
+  and kill-path tests, and the X9 forged requests need a process in the guest, a
+  new template or credentials, so each is a cluster change. A worker restart, a
+  node drain and a forkd crash take the scanner down. They need a PR and Joe's
+  approval: a dedicated gate pool in its own atespace, or a maintenance window.
+
+To repeat the passive checks, as root on the worker's node, pass the children
+(`pgrep -P <seed sandbox pid>`), the template stub, forkd and the worker to
+`gvisor-fork/xgates/collect.py`. It never attaches to a process.
 
 Known gaps against a normal sandbox stay open.
 

@@ -6,6 +6,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # gazelle:exclude assets
 # gazelle:exclude conformance
 # gazelle:exclude latency
+# gazelle:exclude xgates
 
 # The files ../resources renders through its "../gvisor-fork" resource.
 filegroup(
