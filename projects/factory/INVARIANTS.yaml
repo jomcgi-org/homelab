@@ -99,6 +99,12 @@ invariants:
   - projects/factory/connector/dispatch/delivery.go
   test: //projects/factory/connector/dispatch:dispatch_test
   state: live
+- id: HOME-193-1
+  statement: A new human approver comment naming a blocking finding on a failed review triggers one review of that head.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
 - id: FACT-11
   statement: A pass and an approval count only for the head commit they name.
   mechanism:

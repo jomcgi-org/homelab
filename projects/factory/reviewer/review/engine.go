@@ -542,7 +542,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			continue
 		}
 		reviews[pr.Number] = run
-		revoked, unread := e.decisionsChanged(ctx, b, pr, run)
+		revoked, trigger, unread := e.decisionsChanged(ctx, b, pr, run)
 		foreign := run != nil && run.ExternalID != MessageID(repo, pr.Number, pr.HeadSHA)
 		recovered := e.recoverPR(ctx, b, pr, scan)
 		switch {
@@ -589,6 +589,15 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			}
 			reviews[pr.Number] = nil
 			start = append(start, candidate{pr, run})
+		case trigger > 0:
+			// invariant: HOME-193-1
+			// Persist the consumed comment with the new check, so scheduling
+			// retries remain possible until a slot and check actually exist.
+			next := *run
+			st, _ := LoadState(run.Text)
+			st.DecisionComment = trigger
+			next.Text = encodeState(st)
+			start = append(start, candidate{pr, &next})
 		case e.semgrepChanged(ctx, b, pr, run):
 			// Withdraw a stale pass even when all review slots are occupied.
 			if run.Conclusion == ConclusionSuccess {
@@ -1447,10 +1456,11 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 // recorded is the attempt an in-progress check run records, its task once
 // sent and when it was sent.
 type recorded struct {
-	Attempt int
-	ID      string
-	Sent    time.Time
-	Issues  string
+	DecisionComment int64 // Highest approver comment ID in the dispatched prompt.
+	Attempt         int
+	ID              string
+	Sent            time.Time
+	Issues          string
 	// QuotaRetry gives a resumed send a new identity without spending an
 	// attempt. QuotaSince persists the wait across service restarts.
 	QuotaRetry int
@@ -1460,7 +1470,7 @@ type recorded struct {
 
 // The task marker is written only by the service; markerStart is stripped
 // from every text the agent or the PR supplies, and the last marker counts.
-var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*)(?: issues=([a-f0-9]{64}))?(?: semgrep=([a-f0-9]{64}))? -->`)
+var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*)(?: issues=([a-f0-9]{64}))?(?: semgrep=([a-f0-9]{64}))?(?: decision_comment=([0-9]+))? -->`)
 
 var quotaMarker = regexp.MustCompile(`<!-- factory-review:quota retry=([0-9]+) since=([0-9]+) -->`)
 
@@ -1474,6 +1484,7 @@ func RecordedTask(summary string) recorded {
 	m := all[len(all)-1]
 	n, _ := strconv.Atoi(m[1])
 	rec := recorded{Attempt: max(n, 1), ID: m[2], Issues: m[4], Semgrep: m[5]}
+	rec.DecisionComment, _ = strconv.ParseInt(m[6], 10, 64)
 	if sec, err := strconv.ParseInt(m[3], 10, 64); err == nil && sec > 0 {
 		rec.Sent = time.Unix(sec, 0)
 	}
@@ -1515,6 +1526,9 @@ func progressSummary(b *Binding, gate *Gate, rec recorded, note string) string {
 		}
 		if rec.Semgrep != "" {
 			s += " semgrep=" + rec.Semgrep
+		}
+		if rec.DecisionComment > 0 {
+			s += fmt.Sprintf(" decision_comment=%d", rec.DecisionComment)
 		}
 		s += " -->"
 	}
@@ -1880,6 +1894,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			switch {
 			case err == nil:
 				rec = recorded{Attempt: attempt, ID: t.ID, Sent: lastSend, QuotaRetry: rec.QuotaRetry}
+				for _, c := range joeDecisions(b, pr, in.comments).Comments {
+					rec.DecisionComment = max(rec.DecisionComment, c.ID)
+				}
 				if b.ItsaplanProject != "" {
 					rec.Issues = issueDigest(in.issues)
 				}
@@ -1999,7 +2016,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				}
 				continue
 			}
-			res := e.outcome(parent, code, round, b, currentPR, t, in, l)
+			res := e.outcome(parent, code, round, b, currentPR, t, in, rec.DecisionComment, l)
 			// outcome records a parsed report on the code span; next records
 			// an unusable one.
 			codeRecorded = res.reason == ""
@@ -2385,20 +2402,35 @@ func mergeFindings(list, more []Finding) []Finding {
 // decisionsChanged re-checks the decisions of Joe's that a completed run's
 // review relied on (State.Decisions). unread is a failed read: the pass
 // cannot be confirmed on this poll.
-func (e *Engine) decisionsChanged(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (changed, unread bool) {
+func (e *Engine) decisionsChanged(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (changed bool, trigger int64, unread bool) {
 	if run == nil || run.Status != "completed" {
-		return false, false
+		return false, 0, false
 	}
 	st, ok := LoadState(run.Text)
-	if !ok || len(st.Decisions) == 0 {
-		return false, false
+	failed := run.Conclusion == ConclusionFailure && len(st.Blocking) > 0 && run.Title != "No review report"
+	if !ok || (!failed && len(st.Decisions) == 0) {
+		return false, 0, false
 	}
 	comments, _, err := e.trustedComments(ctx, b, pr)
 	if err != nil {
 		e.ghError(ctx, e.prLog(b, pr), b, "comments", err)
-		return false, true
+		return false, 0, len(st.Decisions) > 0
 	}
-	return !joeDecisions(b, pr, comments).Hold(st.Decisions), false
+	d := joeDecisions(b, pr, comments)
+	if failed {
+		for _, c := range d.Comments {
+			if c.ID <= st.DecisionComment {
+				continue
+			}
+			for _, f := range st.Blocking {
+				if namesID(c.Body, f.ID) {
+					trigger = max(trigger, c.ID)
+					break
+				}
+			}
+		}
+	}
+	return !d.Hold(st.Decisions), trigger, false
 }
 
 func machineComment(body string) bool {
@@ -3012,7 +3044,7 @@ type result struct {
 
 // outcome reads a quiescent task. Only a parsed report can pass, and a
 // gated head passes only once its human approved it.
-func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Binding, pr github.PullRequest, task *kagent.Task, in *inputs, l *slog.Logger) result {
+func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Binding, pr github.PullRequest, task *kagent.Task, in *inputs, decisionComment int64, l *slog.Logger) result {
 	footer := e.footer(b, pr, task.ID)
 	switch task.Status.State {
 	case kagent.StateCompleted, kagent.StateInputRequired:
@@ -3121,6 +3153,11 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		}
 		st := stateOf(a, r, gate)
 		st.OptionalIDs = optionalReviewIDs(in.prior.OptionalIDs, r, a)
+		// Comments shown in this review already had their opportunity.
+		if in.priorHead == pr.HeadSHA {
+			st.DecisionComment = in.prior.DecisionComment
+		}
+		st.DecisionComment = max(st.DecisionComment, decisionComment)
 		if in.semgrep != nil {
 			// The goal check can run another model task after the code review.
 			// Check scan freshness after both tasks, before saving the verdict.
