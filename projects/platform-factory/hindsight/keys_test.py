@@ -418,11 +418,19 @@ def test_preflight_stops_the_sync_on_a_bad_key_model_or_stored_rows(monkeypatch)
     with pytest.raises(SystemExit, match="decision model typesafe/jev-1.14 refused"):
         script.main()
 
-    # A second endpoint could keep data, and no preference can pin one variant.
+    # One provider's plain and /zdr variants pass: a preference cannot pin one
+    # variant, and Joe accepted that on 2026-11-24.
+    monkeypatch.setattr(script, "decision_answers", lambda *args: asked.append(args[3]))
     monkeypatch.setattr(
-        script, "decision_endpoints", lambda key, model: ["upstage", "upstage/zdr"]
+        script, "decision_endpoints", lambda key, model: ["typesafe", "typesafe/zdr"]
     )
-    with pytest.raises(SystemExit, match="not exactly one"):
+    script.main()
+
+    # A second provider could keep data, so a person checks it first.
+    monkeypatch.setattr(
+        script, "decision_endpoints", lambda key, model: ["typesafe/zdr", "upstage"]
+    )
+    with pytest.raises(SystemExit, match="not one provider"):
         script.main()
 
 

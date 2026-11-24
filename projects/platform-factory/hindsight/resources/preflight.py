@@ -9,10 +9,12 @@ alone, when:
 - the decision model (System One at DECISION_MODEL_BASE_URL) refuses or does
   not answer. Recall has no local fallback, so the pod would serve failures.
   Hindsight cannot send OpenRouter's data policy with decision calls, so the
-  model must have exactly one OpenRouter endpoint, and it must answer when the
-  request requires zero data retention. OpenRouter's preferences cannot pin
-  one variant of a provider (`only` and `ignore` match every variant), so a
-  second endpoint stops the sync for a person to check;
+  model must have one OpenRouter provider, and it must answer when the
+  request requires zero data retention. That provider may list a `/zdr`
+  variant beside its plain one. OpenRouter's preferences cannot pin one
+  variant (`only` and `ignore` match every variant), so the plain variant can
+  still serve a call: Joe accepted that risk on 2026-11-24 (HOME-130). A
+  second provider stops the sync for a person to check;
 - stored rows have another dimension than EMBEDDINGS_DIMENSIONS. Hindsight
   resizes an empty vector column at startup but refuses one with rows.
 
@@ -76,6 +78,11 @@ def decision_endpoints(key, model):
     except urllib.error.HTTPError as e:
         raise SystemExit(f"OpenRouter lists no endpoints for {model}: HTTP {e.code}")
     return [e["tag"] for e in endpoints]
+
+
+def one_provider(tags):
+    """True when every endpoint tag is one provider's plain or `/zdr` variant."""
+    return len({tag.removesuffix("/zdr") for tag in tags}) == 1
 
 
 def decision_answers(key, base_url, model, provider=None):
@@ -152,9 +159,9 @@ def main():
         raise SystemExit(f"{model} returns {returned} dimensions, not {dimension}")
     decision = os.environ["DECISION_MODEL"]
     endpoints = decision_endpoints(key, decision)
-    if len(endpoints) != 1:
+    if not one_provider(endpoints):
         raise SystemExit(
-            f"{decision} has OpenRouter endpoints {endpoints}, not exactly one: "
+            f"{decision} has OpenRouter endpoints {endpoints}, not one provider: "
             "check each one's data policy, then update the preflight"
         )
     base_url = os.environ["DECISION_MODEL_BASE_URL"]
