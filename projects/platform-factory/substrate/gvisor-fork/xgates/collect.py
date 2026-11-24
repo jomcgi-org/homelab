@@ -5,7 +5,7 @@ Run as root on the worker pod's node. It only reads: /proc, kcmp and sysfs. It
 does not attach to any process (no ptrace), signal or write, so it is safe against
 the children that engine-gate owns.
 
-    collect.py <outdir> label=pid [label=pid ...]
+    python3 -I collect.py <outdir> label=pid [label=pid ...]
 
 Each pid is the ROOT of a process tree (a child sentry, the template stub, forkd,
 the worker). List the children first: a pid belongs to the first label whose tree
@@ -19,7 +19,8 @@ processes with different labels:
     KCMP_FILE), classified rw / ro,
   - every MAP_SHARED mapping with the same (device, inode), except per-process
     anonymous inodes (kvm-vcpu).
-It prints a summary and writes <outdir>/iso4.json. The seccomp filter bytes are
+It prints a summary, including the count of kcmp errors, and writes <outdir>/iso4.json.
+x86_64 only (the kcmp syscall number). The seccomp filter bytes are
 not dumped here: that needs PTRACE_SECCOMP_GET_FILTER, which stops a thread. The
 byte comparison (X1) ran off-cluster on node-1 (design note, results7).
 """
@@ -163,7 +164,10 @@ def proc_info(pid):
 
 
 def kcmp_file(pa, pb, fa, fb):
-    return libc.syscall(312, pa, pb, 0, fa, fb)  # KCMP_FILE
+    # KCMP_FILE is 0. kcmp returns 0 for the same open file description and -1 on
+    # an error (a process or fd that went away, or no permission). The syscall
+    # number 312 is x86_64.
+    return libc.syscall(312, pa, pb, 0, fa, fb)
 
 
 outdir = sys.argv[1]
@@ -187,6 +191,7 @@ for lab, pids in groups.items():
     res["groups"][lab] = [proc_info(p) for p in pids]
     allp += [(lab, p) for p in res["groups"][lab]]
 shared_fds = []
+kcmp_errors = 0
 for i in range(len(allp)):
     for j in range(i + 1, len(allp)):
         la, pa = allp[i]
@@ -197,7 +202,10 @@ for i in range(len(allp)):
             for fb, db in pb["fds"].items():
                 if da["acc"] == "?" or db["acc"] == "?":
                     continue
-                if kcmp_file(pa["pid"], pb["pid"], int(fa), int(fb)) == 0:
+                r = kcmp_file(pa["pid"], pb["pid"], int(fa), int(fb))
+                if r < 0:
+                    kcmp_errors += 1
+                if r == 0:
                     shared_fds.append(
                         {
                             "a": "%s/%d fd%s" % (la, pa["pid"], fa),
@@ -210,6 +218,7 @@ for i in range(len(allp)):
                         }
                     )
 res["shared_open_file_descriptions"] = shared_fds
+res["kcmp_errors"] = kcmp_errors
 shared_maps = []
 for i in range(len(allp)):
     for j in range(i + 1, len(allp)):
@@ -274,6 +283,10 @@ for lab, procs_ in res["groups"].items():
             )
         )
         print("         thread seccomp:", p.get("threads"))
+print(
+    "kcmp errors (a pair that could not be compared; a child that exits mid-run adds some):",
+    kcmp_errors,
+)
 print(
     "SHARED open file descriptions between different labels:",
     len(shared_fds),
