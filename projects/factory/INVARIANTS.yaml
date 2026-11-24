@@ -255,7 +255,7 @@ invariants:
   - projects/factory/reviewer/review/report.go
   test: //projects/factory/reviewer/review:review_test
   state: live
-- id: FACT-19
+- id: HOME-171-1
   statement: Reviewer evaluation credits check recall only when an answer-matched agent finding blocks the replay.
   mechanism:
   - projects/factory/reviewer/eval/score.py
