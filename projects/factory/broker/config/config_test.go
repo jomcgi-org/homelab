@@ -72,6 +72,7 @@ func TestLoadRejects(t *testing.T) {
 		"review writes":      "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', agentPermissions: {contents: write}}\n",
 		"review approves":    "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', connectorPermissions: {pull_requests: write}}\n",
 		"review pushes":      "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', connectorPermissions: {contents: write, checks: write}}\n",
+		"comment reads":      "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', commentPermissions: {issues: write, pull_requests: write, contents: read}}\n",
 		"comment workflows":  "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', commentPermissions: {issues: write, workflows: write}}\n",
 		"comment pushes":     "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', commentPermissions: {contents: write}}\n",
 		"author comments":    "namespace: f\ngithub: {commentPermissions: {issues: write}}\n",

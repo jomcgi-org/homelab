@@ -343,6 +343,18 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	comments := strings.HasPrefix(path, "/issues/") && strings.Contains(path, "comments")
 	pullNumber, pullNumberErr := strconv.Atoi(strings.TrimPrefix(path, "/pulls/"))
 	switch auth := r.Header.Get("Authorization"); {
+	case auth == "Bearer ghs_comment" && r.Method == "POST" && path == "/graphql":
+		var query struct {
+			Query     string
+			Variables struct{ Number int }
+		}
+		_ = json.NewDecoder(r.Body).Decode(&query)
+		if !strings.HasPrefix(query.Query, "query(") || !strings.Contains(query.Query, "reviewThreads(") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"headRefOid": f.prs[query.Variables.Number].Head, "reviewThreads": map[string]any{"nodes": []any{}}}}}})
+		return
 	case auth == "Bearer ghs_comment" && (comments || (r.Method == http.MethodGet && strings.HasPrefix(path, "/pulls/") && pullNumberErr == nil)):
 	case auth == "Bearer ghs_reviewer" && comments && r.Method != http.MethodGet:
 		w.WriteHeader(http.StatusForbidden)

@@ -155,6 +155,12 @@ invariants:
   - projects/factory/reviewer/review/goal.go
   test: //projects/factory/reviewer/review:review_test
   state: live
+- id: HOME-72-1
+  statement: Inline reviewer findings use COMMENT reviews and reconcile only the reviewer's own finding threads.
+  mechanism:
+  - projects/factory/broker/github/comments.go
+  test: //projects/factory/broker/github:github_test
+  state: live
 - id: HOME-649-1
   statement: Grant failures during a recording relay request set error status and add a fixed grant.failure event. Without a recording span, existing refresh failure logs are emitted.
   mechanism:
