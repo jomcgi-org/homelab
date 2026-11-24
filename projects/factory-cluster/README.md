@@ -974,11 +974,11 @@ flowchart LR
      `kubectl -n substrate-gvisor-fork get pod`.
 9. Run in the observe window (Joe, 2026-11-23: wire the scanner first). Day 1,
    2026-11-24: the gates that can run without changing the cluster or touching
-   engine-gate's children ran, passively. Results are in "Gate results" below. The
-   guest-side gates ran on a separate pool: see "Gate pool run".
+   engine-gate's children ran, passively. Results are in "Gate results" below.
    They read `/proc`, cgroups and sysfs of the live worker's processes, read
    nodes 2 and 3 over ssh, and use `kubectl` for reads and logs only
-   (`gvisor-fork/xgates/collect.py`, as root on the worker's node). Not run there: the gates that need a process inside the guest,
+   (`gvisor-fork/xgates/collect.py`, as root on the worker's node). The guest-side gates ran on a separate pool:
+   see "Gate pool run". Not run in the passive run: the gates that need a process inside the guest,
    a new template or actor, a restart, a node drain or a forkd crash. The pool
    has one worker, so a restart or a drain is a scanner outage while it runs (the
    tier fails closed). Compare `fork_overhead` with the measured use: the seed
@@ -1001,7 +1001,7 @@ fallback only, for gVisor-only use (2026-11-23). Off-cluster runs on
 node-1 (production mode, real forkd and runsc) covered X1, X3, X4 and X7. The
 first in-cluster run and the gate pool run (2026-11-24) are below. No isolation
 gate failed. The gate pool's 1000-fork storm had 279 failed forks, a test guest
-artifact (see "Gate pool run").
+effect (see "Gate pool run").
 
 | Gate | Checks | State |
 | --- | --- | --- |
@@ -1009,7 +1009,7 @@ artifact (see "Gate pool run").
 | X2 | No writable `MAP_SHARED` between children; KSM off | passed in cluster, reboot not tested: no writable sharing; KSM off on all three nodes (node-1 since #8639, 2026-11-24) |
 | X3 | No inherited descriptors to the seed or siblings | passed in cluster, with the known gaps (`/dev/null`, read-only rootfs) |
 | X4 | Differs per child: `getrandom`, `urandom`, uuid, `boot_id`. Same in every child: ASLR, stack canary, `AT_RANDOM` | passed in cluster on the gate pool (3 forks); the `AT_RANDOM` bytes were not compared |
-| X5 | A 512 KiB body through router and atunnel; egress NONE incl. DNS | partial: egress NONE from the host side and from a guest (no DNS, no reply from 1.1.1.1); a TCP connect to 1.1.1.1 completes in the guest, cause open; the 512 KiB body not run |
+| X5 | A 512 KiB body through router and atunnel; egress NONE incl. DNS | partial: egress NONE from the host side; in a guest, no DNS, and a TCP connect to 1.1.1.1 completes but no data returns (see "Gate pool run"); the 512 KiB body not run |
 | X6 | `pids.max`, memory charging, kill paths, no leak after 1000 forks | passed on the gate pool except the pids cap on its own: memory kill, log cap kill, lifetime kill, no leak after 1000 forks; 279 of 1000 forks failed their probe (guest artifact) |
 | X7 | A canary in the seed is readable by children (why the seed holds no secret) | passed in cluster on the gate pool: a child reads its own template env (known); no host env name or path is visible |
 | X8 | The microVM golden is read-only and hash-checked | waived by Joe (2026-11-23) for gVisor-only use |
@@ -1071,9 +1071,9 @@ and its policies. The code is in git history (PRs #8641, #8642, #8643).
 
 | Gate | Method | Result | Evidence |
 | --- | --- | --- | --- |
-| X4 | `ident` x3: read `boot_id`, `uuid`, `/dev/urandom`, `/proc/self/maps`, `auxv` in 3 forks of one seed | Pass | `boot_id`, `uuid` and 16 random bytes differ in every fork. The stack, heap and vdso ranges and the `auxv` addresses are the same in all three (as designed: ASLR is the seed's). The `AT_RANDOM` bytes were not read. Fork `ident-2` returned `exited before its wakeup probe passed` but had printed all its lines |
-| X7 | `canary`: the template env holds a fake canary; the guest reads its own env, the names of every process env (`/proc/*/environ`), and four host paths | Pass | The child reads the canary in its own env (known: why the seed holds no secret). No host marker is visible (`KUBERNETES`, `POD_UID`, `WORKER_POOL`, `NODE_NAME`, `OTEL_`, `SSL_CERT`: 0 hits). `/var/lib/ate`, `/var/run/secrets`, `/run/podidentity.podcert.ate.dev` and `/sys/fs/cgroup/forkd` do not exist in the guest. The canary was in the template, not in the worker's env |
-| X5 (guest) | `net`: addresses, routes, resolver, `nslookup`, `wget`, `nc` | Partial | The guest has `lo` and `eth0` `169.254.17.2/30`, a default route via `169.254.17.1`, no `/etc/resolv.conf`. `nslookup` (local and 1.1.1.1) times out. `wget http://example.com/` fails on the name. `wget http://1.1.1.1/` ends with `error getting response` and `nc 1.1.1.1 443 -e true` exits 0, so a TCP connect completes inside the guest and no data comes back. Not shown: where that connect ends. The atenet-egress logs have no line for it. To check before any fork gets egress |
+| X4 | `ident` x3: read `boot_id`, `uuid`, `/dev/urandom`, `/proc/self/maps`, `auxv` in 3 forks of one seed | Pass | `boot_id`, `uuid` and 16 bytes of `/dev/urandom` differ in every fork. Two mapped ranges and the `auxv` addresses are the same in all three (as designed: the layout is the seed's). `getrandom` and the `AT_RANDOM` bytes were not read. `ident-2` printed all its lines, then its RPC returned `exited` |
+| X7 | `canary`: the template env holds a fake canary; the guest reads its own env and `/proc/$$/environ`, greps all `/proc/*/environ` for host markers, and lists four host paths | Pass | The child reads the canary in its own env (known: why the seed holds no secret). No host marker is visible (`KUBERNETES`, `POD_UID`, `WORKER_POOL`, `NODE_NAME`, `OTEL_`, `SSL_CERT`: 0 hits). `/var/lib/ate`, `/var/run/secrets`, `/run/podidentity.podcert.ate.dev` and `/sys/fs/cgroup/forkd` do not exist in the guest. The canary was in the template, not in the worker's env |
+| X5 (guest) | `net`: addresses, routes, resolver, `nslookup`, `wget`, `nc` | Partial | The guest has `lo`, `eth0` `169.254.17.2/30` and a default route via `169.254.17.1`. It has no `/etc/resolv.conf`. `nslookup` times out. `wget http://example.com/` fails on the name. `wget http://1.1.1.1/` ends with `error getting response`. `nc 1.1.1.1 443 -e true` exits 0: a TCP connect completes in the guest, and no data comes back. See "Where the connect ends" |
 | X6 memory | `mem`: a fork allocates 200 MB under a 64 MiB limit | Pass | The kernel killed the fork's `gvisor_sentry` at 08:12:44Z (`oom-kill` in the pod's cgroup). The worker did not restart (0 restarts); the RPC returned `exited before its wakeup probe passed: oom` |
 | X6 log | `log`: a fork writes 3 MB of stdout, the limit is 1 MiB | Pass | The fork went `RUNNING>CRASHED`; `log survived` never printed |
 | X6 pids | `pids`: a fork starts 400 `sleep` in the background, the limit is 64 | Pass, not by the pids cap | The fork died before `pids spawned` (`RUNNING>CRASHED`). The kernel logged an OOM kill of its sentry at 08:13:19Z. `pids.events` of the pod is `max 0`. The 64-process cap was not seen as the stop |
@@ -1085,14 +1085,14 @@ and its policies. The code is in git history (PRs #8641, #8642, #8643).
 
 The storm: 1000 forks of mode `noop`, 4 at a time, 234 s. 721 forks passed the
 wakeup probe and 279 returned `the forked sandbox ended before its wakeup probe
-passed: exited`. The cause is the test guest, not a limit:
+passed: exited`. The guest explains the window, and no limit was hit:
 
 - Every failure took 1.06 to 1.29 s (median 1.14 s) in `ForkWorkload`. The guest
   exits 1 s after it starts (`sleep 1`, then `noop` has no work). A fork whose
   probe is later than that finds no listener.
-- The 721 passes took 0.05 to 1.14 s (median 0.48 s, p90 0.87 s). At 4 forks at
-  a time each fork starts a shell, pipes and `nc` on a 250m limit; the probe
-  latency is the tail of that.
+- The 721 passes took 0.05 to 1.14 s (median 0.48 s, p90 0.87 s). Each fork
+  starts a shell, pipes and `nc` before the probe can pass. What made the probe
+  late (the 250m fork limit or 4 forks at a time) was not isolated.
 - The failure rate is the same in every 100 forks (25, 25, 32, 19, 32, 24, 29,
   32, 27, 34), so it is not growth. No leak, no OOM and no pids event in the
   window; the worker did not restart; CPU throttling was 2 events in all.
