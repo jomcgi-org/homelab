@@ -23,8 +23,7 @@ spec:
     server: https://kubernetes.default.svc
     namespace: factory
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: factory-storyboard-factory-public-s3
       jsonPointers: [/data]
   syncPolicy:

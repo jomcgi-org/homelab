@@ -21,8 +21,7 @@ spec:
     server: https://kubernetes.default.svc
     namespace: otel-collector
   ignoreDifferences:
-    - group: ""
-      kind: ConfigMap
+    - kind: ConfigMap
       namespace: otel-collector
       name: cnpg-backup-status
       jsonPointers:

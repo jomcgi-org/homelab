@@ -18,8 +18,7 @@ spec:
     server: https://kubernetes.default.svc
     namespace: grimoire
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: grimoire
       jsonPointers: [/data]
   syncPolicy:

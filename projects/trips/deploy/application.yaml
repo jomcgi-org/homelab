@@ -20,16 +20,13 @@ spec:
     namespace: trips
   # garage-init owns credential bytes in the kept claim Secrets.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: trips-trips-public-s3
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: trips-trips-public-mirror-s3
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: trips-postgres
       jsonPointers: [/data]
   syncPolicy:

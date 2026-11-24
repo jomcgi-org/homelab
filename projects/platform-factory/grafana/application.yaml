@@ -22,16 +22,13 @@ spec:
     namespace: grafana
   # authentik-secret-init writes the OIDC client secret.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: grafana-oidc
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: mcp-grafana-viewer
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: mcp-grafana-caller
       jsonPointers: [/data]
   syncPolicy:

@@ -27,23 +27,19 @@ spec:
     namespace: kagent-pg
   # kagent-pg-setup and garage-init write these.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: kagent-pg
       name: kagent-pg-logins
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: kagent-pg
       name: kagent-pg-owner-login
       jsonPointers: [/data/password]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: kagent-pg
       name: kagent-pg-readwrite-login
       jsonPointers: [/data/password]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: kagent-pg
       name: kagent-pg-s3
       jsonPointers: [/data]

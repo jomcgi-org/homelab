@@ -23,8 +23,7 @@ spec:
     namespace: factory
   # garage-init and authentik-secret-init write them.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       jsonPointers: [/data]
   syncPolicy:
     automated:

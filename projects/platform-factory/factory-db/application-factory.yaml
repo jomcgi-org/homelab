@@ -24,8 +24,7 @@ spec:
     namespace: factory
   # factory-db-setup writes the connection strings.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       jsonPointers: [/data]
   syncPolicy:
     automated:
