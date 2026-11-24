@@ -2,7 +2,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # The engine atespace and template provisioning, wired by ../../../resources.
-# It runs egress-engine-provision-1 once. teardown-job.yaml is not listed (it is
+# It runs egress-engine-provision-2 once. teardown-job.yaml is not listed (it is
 # suspended, which makes the Application report Suspended). Editing a file here
 # changes the generated ConfigMap's hash and the Job's pod template, which is
 # immutable: bump the run suffix in job.yaml in the same change.

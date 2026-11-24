@@ -48,7 +48,7 @@ def _one(kind: str, name: str) -> dict:
 
 
 _TEMPLATE = (_HERE / "template.yaml").read_text()
-_PROVISION_JOB = "egress-engine-provision-1"
+_PROVISION_JOB = "egress-engine-provision-2"
 _TEARDOWN_JOB = "egress-engine-teardown-1"
 
 
@@ -666,7 +666,7 @@ def test_the_apply_job_runs_and_the_teardown_job_is_off() -> None:
 
 def test_both_jobs_use_the_ate_client_and_the_right_mode() -> None:
     for name, mode in (
-        ("egress-engine-provision-1", "apply"),
+        ("egress-engine-provision-2", "apply"),
         ("egress-engine-teardown-1", "teardown"),
     ):
         job = _job(name)
@@ -681,7 +681,7 @@ def test_both_jobs_use_the_ate_client_and_the_right_mode() -> None:
 
 
 def test_jobs_are_unprivileged_and_hold_no_secret() -> None:
-    for name in ("egress-engine-provision-1", "egress-engine-teardown-1"):
+    for name in ("egress-engine-provision-2", "egress-engine-teardown-1"):
         pod = _job(name)["spec"]["template"]["spec"]
         assert pod["securityContext"]["runAsNonRoot"] is True
         assert pod["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
@@ -708,7 +708,7 @@ def test_config_map_holds_the_script_and_the_template() -> None:
     assert set(cm["data"]) == {"provision.py", "template.yaml", "template.json"}
     assert cm["data"]["template.yaml"] == _TEMPLATE
     assert cm["data"]["template.json"] == (_HERE / "template.json").read_text()
-    for name in ("egress-engine-provision-1", "egress-engine-teardown-1"):
+    for name in ("egress-engine-provision-2", "egress-engine-teardown-1"):
         vol = [
             v
             for v in _job(name)["spec"]["template"]["spec"]["volumes"]
@@ -743,6 +743,98 @@ def test_jobs_reach_only_the_kubernetes_api_and_the_ate_api() -> None:
         {"matchLabels": {"app": "egress-engine-provision"}}
     ]
     assert rule["toPorts"][0]["ports"] == [{"port": "443", "protocol": "TCP"}]
-    for name in ("egress-engine-provision-1", "egress-engine-teardown-1"):
+    for name in ("egress-engine-provision-2", "egress-engine-teardown-1"):
         labels = _job(name)["spec"]["template"]["metadata"]["labels"]
         assert labels == {"app": "egress-engine-provision"}
+
+
+# --- reads that blip, bad JSON, and the template name -----------------------
+
+
+def test_get_json_retries_a_failed_or_garbled_read() -> None:
+    mod = _load()
+    answers = [
+        subprocess.CompletedProcess([], 1, "", "rpc error: Unavailable"),
+        subprocess.CompletedProcess([], 0, "not json", ""),
+        subprocess.CompletedProcess([], 0, json.dumps({"ok": True}), ""),
+    ]
+    calls = []
+
+    def fake(*args: str):
+        calls.append(args)
+        return answers.pop(0)
+
+    mod.ate = fake
+    assert mod.get_json("get", "workers") == {"ok": True}
+    assert len(calls) == 3
+
+
+def test_get_json_gives_up_with_a_failed_not_a_traceback() -> None:
+    mod = _load()
+    mod.ate = lambda *a: subprocess.CompletedProcess([], 0, "<html>", "")
+    try:
+        mod.get_json("get", "workers")
+    except mod.Failed as err:
+        assert "not JSON" in str(err)
+    else:
+        raise AssertionError("bad JSON must raise Failed")
+    # A write is not retried: only get_json loops.
+    calls = []
+
+    def fail(*a):
+        calls.append(a)
+        return subprocess.CompletedProcess([], 1, "", "boom")
+
+    mod.ate = fail
+    try:
+        mod.ate_ok("create", "atespace", "x")
+    except mod.Failed:
+        pass
+    assert len(calls) == 1
+
+
+def test_bad_json_in_a_list_is_a_failed(tmp_path: Path) -> None:
+    mod = _load()
+    mod.ate = lambda *a: subprocess.CompletedProcess([], 0, "{oops", "")
+    try:
+        mod.actors()
+    except mod.Failed as err:
+        assert "get actors" in str(err)
+    else:
+        raise AssertionError("actors() must raise Failed on bad JSON")
+
+
+def test_main_fails_cleanly_when_template_json_is_unreadable(tmp_path: Path) -> None:
+    for content in ("{oops", None, "[]"):
+        mod, fake = _load(), FakeAte()
+        mod.ate = fake
+        mod.MODE = "apply"
+        mod.TEMPLATE_FILE = _HERE / "template.yaml"
+        bad = tmp_path / "template.json"
+        if content is None:
+            bad = tmp_path / "missing.json"
+        else:
+            bad.write_text(content)
+        mod.TEMPLATE_JSON_FILE = bad
+        assert mod.main() == 1, content
+        assert fake.calls == [], content
+
+
+def test_the_template_must_be_named_engine(tmp_path: Path) -> None:
+    mod = _load()
+    assert mod.EXPECTED_TEMPLATE == "engine"
+    desired = json.loads((_HERE / "template.json").read_text())
+    assert mod.template_json_problems(_TEMPLATE, desired) == []
+    desired["metadata"]["name"] = "engine-v2"
+    assert any("not engine" in p for p in mod.template_json_problems(_TEMPLATE, desired))
+    # main refuses it before any API call, even when both files agree.
+    fake = FakeAte()
+    mod.ate = fake
+    mod.MODE = "apply"
+    renamed = _TEMPLATE.replace("  name: engine\n", "  name: engine-v2\n", 1)
+    (tmp_path / "template.yaml").write_text(renamed)
+    (tmp_path / "template.json").write_text(json.dumps(desired))
+    mod.TEMPLATE_FILE = tmp_path / "template.yaml"
+    mod.TEMPLATE_JSON_FILE = tmp_path / "template.json"
+    assert mod.main() == 1
+    assert fake.calls == []
