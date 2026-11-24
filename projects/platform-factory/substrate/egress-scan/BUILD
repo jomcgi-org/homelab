@@ -64,6 +64,7 @@ filegroup(
     name = "repo_docs",
     srcs = [
         "ARCHITECTURE.md",
+        "DESIGN-large-bodies.md",
         "README.md",
     ],
     visibility = ["//projects/monolith:__pkg__"],
