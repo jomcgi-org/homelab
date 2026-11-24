@@ -541,6 +541,9 @@ func (e *Engine) reconcileIssues(ctx context.Context, b *Binding, pr github.Pull
 		return run, false, false
 	}
 	st, ok := LoadState(run.Text)
+	if ok && st.IssueDigest == authorApprovedDigest && !st.IssuesPending && run.Conclusion == ConclusionSuccess {
+		return run, false, false // A skipped review has no issue evidence to refresh.
+	}
 	if (!ok || (run.Title == "No review report" && st.Semgrep == nil)) && run.Conclusion != ConclusionSuccess {
 		// A failed task with no report keeps the existing model-attempt bound.
 		// Evidence read failures use the durable pending state instead.
