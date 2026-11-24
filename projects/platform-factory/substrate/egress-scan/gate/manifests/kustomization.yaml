@@ -20,4 +20,4 @@ images:
     # change that edits the gate's code or its image config updates this line in
     # the same change, the same way as the credential plugin pin in
     # resources/patches/atelet-image-credentials.yaml.
-    digest: sha256:7cb0f51e767b45eb75de72e75d2788eb7d7d1603b525ea807bfb4da6102e0f83 # ratchet-allow: image-digest (kustomize has no build pin; resources_test keeps it equal to the Bazel image digest)
+    digest: sha256:d95d9854dffefcea6eda792f4a463988145f2db360f44d59605ee7313e7ab885 # ratchet-allow: image-digest (kustomize has no build pin; resources_test keeps it equal to the Bazel image digest)
