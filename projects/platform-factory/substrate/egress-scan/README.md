@@ -73,6 +73,37 @@ The interface, the swap procedure and the conformance test are in
 detector (for example an exact-match index of known private content) joins by a
 file `detectors_private.go` in a private build: the public code does not change.
 
+## Metrics
+
+The scanner serves Prometheus metrics on `:9090`. The check and detector
+series carry two bounded labels, and no label holds request content (no path,
+query, header value, match or actor name):
+
+| Label | Value | Bound |
+| --- | --- | --- |
+| `route` | The destination `host[:port]` of the request, lower case, no path or query | An allowlist (`--metrics-routes`, chart `metrics.routes`, equal to the hosts the gateway policy scans: a test checks it). Any other value is `other`. With no allowlist, the first `--metrics-max-label-values` (32) distinct values, then `other` |
+| `source` | The atespace of the actor (never the actor name) | The same cap. `unknown` when the gateway gives no actor identity |
+
+| Metric | Labels |
+| --- | --- |
+| `factory_egress_scan_checks_total` | `outcome`, `route`, `source` |
+| `factory_egress_scan_check_duration_seconds` | `outcome`, `route` |
+| `factory_egress_scan_detector_findings_total` | `detector`, `rule`, `class` (`block` or `report`), `mode`, `route`, `source` |
+| `factory_egress_scan_detector_failures_total` | `detector`, `reason` (`timeout`, `budget`, `oversize`, `error`, `panic`), `mode`, `route`, `source` |
+
+**Source.** The scanner reads the actor's atespace from the SPIFFE ID of the
+caller (`spiffe://substrate-actor.local/worker-for-actor/<atespace>/<name>`),
+in this order: the peer principal of the check, then the CEL metadata `actor.spiffe`
+that the gateway policy sends (`source.spiffeId`), then the static `route` context of the
+gateway policy (`route:hindsight`), then `unknown`. The gateway
+(agentgateway 1.7.0) knows the actor's atespace and name for its own logs
+(`ate.atespace`, `ate.actor.name`) but does not give them to CEL or to the
+ext_authz request, so the first two sources depend on what the inner request's
+TLS session carries. What is missing upstream: an actor identity in CEL (for
+example `source.actor.atespace`) that an ext_authz `metadata` or `context` can
+use. The upstream issue 4289 is about the policy uid and version and does not
+cover it.
+
 ## Second scan tier (Semgrep engine): deferred, removed from the code
 
 The scanner had an optional second tier that posted the scanned text to a

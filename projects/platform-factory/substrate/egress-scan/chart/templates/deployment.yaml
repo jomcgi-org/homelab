@@ -48,6 +48,12 @@ spec:
             - {{ printf "--detector-data-path=%s" .dataPath | quote }}
 {{- end }}
 {{- end }}
+{{- with .Values.metrics }}
+{{- if .routes }}
+            - {{ printf "--metrics-routes=%s" (join "," .routes) | quote }}
+{{- end }}
+            - {{ printf "--metrics-max-label-values=%d" (int .maxLabelValues) | quote }}
+{{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

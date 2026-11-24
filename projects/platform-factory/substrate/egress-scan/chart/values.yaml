@@ -20,3 +20,14 @@ detector:
   # Mounted path of the private data of a detector that holds any. Empty for
   # gitleaks and betterleaks.
   dataPath: ""
+
+# Metric labels. The route label of the check and detector metrics is the
+# destination host[:port] of the request, and the Host header is client input, so
+# only these values get their own series and every other value is "other". Keep
+# this list equal to the hosts that the gateway policy scans (a test checks it).
+# With an empty list the scanner admits the first maxLabelValues distinct values
+# and then "other". maxLabelValues also caps the source label (the atespace).
+metrics:
+  routes:
+    - hindsight-api.hindsight.svc.cluster.local:8888
+  maxLabelValues: 32

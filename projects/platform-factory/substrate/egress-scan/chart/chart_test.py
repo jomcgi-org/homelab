@@ -49,6 +49,8 @@ def test_default_render_selects_gitleaks_with_the_documented_limits() -> None:
         "--detector-failure-mode=deny",
         "--detector-deadline=75ms",
         "--detector-max-input-bytes=524288",
+        "--metrics-routes=hindsight-api.hindsight.svc.cluster.local:8888",
+        "--metrics-max-label-values=32",
     ]
 
 
@@ -66,6 +68,8 @@ def test_the_detector_name_and_limits_follow_the_values() -> None:
         "--detector-failure-mode=allow",
         "--detector-deadline=60ms",
         "--detector-max-input-bytes=65536",
+        "--metrics-routes=hindsight-api.hindsight.svc.cluster.local:8888",
+        "--metrics-max-label-values=32",
     ]
 
 
@@ -93,3 +97,13 @@ def test_the_removed_tier_values_change_nothing() -> None:
         "semgrep.endpoint=http://engine.ate-system.svc:8080/",
     ).stdout
     assert old == baseline
+
+
+def test_the_route_allowlist_and_the_cap_follow_the_values() -> None:
+    args = _scanner("metrics.routes={a.example.com:443,b.example.com}", "metrics.maxLabelValues=8")["args"]
+    assert "--metrics-routes=a.example.com:443,b.example.com" in args
+    assert "--metrics-max-label-values=8" in args
+    # No allowlist: the scanner falls back to the cap on distinct values.
+    args = _scanner("metrics.routes=null")["args"]
+    assert not [a for a in args if a.startswith("--metrics-routes")]
+    assert "--metrics-max-label-values=32" in args

@@ -148,7 +148,12 @@ def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
     )
     assert check["host"] == "egress-scan.ate-system.svc:8080"
     assert check["failureMode"] == "deny"
-    assert check["protocol"] == {"grpc": {}}
+    assert check["protocol"] == {
+        "grpc": {
+            "context": {"route": "hindsight"},
+            "metadata": {"actor": '{"spiffe": source.spiffeId}'},
+        }
+    }
     assert check["includeRequestBody"] == {
         "maxRequestBytes": 524288,
         "allowPartialMessage": False,
@@ -156,6 +161,23 @@ def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
     }
     assert check["policies"] == {"http": {"requestTimeout": "80ms"}}
     assert config == yaml.safe_load((_HERE / "atenet-egress-config.yaml").read_text())
+
+
+def test_the_metric_route_allowlist_names_the_scanned_hosts() -> None:
+    # The route label of the scanner metrics is bounded by an allowlist, and a
+    # scanned host outside it would count as "other" for ever.
+    policy = yaml.safe_load((_HERE / "egress-scan" / "gateway-policy.yaml").read_text())
+    scanned = set()
+    for check in policy["conditional"]:
+        match = re.fullmatch(
+            r'destination\.hostname == "([a-z0-9.-]+)" && destination\.port == ([0-9]+)',
+            check["condition"],
+        )
+        assert match, f"cannot read the scanned host from {check['condition']!r}"
+        scanned.add(f"{match[1]}:{match[2]}")
+    chart_values = _HERE.parent / "egress-scan" / "chart" / "values.yaml"
+    routes = set(yaml.safe_load(chart_values.read_text())["metrics"]["routes"])
+    assert scanned == routes, (scanned, routes)
 
 
 def test_egress_gateway_and_its_config_wait_for_the_scanner() -> None:

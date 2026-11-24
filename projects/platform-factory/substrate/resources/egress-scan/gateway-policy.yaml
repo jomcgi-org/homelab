@@ -7,7 +7,15 @@ conditional:
   - condition: destination.hostname == "hindsight-api.hindsight.svc.cluster.local" && destination.port == 8888
     host: egress-scan.ate-system.svc:8080
     protocol:
-      grpc: {}
+      grpc:
+        # Static context: the scanner uses it only as a bounded fallback for the
+        # source label. metadata.actor is what the gateway can say about the
+        # caller in CEL. Both are optional: the scanner labels a check without
+        # them as source unknown (egress-scan/README.md "Metrics").
+        context:
+          route: hindsight
+        metadata:
+          actor: '{"spiffe": source.spiffeId}'
     failureMode: deny
     includeRequestBody:
       maxRequestBytes: 524288
