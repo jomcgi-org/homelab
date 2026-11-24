@@ -105,6 +105,7 @@ type Binding struct {
 	Agent                  kagent.AgentRef
 	RequiredChecks         []Check
 	SkipLabels             []string
+	AuthorApproved         bool
 	EnqueueAuthors         []string
 	HumanGatePaths         []string
 	HumanGateLabels        []string
@@ -1106,6 +1107,9 @@ func (e *Engine) readRecovery(ctx context.Context, b *Binding, pr github.PullReq
 // when the head has none. It reports true, starting nothing, when every
 // slot is taken; a head already under review starts nothing either.
 func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (full bool) {
+	if e.authorApproved(ctx, b, pr, run) {
+		return false
+	}
 	// Recheck the diff budget before a quota wait, without a review worker.
 	// This also handles checks that an older process paused before sizing.
 	if run != nil {

@@ -201,7 +201,7 @@ func run(log *slog.Logger) error {
 		rb := review.Binding{
 			Name: b.Name, Owner: b.Owner, Repo: b.Repo, BaseBranch: b.BaseBranch, Runtime: b.Runtime,
 			Agent:      kagent.AgentRef{Namespace: b.KagentNamespace, Name: b.KagentAgent},
-			SkipLabels: b.SkipLabels, EnqueueAuthors: b.EnqueueAuthors,
+			SkipLabels: b.SkipLabels, AuthorApproved: b.AuthorApproved, EnqueueAuthors: b.EnqueueAuthors,
 			HumanGatePaths: b.HumanGatePaths, HumanGateLabels: b.HumanGateLabels, HumanApprovers: b.HumanApprovers,
 			TrustedCommenters: b.TrustedCommenters, ContextDocs: b.ContextDocs,
 			ItsaplanProject: b.ItsaplanProject, BranchPrefix: b.BranchPrefix, TrustedItsaplanAuthors: b.TrustedItsaplanAuthors,

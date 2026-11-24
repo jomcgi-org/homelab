@@ -1199,6 +1199,15 @@ specified in [REVIEW.md](../../REVIEW.md#joe-decides).
 [authorship decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6891640540),
 [waiver scope](https://github.com/jomcgi-org/homelab/issues/8049)
 
+A binding with `authorApproved` passes a new head with no model review when
+the PR meets the authorship waiver: the author and every pusher are in
+`humanApprovers`, the head is in the base repository, and no hold applies
+(a `human` or `needs-human` label, a shared head, restart recovery, a skip
+label). Any other PR gets the full review, and so does any read error. The
+check is a pass titled "Review skipped: author approves", and no task runs.
+Joe chose this on 2026-11-24 because his sessions review these PRs first, so
+the reviewer spends tokens on other PRs. Semgrep evidence turns it off.
+
 The saved review state keeps every blocking and model gate finding with
 its full ID and severity, and shortens descriptive text first. A failed
 history read blocks and retries on the next poll. State that overflowed
