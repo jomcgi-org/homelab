@@ -87,6 +87,7 @@ func (f *FeedItem) OriginalComment() bool {
 // snapshot attributes a never-edited field to the creator; a creation event
 // without one grants no authority. Read newest first so an older trusted value
 // cannot mask a later untrusted edit of the same field.
+// invariant: HOME-538-1
 func (c *Client) IssueTextAuthors(ctx context.Context, issue *Issue) ([]string, error) {
 	q := url.Values{"filter": {"history"}, "order": {"desc"}, "limit": {"100"}}
 	fields := []string{"title", "description"}
