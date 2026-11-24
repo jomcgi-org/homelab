@@ -64,6 +64,7 @@ filegroup(
     name = "repo_docs",
     srcs = [
         "ARCHITECTURE.md",
+        "DESIGN-detectors.md",
         "DESIGN-large-bodies.md",
         "README.md",
     ],

@@ -549,6 +549,7 @@ closes.
 | Latency Jobs `gvisor-fork-latency-1` and `-data-1` | HOME-TBD | `staged off`, suspended and unwired |
 | Per-client atespace rule in the router | HOME-TBD | `designed`, replaces the two router grants (Decided 2) |
 | Windowed scan of large bodies, per-route config | HOME-TBD | `designed` ([DESIGN-large-bodies.md](DESIGN-large-bodies.md)) |
+| Detector interface, a decoder chain and Betterleaks beside Gitleaks | HOME-TBD | `designed` ([DESIGN-detectors.md](DESIGN-detectors.md)) |
 
 ## Decision history
 
