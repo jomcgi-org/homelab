@@ -21,8 +21,7 @@ spec:
     namespace: edge
   # authentik-secret-init writes the real OIDC client secret.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: edge-oidc-client
       jsonPointers: [/data]
   syncPolicy:

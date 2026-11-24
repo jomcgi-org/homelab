@@ -19,8 +19,7 @@ spec:
     namespace: factory-discord
   # The PostSync Job in hindsight-discord writes the tenant key.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: hindsight-discord-key
       jsonPointers: [/data]
   syncPolicy:

@@ -19,8 +19,8 @@ spec:
     server: https://kubernetes.default.svc
     namespace: hikes
   ignoreDifferences:
-    - {group: "", kind: Secret, name: hikes-hikes-s3, jsonPointers: [/data]}
-    - {group: "", kind: Secret, name: hikes-hikes-mirror-s3, jsonPointers: [/data]}
+    - {kind: Secret, name: hikes-hikes-s3, jsonPointers: [/data]}
+    - {kind: Secret, name: hikes-hikes-mirror-s3, jsonPointers: [/data]}
   syncPolicy:
     managedNamespaceMetadata:
       labels:

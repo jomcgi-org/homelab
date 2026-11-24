@@ -21,8 +21,7 @@ spec:
     namespace: garage
   # garage-init writes garage-secrets.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: garage-secrets
       jsonPointers: [/data]
   syncPolicy:

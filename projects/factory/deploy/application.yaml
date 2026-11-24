@@ -43,66 +43,54 @@ spec:
   # writes the rotating grant at login and every refresh. Diffing /data would
   # let self-heal revert the grant to empty, revoking it.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: factory
       name: factory-broker-grant-codex-primary
       jsonPointers: [/data]
-    - group: ""
-      kind: ConfigMap
+    - kind: ConfigMap
       namespace: factory
       name: factory-broker-quota
       jsonPointers: [/data]
     # itsaplan's generated secrets, bootstrap state and agent keys, written by
     # its Jobs into Secrets the chart declares empty (itsaplan_test.py checks
     # this list covers them).
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: factory
       name: factory-itsaplan
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: factory
       name: factory-itsaplan-admin
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: factory
       name: factory-itsaplan-joe-sessions
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: factory
       name: factory-itsaplan-bootstrap
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: factory
       name: factory-itsaplan-agent-homelab-codex
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: factory
       name: factory-itsaplan-agent-factory-coordinator
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: factory
       name: factory-itsaplan-agent-homelab-planner
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: factory
       name: factory-itsaplan-agent-factory-reviewer
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: factory
       name: factory-itsaplan-agent-factory-storyboard
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: factory
       name: factory-itsaplan-agent-intsec-sync
       jsonPointers: [/data]

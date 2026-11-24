@@ -29,12 +29,10 @@ spec:
     namespace: authentik
   # The placeholder Secrets' values are written by authentik-secret-init.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: authentik-secrets
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: argocd-authentik-oidc
       jsonPointers: [/data]
   syncPolicy:

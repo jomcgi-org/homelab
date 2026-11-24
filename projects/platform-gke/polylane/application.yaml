@@ -44,8 +44,7 @@ spec:
   # no keys under data at all. Do not drop ServerSideApply believing this block
   # is the load-bearing half.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: polylane-k8s-state
       jsonPointers:
         - /data

@@ -20,32 +20,25 @@ spec:
     namespace: factory-public
   # garage-init owns credential bytes in the kept claim Secrets.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: factory-public-factory-public-s3
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: factory-public-factory-public-mirror-s3
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: factory-public-factory-health-s3
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: factory-public-factory-public-mirror-factory-health-s3
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: factory-public-stars-forecast-mirror-s3
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: factory-public-hikes-mirror-s3
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: factory-public-ships-mirror-s3
       jsonPointers: [/data]
   syncPolicy:

@@ -27,8 +27,7 @@ spec:
     namespace: factory-db
   # factory-db-init and garage-init write these.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       namespace: factory-db
       jsonPointers: [/data]
   syncPolicy:

@@ -25,8 +25,7 @@ spec:
     namespace: factory-r-homelab
   # hindsight-agents (the PostSync Job in hindsight) writes the token.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: hindsight-mcp
       jsonPointers: [/data]
   syncPolicy:

@@ -20,16 +20,13 @@ spec:
     namespace: hindsight-discord
   # hindsight-keys and factory-db-setup write these.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: discord-media-s3
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: hindsight-keys
       jsonPointers: [/data]
-    - group: ""
-      kind: Secret
+    - kind: Secret
       name: hindsight-db
       jsonPointers: [/data]
   syncPolicy:

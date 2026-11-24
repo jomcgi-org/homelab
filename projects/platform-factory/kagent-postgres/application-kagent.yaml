@@ -25,8 +25,7 @@ spec:
     namespace: kagent
   # kagent-pg-setup writes the connection strings.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
+    - kind: Secret
       jsonPointers: [/data]
   syncPolicy:
     automated:
