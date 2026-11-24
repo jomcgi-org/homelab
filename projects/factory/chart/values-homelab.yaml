@@ -301,6 +301,16 @@ reviewer:
       # Joe 2026-11-24: his own PRs pass without a model review (his sessions
       # review them first). Only the authorship waiver's evidence qualifies.
       authorApproved: true
+      # Joe 2026-11-24: only these actors get a review; another author's PR
+      # gets no check, like a skip label. `factory review` is a required
+      # check, so such a PR cannot merge until Joe acts.
+      reviewAuthors:
+        - jomcgi
+        - jomcgi-factory[bot]
+      # A new model review waits for pr-checks to pass, so a head that fails
+      # CI costs no review tokens; the connector sends the failure to the
+      # coder first. Remove both lines to revert.
+      reviewAfterChecks: true
       enqueueAuthors: []
       # Used only by enqueues, which are off; kept for when they return.
       requiredChecks:
