@@ -1072,7 +1072,7 @@ results.
 | --- | --- |
 | Pool `gvisor-fork-gates` | namespace `substrate-gvisor-fork-gates`, label `workload: gvisor-fork-gates`, one worker, the production worker image, requests 100m and 256Mi, limits 2 CPU and 768Mi |
 | Template `gate` | atespace `gvisor-fork-gates`; alpine 3.24.4 (busybox 1.37.0) by digest; the guest `guest.sh` (the seed asks for the checkpoint, each fork learns its mode from its actor name and answers the probe); fork limits 64 MiB, 64 processes, 1 MiB of log, 300 s |
-| Job `gvisor-fork-gates-3` | run 3: the modes without the storm, with a network capture of `net` (run 1 failed at the seed: the busybox image has no `/sys`; run 2 failed in the storm); `gates.py` runs `ident` x3, `canary`, `net`, `mem`, `log`, `pids`, `hold`, `lifetime`, then 1000 `noop` forks, 4 at a time |
+| Job `gvisor-fork-gates-3` | run 3: the modes without the storm, with a network capture of `net` (run 1 failed at the seed: the busybox image has no `/sys`; run 2 failed in the storm); `gates.py` runs `ident` x3, `canary`, `net`, `mem`, `log`, `pids`, `hold`, `lifetime`, then no storm (`STORM=0`) |
 
 The production template selects `workload: gvisor-fork` and the gate template
 `workload: gvisor-fork-gates`, so neither lands on the other pool. The pool pod's

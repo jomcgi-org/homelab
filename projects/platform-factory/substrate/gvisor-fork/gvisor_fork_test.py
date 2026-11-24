@@ -952,7 +952,7 @@ def test_gate_job_runs_as_ate_client() -> None:
     assert container["command"] == ["python3", "-I", "/config/gates.py"]
     assert container["resources"]["requests"]["memory"] == "64Mi"
     env = {e["name"]: e["value"] for e in container["env"]}
-    assert env["STORM"] == "1000"
+    assert env["STORM"] == "0"
     # The same kubectl-ate and token as the conformance Job.
     conformance = _conformance_job()["spec"]["template"]["spec"]["volumes"]
     gates = pod["volumes"]
