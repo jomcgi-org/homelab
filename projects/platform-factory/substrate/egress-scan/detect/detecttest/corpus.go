@@ -81,7 +81,7 @@ func Corpus(seed int64) []Sample {
 		{Name: "plain-npm", Text: "//registry.npmjs.org/:_authToken=npm_" + g.str(36, alnum)},
 		{Name: "plain-anthropic", Text: "ANTHROPIC_API_KEY=sk-" + "ant-api03-" + g.str(93, alnum+"-_") + "AA"},
 		{Name: "json-github", Text: jsonOf(map[string]string{"lesson": "deploy", "token": gh})},
-		{Name: "json-unicode-escape", Text: `{"t":"` + strings.ReplaceAll(gh, "_", `_`) + `"}`},
+		{Name: "json-unicode-escape", Text: `{"t":"` + strings.ReplaceAll(gh, "_", "\\u005f") + `"}`},
 		{Name: "json-code-in-string", Text: jsonOf(map[string]string{"content": "const c = new Octokit({ auth: \"" + gh + "\" });\nawait c.run();\n"})},
 		{Name: "pem-private-key", Text: "key:\n" + pem + "\n"},
 		{Name: "jwt", Text: "cookie: session=" + jwt},

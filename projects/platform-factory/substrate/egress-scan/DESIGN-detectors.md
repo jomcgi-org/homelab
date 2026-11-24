@@ -267,6 +267,19 @@ index) is the planned second plug-in, in a private build, through `PrivateData`.
 - More rules (483 against 203) can raise false positives on real agent text. The
   corpus and the synthetic replay measure it before the flip, and the revert is
   one value.
+- The extra Authorization rules deny a bearer or basic credential that the actor
+  sends in a header or a body. The gateway injects the real credential after the
+  scanner, so an actor holds none (the placeholder `Bearer -` stays allowed). The
+  flip PR checks the live counters and Hindsight health, and the revert is one
+  value.
+- The library scans a stream in chunks of about 100,000 bytes, and a secret that
+  crosses a cut is missed. The adapter hands over the whole input as one fragment
+  (a test puts a token at six cut offsets). Any detector that reads a stream has
+  the same risk: `detect/doc.go` says to pass the whole input.
+- The Gitleaks match budget (64) is per input now: address, body and decoded text
+  each get one, where the old code shared one. The deadline still bounds the work.
+- With failure mode allow, a failure on one input lets the whole request through
+  unscanned. The scanner runs with failure mode deny.
 - Decoding at depth 3 adds work. The 75 ms deadline and the 512 KiB cap bound it.
 - The corpus is small and ours. It shows direction, not rates.
 - Facts about Betterleaks (release dates, counts, the advisory) come from the

@@ -29,8 +29,9 @@ const (
 type scanner struct {
 	authv3.UnimplementedAuthorizationServer
 	// host runs the one active detector under its limits, mode and failure mode.
-	host  *detect.Host
-	slots chan struct{}
+	host    *detect.Host
+	slots   chan struct{}
+	metrics *detectorMetrics
 }
 
 func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv3.CheckResponse, error) {
@@ -40,6 +41,7 @@ func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv
 		return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, capacityReason), nil
 	}
 	defer func() { <-s.slots }()
+	begin := time.Now()
 	scanCtx, cancel := context.WithTimeout(ctx, maxScanTime)
 	defer cancel()
 
@@ -138,8 +140,11 @@ func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv
 		inputs = append(inputs, detect.Input{Bytes: []byte(decoded), Source: "body", Via: []string{"json"}})
 	}
 	// The caller's context, not scanCtx: the host applies the detector deadline
-	// itself and tells a caller that left (no verdict) from a deadline (a failure).
-	verdict := s.host.Scan(ctx, inputs...)
+	// itself and tells a caller that left (no verdict) from a deadline (a
+	// failure). The budget is what the request has left of the one window that
+	// the JSON decoding above shares with the detector.
+	verdict := s.host.ScanWithin(ctx, s.host.Config().Limits.Deadline-time.Since(begin), inputs...)
+	s.metrics.record(s.host, verdict)
 	if verdict.Canceled != nil {
 		return nil, verdict.Canceled
 	}

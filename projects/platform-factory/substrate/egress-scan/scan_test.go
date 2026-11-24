@@ -104,6 +104,46 @@ func TestBothDetectorsAreRegistered(t *testing.T) {
 	}
 }
 
+func TestDetectorFindingsAndFailuresAreCounted(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	backend := newTestScanner(t, "gitleaks", nil)
+	checked := newMeteredScanner(backend, registry)
+	fixture := "gh" + "p_" + "8Jdm9u1Qa7bWdF2p7XZ9sWy7Qnf2gXMbRFqa"
+	send := func(body string) {
+		_, err := checked.Check(context.Background(), request(&authv3.AttributeContext_HttpRequest{
+			Method: "POST", Path: "/", Headers: map[string]string{"content-type": "text/plain"},
+			Size: int64(len(body)), RawBody: []byte(body),
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	send("clean text")
+	send("token=" + fixture)
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]float64{}
+	for _, family := range families {
+		for _, sample := range family.GetMetric() {
+			labels := map[string]string{}
+			for _, l := range sample.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			if family.GetName() == "factory_egress_scan_detector_findings_total" {
+				found[labels["detector"]+"/"+labels["class"]+"/"+labels["mode"]] += sample.GetCounter().GetValue()
+				if strings.Contains(labels["rule"], fixture) {
+					t.Error("a rule label holds the credential")
+				}
+			}
+		}
+	}
+	if found["gitleaks/block/enforce"] != 1 {
+		t.Fatalf("detector findings: %v", found)
+	}
+}
+
 func TestCheckOverGRPC(t *testing.T) {
 	backend := newTestScanner(t, "gitleaks", nil)
 	registry := prometheus.NewRegistry()

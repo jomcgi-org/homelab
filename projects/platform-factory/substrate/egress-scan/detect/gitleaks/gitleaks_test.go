@@ -107,7 +107,6 @@ regexes = ['approved-line']
 	}
 }
 
-
 func TestRegexReaderStopsAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	reader := newScanReader(ctx, strings.Repeat("abcd", 1024)+"MARK:other")

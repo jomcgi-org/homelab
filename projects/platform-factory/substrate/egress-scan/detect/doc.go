@@ -21,10 +21,18 @@
 // A detector may stop at its first ClassBlock finding. The host denies on any.
 //
 // The host enforces what a detector cannot be trusted to enforce: the input
-// size limit (Limits.MaxInputBytes), the deadline (Limits.Deadline), a panic
+// size limit (Limits.MaxInputBytes), the deadline (Limits.Deadline), the number
+// of calls in flight (Limits.MaxConcurrent, abandoned calls included), a panic
 // (the call fails), the mode (observe never denies) and the failure mode (what
 // a call without a verdict does: deny or allow). These come from configuration
 // (Config), per detector, never from the detector's own code.
+//
+// A call without a verdict fails the whole request: with failure mode allow the
+// request passes unscanned, the inputs after the failed one included.
+//
+// Hand a detector the whole input in one piece. A library that cuts a stream into
+// chunks and scans each alone misses a secret that crosses a cut, and the sender
+// of the request chooses where the cuts fall.
 //
 // # Private data
 //
