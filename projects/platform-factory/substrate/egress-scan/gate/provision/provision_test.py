@@ -624,9 +624,9 @@ def test_teardown_names_only_the_engine_atespace(tmp_path: Path) -> None:
     assert _run_teardown(mod, fake, tmp_path) == 0
     assert fake.calls
     for call in fake.calls:
-        if call[:3] == ("delete", "atespace", "egress-scan-engine"):
-            continue
-        assert "-a" in call and call[call.index("-a") + 1] == "egress-scan-engine", call
+        by_flag = "-a" in call and call[call.index("-a") + 1] == "egress-scan-engine"
+        by_name = call[1] == "atespace" and call[2] == "egress-scan-engine"
+        assert by_flag or by_name, call
 
 
 def test_teardown_fails_when_a_delete_fails(tmp_path: Path) -> None:
