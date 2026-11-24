@@ -1,14 +1,12 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# The teardown of the engine atespace and template, wired by ../../../resources
-# on 2026-11-24 (Joe deferred the Semgrep tier). It runs
-# egress-engine-teardown-2 once. job.yaml, the apply Job that ran as
-# egress-engine-provision-2, is not listed now. Editing a file here changes the
-# generated ConfigMap's hash and the Job's pod template, which is immutable:
-# bump the run suffix in teardown-job.yaml in the same change.
-# provision_test.py checks the manifests, and
-# ../../../resources/resources_test.py lists what the wired render holds.
+# Not wired since 2026-11-24 (Joe deferred the Semgrep tier). The teardown ran as
+# egress-engine-teardown-1 and -2 and left one orphaned seed (../README.md,
+# "Teardown"). job.yaml is the apply Job that ran as egress-engine-provision-2.
+# If a file here is wired again, editing it changes the generated ConfigMap's
+# hash and the Job's pod template, which is immutable: bump the run suffix in
+# the Job's name in the same change. provision_test.py checks the manifests.
 resources:
   - network-policy.yaml
   - teardown-job.yaml
