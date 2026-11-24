@@ -21,6 +21,13 @@ and metrics. Provider and GitHub credentials exist only in this pod.
 {{- $atespaces = append $atespaces $reviewNs }}
 {{- end }}
 {{- end }}
+{{- if and .Values.planner.enabled .Values.reviewer.enabled }}
+{{- /* The planner's namespace gets the reviewer App's read-only agent token (contents: read); no App permission changes. */}}
+{{- $planRepo := include "factory.plannerRepository" . | fromJson }}
+{{- $planNs := include "factory.plannerNamespace" . }}
+{{- $reviewBindings = append $reviewBindings (dict "name" (printf "planner-%s" $planRepo.name) "repository" (printf "%s/%s" $planRepo.owner $planRepo.repo) "namespace" $planNs) }}
+{{- $atespaces = append $atespaces $planNs }}
+{{- end }}
 {{- /* The connector's own ServiceAccount fetches connector tokens. */}}
 {{- $connectorSubjects := $b.connectorSubjects }}
 {{- if .Values.connector.enabled }}

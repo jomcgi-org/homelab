@@ -56,6 +56,7 @@ data:
       "agents" $agents
       "coordinator" (ternary .Values.connector.coordinator "" .Values.connector.enabled)
       "deferredProjects" ($deferredProjects | uniq)
+      "plannerSchedules" (include "factory.plannerBootstrapSchedules" . | fromJsonArray)
       | toPrettyJson | nindent 4 }}
 ---
 apiVersion: v1

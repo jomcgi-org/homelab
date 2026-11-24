@@ -521,6 +521,28 @@
         }
       }
     },
+    "planner": {
+      "description": "Scheduled planner (HOME-40): a read-only kagent Agent and the connector's planner runtime, off until deploy values enable it.",
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "repository": {
+          "description": "The repositories entry, by name, the planner reads.",
+          "type": "string",
+          "minLength": 1
+        },
+        "namespace": {
+          "description": "The planner Agent's own namespace; empty means <repository namespace>-planner.",
+          "type": "string"
+        },
+        "runTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)([0-9]+(ns|us|µs|ms|s|m|h))*$"
+        }
+      }
+    },
     "reviewer": {
       "description": "Independent reviewer (projects/factory/reviewer), off until deploy values enable it.",
       "type": "object",
@@ -854,7 +876,20 @@
               "cooldown": { "type": "string", "minLength": 1 },
               "perRun": { "type": "integer", "minimum": 1, "maximum": 4 },
               "issueTitle": { "type": "string", "minLength": 1 },
-              "instructions": { "type": "string", "minLength": 1 }
+              "instructions": { "type": "string", "minLength": 1 },
+              "cron": {
+                "description": "Five-field UTC cron of the itsaplan schedule; needs prompt.",
+                "type": "string",
+                "minLength": 9,
+                "maxLength": 120,
+                "pattern": "^\\S+( \\S+){4}$"
+              },
+              "prompt": {
+                "description": "The fixed task the connector sends to the planner; needs cron.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000
+              }
             }
           }
         },

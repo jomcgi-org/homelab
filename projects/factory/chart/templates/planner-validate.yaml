@@ -1,0 +1,53 @@
+{{- if .Values.planner.enabled }}
+{{- if not .Values.broker.enabled }}
+{{- fail "planner.enabled needs broker.enabled" }}
+{{- end }}
+{{- if not .Values.reviewer.enabled }}
+{{- fail "planner.enabled needs reviewer.enabled: the planner's read-only token comes from the reviewer App's agent permissions" }}
+{{- end }}
+{{- if not .Values.itsaplan.enabled }}
+{{- fail "planner.enabled needs itsaplan.enabled: its bootstrap writes the planner key and cron schedules" }}
+{{- end }}
+{{- if not .Values.connector.enabled }}
+{{- fail "planner.enabled needs connector.enabled: the connector claims the planner's runs" }}
+{{- end }}
+{{- $ns := include "factory.plannerNamespace" . }}
+{{- if or (gt (len $ns) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $ns)) }}
+{{- fail (printf "planner.namespace %s must be a DNS label of at most 63 characters" $ns) }}
+{{- end }}
+{{- $taken := list .Values.broker.namespace (include "factory.kagentNamespace" .) .Values.discord.agent.namespace .Values.discord.bridge.namespace }}
+{{- range .Values.repositories }}
+{{- $taken = concat $taken (list .namespace (include "factory.reviewerNamespace" (dict "root" $ "binding" .))) }}
+{{- end }}
+{{- if has $ns $taken }}
+{{- fail (printf "planner.namespace %s must be separate from every coding binding, review binding, control and Discord namespace" $ns) }}
+{{- end }}
+{{- if not (has $ns .Values.kagent.rbac.namespaces) }}
+{{- fail (printf "planner: add namespace %s to kagent.rbac.namespaces so the controller watches it" $ns) }}
+{{- end }}
+{{- $a := .Values.agents.planner | default dict }}
+{{- if not $a }}
+{{- fail "planner.enabled needs agents.planner" }}
+{{- end }}
+{{- $runtime := .Values.kagent.config.runtimeDefaults }}
+{{- if or (ne (toString $a.resources.cpu) (toString $runtime.cpu)) (ne (toString $a.resources.memory) (toString $runtime.memory)) }}
+{{- fail "agents.planner: resources must equal kagent.config.runtimeDefaults" }}
+{{- end }}
+{{- if (($a.autoscaling | default dict).enabled) }}
+{{- fail "agents.planner.autoscaling is not supported: the reaper publishes no demand for the planner pool" }}
+{{- end }}
+{{- if not (has "github-git" $a.egress) }}
+{{- fail "agents.planner.egress needs github-git: the planner reads the repository" }}
+{{- end }}
+{{- if not (regexMatch "^[0-9]+(ns|us|µs|ms|s|m|h)([0-9]+(ns|us|µs|ms|s|m|h))*$" (.Values.planner.runTimeout | toString)) }}
+{{- fail "planner.runTimeout must be a Go duration" }}
+{{- end }}
+{{- range .Values.connector.plannerSchedules | default list }}
+{{- if or (and .cron (not .prompt)) (and .prompt (not .cron)) }}
+{{- fail (printf "connector.plannerSchedules %s: set both cron and prompt, or neither" .name) }}
+{{- end }}
+{{- if gt (len (printf "%s%s" (include "factory.plannerSchedulePrefix" $) .name)) 120 }}
+{{- fail (printf "connector.plannerSchedules %s: the itsaplan schedule name planner-<name> is at most 120 characters" .name) }}
+{{- end }}
+{{- end }}
+{{- end }}
