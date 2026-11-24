@@ -66,6 +66,7 @@ filegroup(
         "ARCHITECTURE.md",
         "DESIGN-detectors.md",
         "DESIGN-large-bodies.md",
+        "DESIGN-prior-art.md",
         "README.md",
     ],
     visibility = ["//projects/monolith:__pkg__"],
