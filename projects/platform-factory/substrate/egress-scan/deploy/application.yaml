@@ -25,21 +25,24 @@ spec:
       targetRevision: 0.8.27
       helm:
         releaseName: egress-scan
-        # The second scan tier, in observe mode for the first 7 days (README,
-        # "The 7-day observe procedure"): the engine runs off the request path,
-        # never changes a reply, and is only counted and logged. The gateway
-        # requestTimeout stays 80ms (resources/egress-scan/gateway-policy.yaml;
-        # resources_test.py couples them). The endpoint is the engine-gate Service
-        # (gate/manifests/statefulset.yaml) and its one path. concurrency is
-        # per pod: 2 pods x 2 = the gate's 4 scans at once. maxBodyBytes is the
-        # v1 limit of ARCHITECTURE.md; a larger body is counted as oversize, and
-        # its size is still in observe_size_bytes. failureMode only applies in
-        # enforce mode. Set these here (helm.valuesObject), not with parameters:
-        # resources_test.py reads them from this block.
+        # The second scan tier, in enforce mode. Joe decided on 2026-11-24 to
+        # skip the 7-day observe window and enforce at once (ARCHITECTURE.md
+        # "Decided" 8). A finding of the engine denies the request, and so does
+        # a call with no verdict (failureMode deny: an engine outage denies, as
+        # Joe decided on 2026-11-23). The gateway requestTimeout is the deadline +
+        # 10ms (resources/egress-scan/gateway-policy.yaml; resources_test.py
+        # couples them). The endpoint is the engine-gate Service
+        # (gate/manifests/statefulset.yaml) and its one path. concurrency is per
+        # pod: 2 pods x 2 = the gate's 4 scans. maxBodyBytes is the v1 limit: a
+        # body over it is `oversize` and denied like an outage (README "Body
+        # limit"). To go back, set mode observe and requestTimeout 80ms in one PR.
+        # Set these here (helm.valuesObject), not with parameters: resources_test.py
+        # reads them from this block.
         valuesObject:
           semgrep:
             enabled: true
-            mode: observe
+            mode: enforce
+            failureMode: deny
             endpoint: http://engine-gate.ate-system.svc:8080/scan
             deadline: 300ms
             maxBodyBytes: 65536

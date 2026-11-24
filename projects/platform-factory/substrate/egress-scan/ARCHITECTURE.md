@@ -6,7 +6,7 @@ that the egress gateway calls before it forwards a request. It matches Gitleaks
 rules in process. A second scan tier (`semgrep.go`, on in observe mode since the wiring) posts the
 scanned text to one HTTP endpoint and merges the engine verdict. This note
 designs that endpoint: a warm pool of single-use gVisor children that run the
-Semgrep Pro Secrets engine. The path runs in observe mode (Decided 7).
+Semgrep Pro Secrets engine. The path runs in enforce mode (Decided 8).
 
 ```mermaid
 flowchart LR
@@ -521,6 +521,7 @@ them yet.
 | 5 | The `engine-pro` package is private | Joe, 2026-11-23 |
 | 6 | The router grant PR (the `engine-gate` SPIFFE ID in `atenetRouter.ingressAllowedSPIFFEIDs`), the X8 waiver for gVisor-only use, and the grants: the atespace `egress-scan-engine`, the editor binding for `system:serviceaccount:ate-system:engine-gate` and the template `engine`. This supersedes "after the X gates" in rows 1 and 2: the gates X1 to X7 and X9 still run at step 9 of the fork README as a safety check, and no longer gate the merge of these PRs. The PR that wires the provisioning Job runs it when it merges (the Job is not suspended), so Joe merges it after the pool restart. The X gates do not hold it back | Joe, 2026-11-23, in session |
 | 7 | Skip the X gates (X1 to X7 and X9) for now and wire the scanner now: the tier runs in observe mode for 7 days, then one PR enforces. The X gates run during the observe window, and a failure turns the tier off | Joe, 2026-11-23, in session |
+| 8 | Skip the 7-day observe window and enforce the Semgrep tier now ("lets just get it into prod"): `semgrep.mode: enforce`, failure mode `deny` on both layers, gateway `requestTimeout` 310 ms, body limit 64 KiB (measured, `egress-scan/README.md` "Body limit"). This supersedes the 7 days of row 3 and 7. The X gates keep running. Revert is `mode: observe` and `requestTimeout: 80ms` | Joe, 2026-11-24 |
 
 Still open: the engine body limit and the Hindsight route timeout. The enforce
 PR sets them from observe data. The v1 values are 32 KiB of raw body and 310 ms.

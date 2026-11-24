@@ -35,10 +35,11 @@ policies:
       packAsBytes: true
     policies:
       http:
-        requestTimeout: 80ms
+        requestTimeout: 310ms
 ```
 
-Admit only the gateway to the scanner's listener. The Hindsight pilot and
+The timeout is 310 ms since the tier is on in enforce mode (300 ms deadline + 10 ms).
+It is 80 ms with the tier off or in observe mode. Admit only the gateway to the scanner's listener. The Hindsight pilot and
 its cluster latency check are tracked in
 [HOME-729](https://factory-plan.jomcgi.dev/factory/issue/HOME-729).
 
@@ -283,6 +284,49 @@ can never delay the reply.
 `would_fail` is counted only for a request that Gitleaks allowed. It is what
 enforce mode with failure mode `deny` would answer with 503. Gitleaks still
 denies on its own findings and its own 75 ms deadline in observe mode.
+
+#### Status: enforce since 2026-11-24
+
+Joe decided on 2026-11-24 to skip the 7-day observe window and to enforce at once
+(ARCHITECTURE.md "Decided" 8). `helm.valuesObject` of the Application sets
+`mode: enforce`, `failureMode: deny`, the 300 ms deadline, `maxBodyBytes: 65536`
+and `concurrency: 2`, and the gateway `requestTimeout` is 310 ms. An engine
+outage denies the request (503, "secondary scan unavailable") on both layers: the
+tier's failure mode, and the gateway's `failureMode: deny` when the scanner itself
+does not answer. The table below stays as the reading guide for the data that
+enforce mode produces. To go back to observe mode, set `mode: observe` and
+`requestTimeout: 80ms` in one PR.
+
+#### Body limit
+
+`semgrep.maxBodyBytes` is the largest raw request body that the tier sends to the
+engine. **A body over the limit is `oversize`. In enforce mode with failure mode
+`deny` it is denied (503), like an outage: the tier does not fall back to Gitleaks
+alone** (`semgrep.go`, `call` returns `engineOversize`, which `failed()` counts as
+a failure, and `decide` applies the failure mode). So the limit must be above the
+largest body that a legitimate caller sends. The gateway sends at most 512 KiB
+(`includeRequestBody.maxRequestBytes: 524288`, `allowPartialMessage: false`).
+
+Latency through the gate, measured on 2026-11-24 with a 5 s deadline from an
+ephemeral container on an egress-scan pod (gate README, "Live check"), filler text,
+5 sequential runs each, the whole round trip (connect, gate, router, child, a 70 KB
+reply):
+
+| Raw body | Fastest | Slowest (p100) |
+| --- | --- | --- |
+| 1 KiB | 61 ms | 154 ms (the first call) |
+| 64 KiB | 113 ms | 143 ms |
+| 256 KiB | 205 ms | 247 ms |
+| 512 KiB | 385 ms | 406 ms (over the 300 ms deadline) |
+
+The limit is 64 KiB: the largest size with at least half of the 300 ms deadline
+left at p100 (143 ms), and the v1 value of ARCHITECTURE.md. A JSON body also adds
+its decoded strings to the text that the engine scans (up to twice the body), so
+a 64 KiB body can cost the engine about the time of 128 KiB (about 170 ms). 256 KiB
+leaves 18% of the deadline, and 512 KiB is over it. The Hindsight callers send
+memory lessons of a few hundred tokens and short recalls (factory ARCHITECTURE.md),
+far below 64 KiB. Raise the limit only with new numbers, and raise the deadline and
+the gateway timeout with it.
 
 #### The 7-day observe procedure
 
