@@ -96,6 +96,14 @@ type Binding struct {
 	// meets the authorship waiver (author and every pusher in HumanApprovers,
 	// no hold). Off unless set (Joe, 2026-11-24).
 	AuthorApproved bool `yaml:"authorApproved"`
+	// ReviewAuthors are the only PR authors the reviewer reviews. Another
+	// author's PR gets no check and no model review, like a skip label. Empty
+	// reviews every author (Joe, 2026-11-24: not random PRs, only named actors).
+	ReviewAuthors []string `yaml:"reviewAuthors"`
+	// ReviewAfterChecks holds a new model review until every required check
+	// has passed on the head, so a head that fails CI costs no review tokens
+	// (Joe, 2026-11-24). A head with a verdict or a running review is not held.
+	ReviewAfterChecks bool `yaml:"reviewAfterChecks"`
 	// EnqueueAuthors are the PR authors whose passing heads the reviewer
 	// enqueues; other authors' PRs get the check only. The connector
 	// enqueues the factory's own PRs, since it sees their stops.

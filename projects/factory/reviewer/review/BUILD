@@ -58,6 +58,7 @@ go_test(
         "provenance_test.go",
         "quota_test.go",
         "report_test.go",
+        "reviewscope_test.go",
         "rules_test.go",
         "semgrep_test.go",
         "session_test.go",
