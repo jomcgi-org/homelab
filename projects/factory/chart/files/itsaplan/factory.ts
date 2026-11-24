@@ -235,6 +235,35 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
     },
   )
+  .get(
+    "/issues/:issueId/factory-review",
+    async ({ params, projectId, user, set }) => {
+      await assertPermission(projectId, user, "ai_agents", "read");
+      set.headers["cache-control"] = "no-store";
+      const endpoint = process.env.FACTORY_RUN_PHASE_URL;
+      if (!endpoint) throw new HttpError(503, "Review queue unavailable");
+      const url = new URL("issue-review", endpoint);
+      url.searchParams.set("issueId", String(params.issueId));
+      let review: unknown;
+      try {
+        const response = await fetch(url, {
+          signal: AbortSignal.timeout(2000),
+          redirect: "error",
+        });
+        if (!response.ok) throw new Error("Review queue unavailable");
+        review = await response.json();
+      } catch {
+        throw new HttpError(503, "Review queue unavailable");
+      }
+      if ((await getIssueProjectId(params.issueId)) !== projectId)
+        throw new HttpError(404, "Issue not found");
+      return review;
+    },
+    {
+      workItem: "read",
+      params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
+    },
+  )
   .post(
     "/issues/:issueId/factory-deferred-start",
     async ({ params, body, user, projectId }) => {

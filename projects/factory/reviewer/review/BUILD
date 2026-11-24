@@ -16,6 +16,7 @@ go_library(
         "issues.go",
         "prompt.go",
         "provenance.go",
+        "queue.go",
         "report.go",
         "rules.go",
         "semgrep.go",
