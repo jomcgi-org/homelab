@@ -21,8 +21,8 @@ metadata:
 spec:
   suspend: false
   backoffLimit: 0
-  # The deletes and the wait for the seeds to go (120 s).
-  activeDeadlineSeconds: 900
+  # The deletes and the wait for the seeds to go (420 s), with room for slow calls.
+  activeDeadlineSeconds: 1500
   template:
     metadata:
       labels:
