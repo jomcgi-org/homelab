@@ -22,7 +22,7 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: egress-scan
-      targetRevision: 0.10.11
+      targetRevision: 0.10.13
       helm:
         releaseName: egress-scan
         # The second scan tier, in enforce mode. Joe decided on 2026-11-24 to
