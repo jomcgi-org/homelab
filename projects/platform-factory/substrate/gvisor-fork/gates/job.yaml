@@ -21,7 +21,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: gvisor-fork-gates-2
+  name: gvisor-fork-gates-3
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: "2"
@@ -65,7 +65,7 @@ spec:
             - name: HOME
               value: /tmp
             - name: STORM
-              value: "1000"
+              value: "0"
             - name: CONCURRENCY
               value: "4"
           resources:
