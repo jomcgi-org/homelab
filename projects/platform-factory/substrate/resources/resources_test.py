@@ -921,7 +921,7 @@ _PROVISION_JOB = "egress-engine-provision-2"
 # live Job's pod template is immutable: a changed hash makes the apply fail. A
 # change under egress-scan/gate/provision/ must bump the Job's run suffix and
 # this name in the same change.
-_PROVISION_CONFIGMAP = "egress-engine-provision-tkfmg4mttf"
+_PROVISION_CONFIGMAP = "egress-engine-provision-85g22cb756"
 
 
 def test_engine_provisioning_is_wired_and_runs_once() -> None:
@@ -1264,9 +1264,8 @@ def test_scanner_reaches_the_gate_only_with_per_packet_service_translation() -> 
     scanner = _one(
         [d for d in yaml.safe_load_all(manifest) if d], "Deployment", "egress-scan"
     )
-    runs_in_gvisor = (
-        scanner["spec"]["template"]["spec"].get("runtimeClassName") == "gvisor"
-    )
+    pod_spec = scanner["spec"]["template"]["spec"]
+    runs_in_gvisor = pod_spec.get("runtimeClassName") == "gvisor"
     tier_on = bool(_semgrep_values()["enabled"])
     cilium = yaml.safe_load(Path(os.environ["CILIUM_VALUES"]).read_text())
     translated_per_packet = cilium.get("socketLB", {}).get("hostNamespaceOnly") is True

@@ -150,7 +150,7 @@ GET_TRIES = 3
 
 
 def get_json(*args: str) -> object:
-    last: Failed | None = None
+    last = Failed(f"{' '.join(args)}: no attempt was made")
     for attempt in range(GET_TRIES):
         if attempt:
             time.sleep(POLL)
@@ -160,7 +160,6 @@ def get_json(*args: str) -> object:
         except Failed as err:
             last = err
             log(event="get_retry", args=repr(" ".join(args)), attempt=attempt + 1)
-    assert last is not None
     raise last
 
 
@@ -328,28 +327,46 @@ def template_matches(existing: object, desired: object) -> bool:
 # --- the cluster steps ------------------------------------------------------
 
 
+_NOT_FOUND = re.compile(r"not ?found|does not exist|no such", re.IGNORECASE)
+
+
+def read_object(*args: str) -> object | None:
+    """One object from `kubectl ate get ... -o json`, or None when it is not
+    there: an answer of "not found", or an empty answer (kubectl-ate prints
+    "has no access policy" to stderr and exits 0). Any other failure, a blip of
+    the API or a bad answer, is tried again and then a Failed. It is never read as
+    "absent": a create after a blip would be a write on a wrong belief."""
+    last = Failed(f"{' '.join(args)}: no attempt was made")
+    for attempt in range(GET_TRIES):
+        if attempt:
+            time.sleep(POLL)
+        done = ate(*args, "-o", "json")
+        if done.returncode == 0:
+            if not done.stdout.strip():
+                return None
+            try:
+                return parse_json(done.stdout, " ".join(args))
+            except Failed as err:
+                last = err
+        else:
+            text = (done.stderr or done.stdout).strip()
+            if _NOT_FOUND.search(text):
+                return None
+            last = Failed(f"{' '.join(args)}: exit {done.returncode}: {text[-200:]}")
+        log(event="get_retry", args=repr(" ".join(args)), attempt=attempt + 1)
+    raise last
+
+
 def atespace_exists() -> bool:
-    return ate("get", "atespace", ATESPACE, "-o", "json").returncode == 0
+    return read_object("get", "atespace", ATESPACE) is not None
 
 
 def policy_json() -> object | None:
-    done = ate("get", "access-policy", "-a", ATESPACE, "-o", "json")
-    if done.returncode != 0 or not done.stdout.strip():
-        return None  # "has no access policy" goes to stderr with exit 0
-    try:
-        return json.loads(done.stdout)
-    except ValueError:
-        return None
+    return read_object("get", "access-policy", "-a", ATESPACE)
 
 
 def template_json() -> object | None:
-    done = ate("get", "actor-template", TEMPLATE, "-a", ATESPACE, "-o", "json")
-    if done.returncode != 0:
-        return None
-    try:
-        return json.loads(done.stdout)
-    except ValueError:
-        return None
+    return read_object("get", "actor-template", TEMPLATE, "-a", ATESPACE)
 
 
 def pool_workers() -> list[dict]:
@@ -440,9 +457,6 @@ def actors() -> list[dict]:
 
 def role(actor: dict) -> str:
     return str((actor["status"].get("fork") or {}).get("role") or "")
-
-
-_NOT_FOUND = re.compile(r"not ?found|does not exist|no such", re.IGNORECASE)
 
 
 def delete(failures: list[str], *args: str) -> None:
