@@ -916,7 +916,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
     assert max(init, main) <= 256
 
 
-_PROVISION_JOB = "egress-engine-provision-2"
+_PROVISION_JOB = "egress-engine-teardown-1"
 # The ConfigMap's hash covers provision.py, template.yaml and template.json. The
 # live Job's pod template is immutable: a changed hash makes the apply fail. A
 # change under egress-scan/gate/provision/ must bump the Job's run suffix and
@@ -926,13 +926,13 @@ _PROVISION_CONFIGMAP = "egress-engine-provision-85g22cb756"
 
 def test_engine_provisioning_is_wired_and_runs_once() -> None:
     # ../egress-scan/gate/provision is listed (test_gvisor_fork_slice_is_wired
-    # pins the list). It renders one Job that runs, two network policies and the
-    # generated ConfigMap. The teardown Job is not listed: a suspended Job would
-    # make the Application report Suspended.
+    # pins the list). It renders the teardown Job (it runs once since
+    # 2026-11-24), two network policies and the generated ConfigMap. The apply
+    # Job egress-engine-provision-2 is not listed.
     docs = _docs()
     names = {(d["kind"], d["metadata"]["name"]) for d in docs}
     assert ("Job", _PROVISION_JOB) in names
-    assert ("Job", "egress-engine-teardown-1") not in names
+    assert ("Job", "egress-engine-provision-2") not in names
     assert ("ConfigMap", _PROVISION_CONFIGMAP) in names, [
         n for k, n in names if k == "ConfigMap" and n.startswith("egress-engine")
     ]
@@ -950,7 +950,7 @@ def test_engine_provisioning_is_wired_and_runs_once() -> None:
     assert config["configMap"]["name"] == _PROVISION_CONFIGMAP
     # The Job holds the ate-client token only as a projected file.
     (c,) = pod["containers"]
-    assert {e["name"]: e["value"] for e in c["env"]}["MODE"] == "apply"
+    assert {e["name"]: e["value"] for e in c["env"]}["MODE"] == "teardown"
     assert "envFrom" not in c
 
 

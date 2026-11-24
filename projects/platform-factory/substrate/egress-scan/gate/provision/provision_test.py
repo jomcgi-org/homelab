@@ -1,7 +1,7 @@
 """Validate the staged engine provisioning: the template says what engine-gate
 needs, the script is idempotent and removes what it made, and the Jobs are
-unprivileged and limited to the ate API; the apply Job runs once and the
-teardown Job is off."""
+unprivileged and limited to the ate API; the teardown Job runs once and the
+apply Job is not wired."""
 
 from __future__ import annotations
 
@@ -53,13 +53,12 @@ _TEARDOWN_JOB = "egress-engine-teardown-1"
 
 
 def _job(name: str) -> dict:
-    """The wired Job comes from the kustomize render. The teardown Job is not
-    listed in the kustomization, so it is read from its own file."""
-    if name == _TEARDOWN_JOB:
+    """The wired Job (teardown) comes from the kustomize render. The apply Job
+    is not listed in the kustomization since 2026-11-24, so it is read from its
+    own file."""
+    if name == _PROVISION_JOB:
         (doc,) = [
-            d
-            for d in yaml.safe_load_all((_HERE / "teardown-job.yaml").read_text())
-            if d
+            d for d in yaml.safe_load_all((_HERE / "job.yaml").read_text()) if d
         ]
         return doc
     return _one("Job", name)
@@ -650,22 +649,21 @@ def test_teardown_treats_an_object_that_is_gone_as_done(tmp_path: Path) -> None:
 # --- the manifests ----------------------------------------------------------
 
 
-def test_the_apply_job_runs_and_the_teardown_job_is_off() -> None:
-    # The apply Job is wired and runs once. The teardown Job is suspended and is
-    # not in the kustomization: a suspended Job makes the Application report
-    # Suspended.
+def test_the_teardown_job_runs_and_the_apply_job_is_not_wired() -> None:
+    # The teardown Job is wired and runs once (Joe deferred the Semgrep tier on
+    # 2026-11-24). The apply Job stays in job.yaml and is not in the
+    # kustomization.
     assert not [
         d
         for d in _docs()
-        if d["kind"] == "Job" and d["metadata"]["name"] == _TEARDOWN_JOB
+        if d["kind"] == "Job" and d["metadata"]["name"] == _PROVISION_JOB
     ]
     assert [d["metadata"]["name"] for d in _docs() if d["kind"] == "Job"] == [
-        _PROVISION_JOB
+        _TEARDOWN_JOB
     ]
-    assert _job(_PROVISION_JOB)["spec"]["suspend"] is False
-    assert _job(_TEARDOWN_JOB)["spec"]["suspend"] is True
+    assert _job(_TEARDOWN_JOB)["spec"]["suspend"] is False
     kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
-    assert kustomization["resources"] == ["job.yaml"]
+    assert kustomization["resources"] == ["network-policy.yaml", "teardown-job.yaml"]
 
 
 def test_both_jobs_use_the_ate_client_and_the_right_mode() -> None:
@@ -718,7 +716,7 @@ def test_config_map_holds_the_script_and_the_template() -> None:
             for v in _job(name)["spec"]["template"]["spec"]["volumes"]
             if v["name"] == "config"
         ][0]
-        if name == _TEARDOWN_JOB:
+        if name == _PROVISION_JOB:
             # Read from its own file: the name has no hash. It is the same
             # ConfigMap once a kustomization that lists the file renders it.
             assert vol["configMap"]["name"] == cm["metadata"]["name"].rsplit("-", 1)[0]

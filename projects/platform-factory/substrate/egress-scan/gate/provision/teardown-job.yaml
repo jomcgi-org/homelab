@@ -1,11 +1,14 @@
-# The teardown of the engine atespace, NOT listed in kustomization.yaml: it is
-# suspended, and a suspended Job makes the Application report Suspended. To use
-# it, stop engine-gate first (replicas 0: it deletes its children on SIGTERM),
-# list this file in kustomization.yaml, set suspend to false and merge. The Job
-# deletes the actors, the templates, the access policy and the atespace, and
-# fails if a delete fails (provision.py, MODE=teardown). Read the run with
+# The teardown of the engine atespace. Wired since 2026-11-24 (Joe deferred the
+# Semgrep tier, and engine-gate is not deployed: it deleted its children on
+# SIGTERM). It runs once. The Job deletes the actors, the templates, the access
+# policy and the atespace, and fails if a delete fails (provision.py,
+# MODE=teardown). Read the run with
 # kubectl -n ate-system logs job/egress-engine-teardown-1 | grep '^PROVISION '.
-# It shares the pod shape, the ConfigMap and the network policies of job.yaml.
+# It shares the pod shape and the ConfigMap of job.yaml (not wired now), and the
+# network rules of network-policy.yaml. A Job's pod template is immutable:
+# editing provision.py, template.yaml or template.json changes the ConfigMap's
+# hash, so bump the run suffix here in the same change. After it ran, the next
+# PR removes this directory from the kustomization.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -14,7 +17,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  suspend: true
+  suspend: false
   backoffLimit: 0
   # The deletes and the wait for the seeds to go (120 s).
   activeDeadlineSeconds: 900

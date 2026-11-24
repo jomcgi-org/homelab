@@ -510,10 +510,11 @@ at any time: an object that exists is left alone, an access policy without the
 editor member gets it added (the other bindings stay), and a template that
 differs in any value is an error, because a template is replaced blue/green.
 
-**Teardown.** Stop the gate first (`replicas: 0`: it deletes its children on
-SIGTERM). Then list `provision/teardown-job.yaml` in `provision/kustomization.yaml`
-and set `suspend: false` in a PR (the file is not listed while it is suspended,
-because a suspended Job makes the Application report Suspended). The Job
+**Teardown.** It ran on 2026-11-24 (Joe deferred the Semgrep tier): the gate was
+stopped first (it deletes its children on SIGTERM), and `provision/kustomization.yaml`
+listed `provision/teardown-job.yaml` with `suspend: false`. To run it again, stop
+the gate, then list the file in a PR (a suspended Job makes the Application
+report Suspended, so it is listed only when it runs). The Job
 (`MODE=teardown`) deletes what is left of the actors, then the templates (which
 removes the seeds), waits for the seeds to go, then deletes the access policy and
 the atespace, which the API refuses to delete while it holds an actor or a
