@@ -792,6 +792,7 @@ def test_spike_script_logs_a_long_golden_error_in_full(
 
 
 _FORK_NS = "substrate-gvisor-fork"
+_GATES_NS = "substrate-gvisor-fork-gates"
 # Every object ../gvisor-fork renders (step 5 of the enable steps). A new object
 # there changes the cluster, so it must be listed here in the same change.
 _FORK_OBJECTS = {
@@ -806,6 +807,14 @@ _FORK_OBJECTS = {
     ("SandboxConfig", None, "gvisor-fork"),
     ("ServiceAccount", _FORK_NS, "fork-worker"),
     ("WorkerPool", _FORK_NS, "gvisor-fork"),
+    # The isolation-gate pool and Job (gvisor-fork/gates/): staged, to be removed.
+    ("CiliumNetworkPolicy", "ate-system", "ate-api-server-gvisor-fork-gates"),
+    ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-gates"),
+    ("CiliumNetworkPolicy", _GATES_NS, "substrate-workers"),
+    ("Job", "ate-system", "gvisor-fork-gates-1"),
+    ("Namespace", None, _GATES_NS),
+    ("ServiceAccount", _GATES_NS, "fork-worker"),
+    ("WorkerPool", _GATES_NS, "gvisor-fork-gates"),
 }
 _GVISOR_DEFAULT = "sandboxconfig.ate.dev/is-class-default"
 
@@ -848,6 +857,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
     assert {k[2].rsplit("-", 1)[0] for k in configmaps} == {
         "gvisor-fork-assets",
         "gvisor-fork-conformance",
+        "gvisor-fork-gates",
     }
     assert rendered - configmaps == _FORK_OBJECTS
     classes = {
@@ -890,6 +900,32 @@ def test_gvisor_fork_slice_is_wired() -> None:
     ]
     assert config_volume["configMap"]["name"] == conformance_map
     assert conformance_map == "gvisor-fork-conformance-tgf4tdtbht"
+    # The staged isolation-gate pool and Job (gvisor-fork/gates/, to be removed).
+    # Same rule as the conformance Job: the Job's config volume names the
+    # generated ConfigMap, whose name carries a hash of gates/. The Job is created
+    # suspended, and its pool is separate from production: own namespace, own
+    # label, tiny requests, one worker.
+    (gates_map,) = [k[2] for k in configmaps if k[2].startswith("gvisor-fork-gates-")]
+    gates_job = _one(docs, "Job", "gvisor-fork-gates-1")
+    (gates_volume,) = [
+        v
+        for v in gates_job["spec"]["template"]["spec"]["volumes"]
+        if v["name"] == "config"
+    ]
+    assert gates_volume["configMap"]["name"] == gates_map
+    assert gates_map == "gvisor-fork-gates-22995hc762"
+    assert gates_job["spec"]["suspend"] is True
+    gates_pool = _one(docs, "WorkerPool", "gvisor-fork-gates")
+    assert gates_pool["metadata"]["namespace"] == _GATES_NS
+    assert gates_pool["metadata"]["labels"] == {"workload": "gvisor-fork-gates"}
+    assert gates_pool["spec"]["replicas"] == 1
+    assert gates_pool["spec"]["template"]["resources"]["requests"] == {
+        "cpu": "100m",
+        "memory": "256Mi",
+    }
+    # The production pool's label (the production template's selector) is not
+    # the gate pool's, so neither template can land on the other pool.
+    assert pool["metadata"]["labels"] != gates_pool["metadata"]["labels"]
     assert not [
         d for d in docs if d["metadata"]["name"].startswith("gvisor-fork-latency")
     ]
@@ -1049,7 +1085,7 @@ def test_fork_seed_gate_is_on() -> None:
         if d["kind"] == "WorkerPool"
         and any(c.get("platform") == "kvm" for c in d["spec"]["sandboxClasses"])
     ]
-    assert kvm_pools == ["gvisor-fork"]
+    assert sorted(kvm_pools) == ["gvisor-fork", "gvisor-fork-gates"]
     # ForkSeed is nowhere else: no other container argument or variable of a
     # rendered workload names it.
     for doc in _docs():
@@ -1072,7 +1108,9 @@ def test_fork_seed_gate_is_on() -> None:
     # does not know ForkSeed. Its --preview must stay as it is with the gate
     # off, which only the build above guarantees.
     for doc in _docs():
-        if doc["kind"] == "WorkerPool" and doc["metadata"]["name"] != "gvisor-fork":
+        if doc["kind"] == "WorkerPool" and not doc["metadata"]["name"].startswith(
+            "gvisor-fork"
+        ):
             image = doc["spec"]["workerImage"]
             assert image.startswith("ghcr.io/kagent-dev/substrate/ateworker-"), image
             assert ":v1.0.1@sha256:" in image, image
@@ -1148,6 +1186,16 @@ def test_fork_images_share_one_fork_commit_tag() -> None:
         if v["name"] == "cli"
     ]
     refs["conformance/cli"] = cli
+    refs["workerpool/gvisor-fork-gates"] = _one(
+        docs, "WorkerPool", "gvisor-fork-gates"
+    )["spec"]["workerImage"]
+    gates = _one(docs, "Job", "gvisor-fork-gates-1")
+    (gates_cli,) = [
+        v["image"]["reference"]
+        for v in gates["spec"]["template"]["spec"]["volumes"]
+        if v["name"] == "cli"
+    ]
+    refs["gates/cli"] = gates_cli
     tags = {key: ref.split("@")[0].rsplit(":", 1)[1] for key, ref in refs.items()}
     assert set(tags.values()) == {_FORK_TAG}, tags
     for key, ref in refs.items():

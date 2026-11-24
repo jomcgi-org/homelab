@@ -1,0 +1,58 @@
+# ActorTemplate (protojson ateapi.ActorTemplate) for the isolation-gate Job
+# (gates.py). gates.py replaces __GUEST__ with guest.sh, as one JSON string, so
+# the script and the template cannot drift. The guest is busybox: a shell that
+# can ask gVisor for the checkpoint, answer the wakeup probe and run one test
+# mode for each fork (the mode is the actor name's first word).
+#
+# Own atespace and own pool (workload: gvisor-fork-gates): the production pool and
+# engine-gate never see this template, and these actors never run on the
+# production worker. The template holds no secret. GATE_CANARY is a fake value
+# for gate X7: every child can read a seed's environment (a known rule), so the
+# value must be harmless.
+#
+# image: the linux/amd64 manifest of busybox 1.37.0 on Docker Hub, by digest.
+# atelet pulls Docker Hub anonymously (resources/network-policy.yaml).
+metadata:
+  atespace: gvisor-fork-gates
+  name: gate
+workerSelector:
+  matchLabels:
+    workload: gvisor-fork-gates
+containers:
+  - name: guest
+    image: docker.io/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4
+    command:
+      - /bin/sh
+      - -c
+      - __GUEST__
+    env:
+      - name: GATE_CANARY
+        value: gate-canary-not-a-secret-7f3a9c
+    wakeupProbe:
+      httpGet:
+        path: /healthz
+        port: 8080
+      timeoutSeconds: 45
+# One fork's private limits. 64 MiB makes the memory kill test (200 MB) quick:
+# the kernel kills it above the limit plus the 16 MiB fork overhead.
+resources:
+  limits:
+    cpuMillicores: 250
+    memoryBytes: 67108864
+snapshotConfig:
+  goldenSnapshotConfig:
+    mode: GOLDEN_SNAPSHOT_MODE_DISABLED
+forkConfig:
+  mode: FORK_MODE_SEED_AND_FORK
+  seedResources:
+    limits:
+      cpuMillicores: 250
+      memoryBytes: 201326592
+  singleUse: true
+  # The lifetime kill test sleeps past this.
+  maxLifetimeSeconds: 300
+  # Low, so the process limit test reaches it fast.
+  pidsLimit: 64
+  # 1 MiB: the log limit test writes 3 MB.
+  logBytesLimit: 1048576
+  egress: FORK_EGRESS_NONE

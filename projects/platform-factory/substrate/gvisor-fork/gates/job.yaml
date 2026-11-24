@@ -1,0 +1,164 @@
+# The isolation-gate Job: STAGED, TO BE REMOVED with ../gates/ (see pool.yaml).
+# It runs the guest-side gates of projects/factory-cluster/README.md, step 9, on
+# the gate pool (gates.py lists the modes and the checks). The log is the result:
+# grep '^GATES '. The guest's lines are in the gate worker's log
+# (GATE <actor> ...). The node-side checks (the filter byte diff, the cgroup and
+# namespace leak counts) run by hand on the worker's node while this Job runs.
+#
+# Created SUSPENDED. Set suspend to false in a reviewed change to run it, after
+# the pool has a worker. A Job's pod template is immutable: editing anything
+# under gates/ changes the generated ConfigMap's hash, and so the pod template:
+# bump the run suffix in the name in the same change (resources_test.py pins the
+# hash). A suspended Job keeps the Application in health Suspended.
+#
+# It runs as ate-system/ate-client, which the ate API already authorizes
+# (ateApi.authorization.bootstrapOwners in ../../values/substrate.yaml), so it
+# grants nobody anything. It reaches the ate API (443) and the Kubernetes API
+# (kubectl-ate lists the ClusterTrustBundles). It sends no request through the
+# router: the 512 KiB body test (X5) needs a router client identity, which is a
+# grant for Joe to decide.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gvisor-fork-gates-1
+  namespace: ate-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  suspend: true
+  backoffLimit: 0
+  # The worker wait (900 s), the seed (600 s), 10 modes (the two long ones wait up
+  # to 330 s each), 1000 forks at 4 at a time and the checks around them.
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app: gvisor-fork-gates
+    spec:
+      serviceAccountName: ate-client
+      restartPolicy: Never
+      # SIGTERM (the deadline, a delete) runs the script's cleanup: the forks, the
+      # template and the atespace.
+      terminationGracePeriodSeconds: 300
+      # The in-cluster Kubernetes config kubectl-ate needs for the
+      # ClusterTrustBundles. The ate API takes the audience token below.
+      automountServiceAccountToken: true
+      imagePullSecrets:
+        - name: ghcr-imagepull-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gates
+          image: python:3.14.10-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
+          command: [python3, -I, /config/gates.py]
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: HOME
+              value: /tmp
+            - name: STORM
+              value: "1000"
+            - name: CONCURRENCY
+              value: "4"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+              ephemeral-storage: 64Mi
+            limits:
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: cli
+              mountPath: /cli
+              readOnly: true
+            - name: ate-token
+              mountPath: /var/run/ate
+              readOnly: true
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: config
+          configMap:
+            name: gvisor-fork-gates
+        # The fork build of kubectl-ate: /cli/ko-app/kubectl-ate, published by
+        # substrate-fork-images.yml at fork commit 8cf248b96e08.
+        - name: cli
+          image:
+            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-8cf248b96e08@sha256:bfb9cf01712dd691232298cc19767a7536c00f2cfe0c76b41ac6945f2d2885f7
+            pullPolicy: IfNotPresent
+        # The ate API's JWT provider accepts this audience (api-server-config.yaml).
+        - name: ate-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: api.ate-system.svc
+                  expirationSeconds: 3600
+                  path: token
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: gvisor-fork-gates
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: gvisor-fork-gates
+  egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: ate-api-server
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+# Upstream's NetworkPolicy admits ate-api-server callers only from its own
+# components and from namespaces labelled ate.dev/api-access, which ate-system
+# is not. Cilium adds this rule to it: the Job, and nothing else in ate-system.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ate-api-server-gvisor-fork-gates
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: ate-api-server
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: gvisor-fork-gates
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
