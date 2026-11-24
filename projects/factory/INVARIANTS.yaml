@@ -248,7 +248,7 @@ invariants:
   - projects/factory/connector/dispatch/issue_brief.go
   test: //projects/factory/chart:chart_test
   state: live
-- id: FACT-23
+- id: HOME-175-1
   statement: A finding decision binds to the prompt comment's body hash and updated_at until a review reports the finding fixed.
   mechanism:
   - projects/factory/reviewer/review/engine.go
