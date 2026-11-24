@@ -544,7 +544,7 @@ closes.
 | Direction | Tracks | State |
 | --- | --- | --- |
 | Pool of waiting children for the engine path | HOME-TBD | built in `gate/`, wired with the gate |
-| `engine-gate` StatefulSet | HOME-TBD | deployed, one replica, not called since the tier went off (`gate/README.md`) |
+| `engine-gate` StatefulSet | HOME-TBD | `deferred, not deployed` (Decided 9). The source and manifests stay in `gate/` |
 | Pro engine image, private package | HOME-TBD | `designed` |
 | The private `engine-pro` workflow | HOME-TBD | `designed` |
 | Latency Jobs `gvisor-fork-latency-1` and `-data-1` | HOME-TBD | `staged off`, suspended and unwired |

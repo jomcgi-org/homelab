@@ -137,14 +137,6 @@ spec:
               protocol: TCP
     - toEndpoints:
         - matchLabels:
-            k8s:io.kubernetes.pod.namespace: ate-system
-            app: engine-gate
-      toPorts:
-        - ports:
-            - port: "9090"
-              protocol: TCP
-    - toEndpoints:
-        - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
             app.kubernetes.io/name: mandoline
       toPorts:

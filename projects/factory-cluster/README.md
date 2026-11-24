@@ -1317,11 +1317,6 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | `FactoryWorkerWaitNotHolding` | The connector's send wait recorded a `timeout` or `unknown` in the last 15 min: a send went with no free worker, or with no fresh capacity row. A pool at zero can then fail the send with "no worker has room". Check the reaper and the pool's HPA ([verify steps](../factory/ARCHITECTURE.md#worker-pool-autoscaling)). |
 | `SemgrepSyncFailed` | The newest Semgrep to INTSEC sync Job in its namespace has failed |
 | `AlertRelayDown` | No ready relay replica for 5 min |
-| `EgressScanSemgrepDenying` | Three or more requests denied in 10 min (for 5 min) because the Semgrep engine gave no verdict: the tier is in enforce mode with failure mode `deny`, so an engine outage denies Hindsight requests through the egress gateway |
-| `EngineGateDown` | No `engine-gate` pod has been scraped for 5 min (warning; after a rollback to zero replicas it fires for good, so the rollback PR removes the rules and the scrape job). The scanner's Semgrep tier gets no engine verdict ([runbook](../platform-factory/substrate/egress-scan/gate/README.md#alerts)) |
-| `EngineGateNotReady` | The `engine-gate` pod has not been Ready for 10 min: the startup cleanup, the pool, the ate API, or an empty pool with failing creates |
-| `EngineGatePoolEmpty` | `engine-gate` has had no waiting child for 3 min, so requests take the slower path A or fail |
-| `EngineGateFailing` | More than 5% of `engine-gate` requests failed (not counting bad requests, oversize bodies and disconnects) for 10 min |
 | `FactoryHealthUnhealthy` | The public `health.json` reports a `status` other than `healthy` for 5 min. The message names each down component |
 | `FactoryHealthStale` | The newest `health.json` that Prometheus read has a `generatedAt` more than 10 min old, or Prometheus read none in 15 min, for 2 min |
 | `FactoryEgressIPChanged` | The egress IP that Cloudflare sees differs from an address of the last hour. It fires at the first scrape of the new address, names both addresses and clears 1 h later |
