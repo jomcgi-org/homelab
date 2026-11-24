@@ -234,8 +234,8 @@ limit `semgrep.maxBodyBytes` applies to the raw body.
 
 The scan grows by about 0.35 ms per KiB of engine text, and each copy across a
 hop adds about 3 ms per 64 KiB. Gitleaks on a large body runs beside the engine
-and adds nothing while it stays under its 75 ms deadline. The v1 limit is 32 KiB
-of raw body (`semgrep.maxBodyBytes: 32768`). Its worst case, escaped JSON, costs
+and adds nothing while it stays under its 75 ms deadline. The limit is 64 KiB
+of raw body (`semgrep.maxBodyBytes: 65536`, Decided 8). Its worst case, escaped JSON, costs
 what a plain 64 KiB body costs. That leaves about 77 ms under the 300 ms
 deadline. A larger body is `oversize`, and deny mode returns 503. Observe mode
 sets the final limit from real sizes. It records them in
@@ -523,8 +523,8 @@ them yet.
 | 7 | Skip the X gates (X1 to X7 and X9) for now and wire the scanner now: the tier runs in observe mode for 7 days, then one PR enforces. The X gates run during the observe window, and a failure turns the tier off | Joe, 2026-11-23, in session |
 | 8 | Skip the 7-day observe window and enforce the Semgrep tier now ("lets just get it into prod"): `semgrep.mode: enforce`, failure mode `deny` on both layers, gateway `requestTimeout` 310 ms, body limit 64 KiB (measured, `egress-scan/README.md` "Body limit"). This supersedes the 7 days of row 3 and 7. The X gates keep running. Revert is `mode: observe` and `requestTimeout: 80ms` | Joe, 2026-11-24 |
 
-Still open: the engine body limit and the Hindsight route timeout. The enforce
-PR sets them from observe data. The v1 values are 32 KiB of raw body and 310 ms.
+The engine body limit (64 KiB) and the Hindsight route timeout (310 ms) are set
+in Decided 8.
 
 ## Direction
 
@@ -534,7 +534,7 @@ closes.
 | Direction | Tracks | State |
 | --- | --- | --- |
 | Pool of waiting children for the engine path | HOME-TBD | built in `gate/`, wired with the gate |
-| `engine-gate` StatefulSet | HOME-TBD | wired, one replica, called by the scanner in observe mode (`gate/README.md`, "Enable steps") |
+| `engine-gate` StatefulSet | HOME-TBD | wired, one replica, called by the scanner in enforce mode (`gate/README.md`, "Enable steps") |
 | Pro engine image, private package | HOME-TBD | `designed` |
 | The private `engine-pro` workflow | HOME-TBD | `designed` |
 | Latency Jobs `gvisor-fork-latency-1` and `-data-1` | HOME-TBD | `staged off`, suspended and unwired |
