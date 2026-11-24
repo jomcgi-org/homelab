@@ -1003,7 +1003,7 @@ first in-cluster run is below. Nothing failed.
 | Gate | Checks | State |
 | --- | --- | --- |
 | X1 | Child seccomp equals a normal sandbox's except 2 instructions (the control fd number); caps 0; `NoNewPrivs` | partial in cluster (state and namespaces passed); the filter byte diff ran off-cluster only |
-| X2 | No writable `MAP_SHARED` between children; KSM off | passed in cluster: no writable sharing; KSM off on all three nodes since 2026-11-24 (#8639) |
+| X2 | No writable `MAP_SHARED` between children; KSM off | passed in cluster, reboot not tested: no writable sharing; KSM off on all three nodes (node-1 since #8639, 2026-11-24) |
 | X3 | No inherited descriptors to the seed or siblings | passed in cluster, with the known gaps (`/dev/null`, read-only rootfs) |
 | X4 | Differs per child: `getrandom`, `urandom`, uuid, `boot_id`. Same in every child: ASLR, stack canary, `AT_RANDOM` | node-1 only; not runnable in cluster without a guest process |
 | X5 | A 512 KiB body through router and atunnel; egress NONE incl. DNS | partial: egress NONE checked from the host side |
@@ -1029,7 +1029,7 @@ of the design note (the gVisor fork's `runsc/forkd/assert.go` holds
 | Gate | Method | Result | Evidence |
 | --- | --- | --- | --- |
 | X1 | Read `/proc/<pid>/status` of every thread of every child, and of the seed, forkd and the worker; `/proc/<pid>/ns` | Partial: state passed, filter byte diff not run | Every thread of every child has `Seccomp: 2` with 2 filters and `CapEff` 0. The main thread has `CapPrm`, `CapBnd` and `CapAmb` 0 and `NoNewPrivs: 1`. Each child has its own ipc, mnt, net, pid and uts namespaces and shares the seed's user namespace (known gap). The seed sandbox holds `CAP_SYS_ADMIN` only (`0x200000`), as in the off-cluster run. The template stub has a full bounding set and empty permitted and effective sets. forkd and the worker are unfiltered (known gap). A failed `attestChild` check (seccomp, no capabilities, `NoNewPrivs`, own namespaces) fails the fork; all 94 forks succeeded. Not run: the filter byte diff, because `PTRACE_SECCOMP_GET_FILTER` stops a thread of a live child. |
-| X2 | `collect.py`: `/proc/<pid>/smaps` of the children and the seed, matched on (device, inode); `/sys/kernel/mm/ksm`, `/proc/<pid>/ksm_stat` | Pass: no writable sharing; KSM is off on node-1 since 2026-11-24 07:14Z (first run: on, inert) | The only mapping that two processes share is `rootfs.erofs`, `r--s`, 371 MiB (clean seed pages, known gap). No writable shared mapping is shared: the `rw-s` mappings are per-process (`kvm-vcpu`, a `memfd`). On the first run node-1 had KSM `run=1`, but `pages_shared` and `pages_sharing` were 0, no VMA of the seed or a child had the `mg` flag, and `ksm_rmap_items` was 0 for them, so nothing merged. Nodes 2 and 3 have `run=0` (read over ssh). After #8639, `ksm-off.sh` ran on node-1: `run` is 0, and it is still 0 after `systemctl restart qemu-kvm.service`, which reruns the init that wrote 1 at boot (a reboot of node-1 was not done). |
+| X2 | `collect.py`: `/proc/<pid>/smaps` of the children and the seed, matched on (device, inode); `/sys/kernel/mm/ksm`, `/proc/<pid>/ksm_stat` | Pass (running state; reboot not tested): no writable sharing; KSM is now off on node-1 (on and inert on the first run) | The only mapping that two processes share is `rootfs.erofs`, `r--s`, 371 MiB (clean seed pages, known gap). No writable shared mapping is shared: the `rw-s` mappings are per-process (`kvm-vcpu`, a `memfd`). On the first run node-1 had KSM `run=1`, but `pages_shared` and `pages_sharing` were 0, no VMA of the seed or a child had the `mg` flag, and `ksm_rmap_items` was 0 for them, so nothing merged. Nodes 2 and 3 have `run=0` (read over ssh). After #8639, `ksm-off.sh` ran on node-1: `run` is 0 and `pages_shared` is 0. `run` is still 0 after `systemctl restart qemu-kvm.service`, which reruns the init that wrote 1 at boot. A reboot of node-1 was not done. |
 | X3 | `collect.py`: `kcmp(KCMP_FILE)` for every pair of fds of different processes (43 shared open file descriptions); namespace and fd lists | Pass, with the known gaps | Child to child and child to seed share only `/dev/null` (read-only and read-write) and the read-only `rootfs.erofs` fd. Child to forkd shares two per-child result files that no sibling holds. No `kvm-vm`, `kvm-vcpu`, `memfd`, socket or pipe is shared: each child has its own `kvm-vm`. Each child has its own pid namespace. |
 | X4 | Not run in cluster | Not run | Needs a process inside the guest (`getrandom`, `urandom`, uuid, `boot_id`, `AT_RANDOM`). Reaching it means `runsc exec` into a production child or a new test template, which changes the cluster. The off-cluster result stands. |
 | X5 | `nsenter -n` into each child's network namespace (read-only) | Partial | Egress NONE holds structurally. The child's namespace has one link, `lo`, down, with no address and no route, so a process that left the sentry has no path out. The pod's namespace has `eth0` (`10.42.1.12`). Not run: a 512 KiB body (the live tier sends at most 65536 bytes, `--semgrep-max-body`, so production never does, and the latency-data Job needs the router grant) and a DNS lookup from inside the guest. |
@@ -1039,10 +1039,11 @@ of the design note (the gVisor fork's `runsc/forkd/assert.go` holds
 
 Findings, none an isolation failure:
 
-- KSM was on at node-1 (`run=1`), set at every boot by `qemu-kvm.service`
-  (`qemu-system-common`, `KSM_ENABLED=AUTO`). It merged nothing. Fixed on
-  2026-11-24 (#8639, Joe approved): `run` is 0 on node-1, and a drop-in on that
-  unit and a `tmpfiles.d` entry keep it 0 at boot. Nodes 2 and 3 were already off.
+- KSM was on at node-1 (`run=1`), set at boot by `qemu-kvm.service`
+  (`qemu-system-common`, `KSM_ENABLED=AUTO`). It merged nothing in the first run.
+  Fixed on 2026-11-24 (#8639, Joe approved): `run` is 0 on node-1. A drop-in on
+  that unit and a `tmpfiles.d` entry are meant to keep it 0 at boot. A restart of
+  the unit left it 0; a reboot has not been tested. Nodes 2 and 3 were already off.
 - The seed cgroup peaked at 444 MiB of its 512 MiB cap (87%). The cap was never
   reached (`oom_kill` 0). The peak likely includes file cache of the 371 MiB root
   filesystem (`memory.stat` was not read). A larger rule set may need a larger cap.
