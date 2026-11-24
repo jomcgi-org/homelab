@@ -7,7 +7,9 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   parentRefs:
-    - name: edge
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
       sectionName: http
   hostnames: [t3.jomcgi.dev]
   rules:
@@ -19,9 +21,12 @@ spec:
         request: "0s"
         backendRequest: "0s"
       backendRefs:
-        - name: t3-relay
+        - group: ""
+          kind: Service
+          name: t3-relay
           namespace: t3
           port: 8080
+          weight: 1
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
