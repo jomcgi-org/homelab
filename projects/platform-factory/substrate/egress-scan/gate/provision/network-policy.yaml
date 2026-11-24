@@ -1,0 +1,44 @@
+# Network rules of the engine provisioning Jobs (job.yaml, teardown-job.yaml).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: egress-engine-provision
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: egress-engine-provision
+  egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: ate-api-server
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+# Upstream's NetworkPolicy admits ate-api-server callers only from its own
+# components and from namespaces labelled ate.dev/api-access, which ate-system
+# is not. Cilium adds this rule to it: the two Jobs, and nothing else new.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ate-api-server-egress-engine-provision
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: ate-api-server
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: egress-engine-provision
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

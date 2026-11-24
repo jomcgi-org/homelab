@@ -4,7 +4,10 @@
 # lists the steps. Design: ../../ARCHITECTURE.md, "Engine path". What it changes
 # and what Joe approves: ../README.md, "Enable steps".
 #
-# Wired, and it runs once: egress-engine-provision-2 is not suspended. Merge the
+# NOT WIRED since 2026-11-24 (Joe deferred the Semgrep tier; the kustomization
+# lists teardown-job.yaml instead). This is the apply Job that ran once as
+# egress-engine-provision-2. Its network rules are in network-policy.yaml. While
+# it was wired: merge the
 # change that wired it only after the pool pod restarted (a worker pins the
 # atespace of its first seed for the life of its process, ARCHITECTURE.md,
 # "Atespace pin") and before engine-gate is wired (the gate has nothing to claim
@@ -123,47 +126,3 @@ spec:
                   audience: api.ate-system.svc
                   expirationSeconds: 3600
                   path: token
----
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
-metadata:
-  name: egress-engine-provision
-  namespace: ate-system
-spec:
-  endpointSelector:
-    matchLabels:
-      app: egress-engine-provision
-  egress:
-    - toEntities: [kube-apiserver]
-      toPorts:
-        - ports:
-            - port: "6443"
-              protocol: TCP
-    - toEndpoints:
-        - matchLabels:
-            app: ate-api-server
-      toPorts:
-        - ports:
-            - port: "443"
-              protocol: TCP
----
-# Upstream's NetworkPolicy admits ate-api-server callers only from its own
-# components and from namespaces labelled ate.dev/api-access, which ate-system
-# is not. Cilium adds this rule to it: the two Jobs, and nothing else new.
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
-metadata:
-  name: ate-api-server-egress-engine-provision
-  namespace: ate-system
-spec:
-  endpointSelector:
-    matchLabels:
-      app: ate-api-server
-  ingress:
-    - fromEndpoints:
-        - matchLabels:
-            app: egress-engine-provision
-      toPorts:
-        - ports:
-            - port: "443"
-              protocol: TCP
