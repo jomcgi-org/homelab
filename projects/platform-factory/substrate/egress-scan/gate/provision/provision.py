@@ -497,15 +497,22 @@ def teardown() -> None:
                     "-a",
                     ATESPACE,
                 )
+    def seeds_left() -> list[dict]:
+        return [a for a in actors() if role(a) == "FORK_ROLE_SEED"]
+
+    def seed_detail() -> list[tuple[str, str]]:
+        # Names and states only: nothing of the actors' content.
+        return [(str(a["metadata"]["name"]), str(a["status"]["state"])) for a in seeds_left()]
+
     try:
-        wait_for(
-            "the seeds removed",
-            STATE_WAIT,
-            lambda: not [a for a in actors() if role(a) == "FORK_ROLE_SEED"],
-        )
+        wait_for("the seeds removed", STATE_WAIT, lambda: not seeds_left(), seed_detail)
     except Failed as err:
         failures.append(f"the seeds removed ({err})")
-        log(event="teardown_wait", message=repr(str(err)))
+        try:
+            left = repr(seed_detail())
+        except Failed as read_err:
+            left = repr(f"unreadable: {read_err}")
+        log(event="teardown_wait", message=repr(str(err)), seeds_left=left)
     # The API refuses to delete the policy or the atespace while an actor or a
     # template is left, so a failure above ends here before them.
     if failures:

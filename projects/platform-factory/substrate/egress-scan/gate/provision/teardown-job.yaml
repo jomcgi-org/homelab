@@ -1,9 +1,11 @@
 # The teardown of the engine atespace. Wired by the PR of 2026-11-24 (Joe deferred
 # the Semgrep tier, and engine-gate is not deployed: it deletes its children on
-# SIGTERM). It runs once on the first sync. The Job deletes the actors, the templates, the access
-# policy and the atespace, and fails if a delete fails (provision.py,
-# MODE=teardown). Read the run with
-# kubectl -n ate-system logs job/egress-engine-teardown-1 | grep '^PROVISION '.
+# SIGTERM). It runs once on the first sync. The Job deletes the actors, the
+# templates, the access policy and the atespace, and fails if a delete fails
+# (provision.py, MODE=teardown). The run of -1 failed: the seed actor stayed for
+# more than 120 s after the worker dropped the seed. This run (-2) waits 420 s
+# and logs the seeds that stay. Read the run with
+# kubectl -n ate-system logs job/egress-engine-teardown-2 | grep '^PROVISION '.
 # It shares the pod shape and the ConfigMap of job.yaml (not wired now), and the
 # network rules of network-policy.yaml. A Job's pod template is immutable:
 # editing provision.py, template.yaml or template.json changes the ConfigMap's
@@ -12,7 +14,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: egress-engine-teardown-1
+  name: egress-engine-teardown-2
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: "2"
@@ -54,6 +56,10 @@ spec:
               value: /tmp
             - name: MODE
               value: teardown
+            # The seeds go some time after their template: the run of -1 saw them
+            # for 120 s after the worker dropped the seed.
+            - name: STATE_WAIT_SECONDS
+              value: "420"
           resources:
             requests:
               cpu: 50m
