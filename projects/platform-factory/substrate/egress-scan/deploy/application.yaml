@@ -22,7 +22,7 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: egress-scan
-      targetRevision: 0.10.13
+      targetRevision: 0.11.3
       helm:
         releaseName: egress-scan
         # The second scan tier (the Semgrep engine) is off. Joe deferred the
