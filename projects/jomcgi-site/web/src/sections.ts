@@ -43,7 +43,9 @@ export const SECTIONS: readonly Section[] = [
     name: "Homelab",
     group: "Writing",
     path: "/homelab",
-    legacy: "/homelab",
+    // Until this section is live here, the hub's /docs is the page that
+    // served the same purpose.
+    legacy: "/docs",
     live: true,
     summary: "What runs, how a threat is contained, and where to read more.",
   },
@@ -134,8 +136,8 @@ export const SECTIONS: readonly Section[] = [
     path: "/engineering",
     legacy: "/engineering",
     live: true,
-    // Unlisted: Docs covers these systems from the repository. The page
-    // stays at its address.
+    // Unlisted: the Homelab page covers these systems and links to the
+    // repository for detail. The page stays at its address.
     listed: false,
     summary: "How this site and its cluster are engineered.",
   },

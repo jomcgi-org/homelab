@@ -38,7 +38,6 @@ js_library(
         ],
         exclude = [
             "dist/**",
-            "docs/**",
             "node_modules/**",
             "src/**/*.test.tsx",
             "src/factory/test-fixtures.ts",
