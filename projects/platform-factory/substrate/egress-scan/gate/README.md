@@ -244,7 +244,7 @@ equals the Bazel image digest.
 
 Read-only checks, with `KUBECONFIG=~/.kube/factory-sessions.yaml`:
 
-- **DONE:** the provisioning Job succeeded at 23:54Z on 2026-11-23: the atespace `egress-scan-engine`, its access policy and the template `engine` exist, and the log has `step=seed result=ready seconds=12.3` (the private engine image pulled, and the worker is pinned to `egress-scan-engine`). To read it again: `kubectl -n ate-system logs job/egress-engine-provision-1 | grep '^PROVISION '` ends with `event=summary mode=apply result=ok`.
+- **DONE:** the provisioning Job succeeded at 23:54Z on 2026-11-23: the atespace `egress-scan-engine`, its access policy and the template `engine` exist, and the log has `step=seed result=ready seconds=12.3` (the private engine image pulled, and the worker is pinned to `egress-scan-engine`). Job `-1` ran then. ArgoCD replaced it by `-2` (a no-op re-run), so read the live one: `kubectl -n ate-system logs job/egress-engine-provision-2 | grep '^PROVISION '` ends with `event=summary mode=apply result=ok`.
 - Node room for the pod (100m CPU, 128Mi memory): `kubectl describe nodes | grep -A8 'Allocated resources'`. If no node has room the pod stays Pending (`EngineGateDown`).
 - No `edit` or `admin` binding reaches `ate-system`, and nobody holds `create` on `serviceaccounts/token`, `pods/exec` or `pods/ephemeralcontainers` there (the admission guard does not cover them).
 - The priority class: the router, the ate API and the scanner set none, and the repo has no suitable non-system class. The gate sets none.
@@ -265,23 +265,26 @@ The expected answer is `ValidatingAdmissionPolicy 'engine-gate-pods' with bindin
 
 ## The scanner runs under gVisor
 
-The egress-scan pods set `runtimeClassName: gvisor`, so the network stack of the
-scanner is inside the sandbox. Cilium's default socket load balancer translates a
-Service address at `connect()`, and it never sees that call from a gVisor
-sandbox. Without the fix the scanner could not reach any ClusterIP (DNS included),
-and Cilium dropped the untranslated packets as "world". `projects/platform-factory/cilium/values.yaml`
-sets `socketLB.hostNamespaceOnly: true` (#8636): Cilium translates Service
-addresses per packet for pods, and by socket only for host processes. **The
-scanner reaches the gate only because of that value.** Reverting it makes every
-call to `engine-gate.ate-system.svc` fail, so in observe mode every Semgrep call
-counts as `error` (or `timeout`), and in enforce mode with `failureMode: deny` it
-would be a 503 on every Hindsight request. `resources_test.py`
+The egress-scan pods set `runtimeClassName: gvisor`. Their network stack is inside
+the sandbox. Cilium's default socket load balancer translates a Service address at
+`connect()`, and it never sees that call from a gVisor sandbox. Without the fix the
+scanner could not reach any ClusterIP, DNS included. Cilium dropped the
+untranslated packets as "world".
+
+`projects/platform-factory/cilium/values.yaml` sets `socketLB.hostNamespaceOnly: true`
+(#8636). Cilium then translates Service addresses per packet for pods, and by
+socket only for host processes. **The scanner reaches the gate only because of that
+value.** A revert makes every call to `engine-gate.ate-system.svc` fail. In observe
+mode every Semgrep call counts as `error` or `timeout`. In enforce mode with
+`failureMode: deny` it would be a 503 on every Hindsight request.
+
+`resources_test.py`
 (`test_scanner_reaches_the_gate_only_with_per_packet_service_translation`) fails if
 the value goes while the scanner runs under gVisor with the tier on.
 
 ## Live check
 
-A live check of the whole path, with no change to the cluster. It needs the
+A live check of the whole path. It changes no object in git and no setting of the cluster (but see the ephemeral containers below). It needs the
 break-glass kubeconfig (`~/.kube/factory.yaml`, operators only): `kubectl debug`
 adds an ephemeral container, which the sessions identity cannot do, and so does
 the metrics proxy of the API server (`kubectl get --raw .../proxy/metrics`).
@@ -314,11 +317,21 @@ is the gVisor case above (or the scanner's egress rule to the gate is missing).
 **2. The scanner, as the gateway calls it.** The gateway sends an ext_authz
 `Check` (gRPC) to the scanner pod. Send one by hand from an ephemeral container on
 the atenet-egress pod, which the network rules let reach the scanner on 8080. The
-`CheckRequest` is encoded by hand: `attributes` (field 1), `request` (4), `http`
-(2) and in it `method` (2), `headers` (3, a map entry with key 1 and value 2),
-`path` (4), `host` (5), `size` (9) and `raw_body` (12). The script is POSIX `sh`,
-builds each field in a file (so a length is `wc -c`), and is checked by decoding its
-output:
+`CheckRequest` is encoded by hand, nested as `attributes` (1), `request` (4) and
+`http` (2). The `http` message holds:
+
+| Field | Number | Value |
+| --- | --- | --- |
+| `method` | 2 | `POST` |
+| `headers` | 3 | a map entry: key (1) `content-type`, value (2) `text/plain` |
+| `path` | 4 | `/v1/test` |
+| `host` | 5 | `example.com` |
+| `size` | 9 | the body length (the scanner requires it to match `raw_body`) |
+| `raw_body` | 12 | the fake token |
+
+The script is POSIX `sh`. It builds each field in a file, so a length is `wc -c`.
+A decoder of its output found each field at the number above (it was not sent to
+Envoy):
 
 ```bash
 export KUBECONFIG=~/.kube/factory.yaml
@@ -358,6 +371,13 @@ server's proxy (the scanner's metrics port is open to Prometheus only):
 kubectl get --raw "/api/v1/namespaces/ate-system/pods/${SC#pod/}:9090/proxy/metrics" \
   | grep -E '^factory_egress_scan_(checks_total|semgrep_requests_total|semgrep_observe_total|semgrep_agreement_total)'
 ```
+
+Wait a second or two after step 2 first: in observe mode the engine call runs in
+the background, and its counters rise 100 to 150 ms after the `Check` returns.
+If the proxy is refused (the scanner's ingress allows Prometheus only, and a call
+from the API server's node can be dropped), run `curl -s localhost:9090/metrics` in
+an ephemeral container on the scanner pod instead: it shares the network namespace,
+so the rule does not apply.
 
 After the check of step 2: `factory_egress_scan_checks_total{outcome="credential_blocked"}`
 rose by 1 (Gitleaks matches the token), `factory_egress_scan_semgrep_requests_total{outcome="found"}`

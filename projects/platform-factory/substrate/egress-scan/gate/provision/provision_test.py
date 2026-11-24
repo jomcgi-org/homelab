@@ -323,7 +323,9 @@ class FakeAte:
                 [{"workerPool": "gvisor-fork", "state": state, "seeds": seeds}]
             )
         if verb == "get" and kind == "atespace":
-            return self.out({}, 0 if rest[0] in self.atespaces else 1)
+            if rest[0] in self.atespaces:
+                return self.out({})
+            return subprocess.CompletedProcess([], 1, "", "rpc error: NotFound")
         if verb == "create" and kind == "atespace":
             self.atespaces.add(rest[0])
             return self.out({})
@@ -347,7 +349,9 @@ class FakeAte:
         if verb == "get" and kind == "actor-template":
             if len(rest) > 0 and not rest[0].startswith("-"):
                 t = self.templates.get(rest[0])
-                return self.out(t, 0) if t else self.out({}, 1)
+                if t:
+                    return self.out(t)
+                return subprocess.CompletedProcess([], 1, "", "rpc error: NotFound")
             return self.out(list(self.templates.values()))
         if verb == "create" and kind == "actor-template":
             text = Path(rest[rest.index("-f") + 1]).read_text()
@@ -826,9 +830,8 @@ def test_the_template_must_be_named_engine(tmp_path: Path) -> None:
     desired = json.loads((_HERE / "template.json").read_text())
     assert mod.template_json_problems(_TEMPLATE, desired) == []
     desired["metadata"]["name"] = "engine-v2"
-    assert any(
-        "not engine" in p for p in mod.template_json_problems(_TEMPLATE, desired)
-    )
+    problems = mod.template_json_problems(_TEMPLATE, desired)
+    assert any("not engine" in p for p in problems)
     # main refuses it before any API call, even when both files agree.
     fake = FakeAte()
     mod.ate = fake
@@ -840,3 +843,62 @@ def test_the_template_must_be_named_engine(tmp_path: Path) -> None:
     mod.TEMPLATE_JSON_FILE = tmp_path / "template.json"
     assert mod.main() == 1
     assert fake.calls == []
+
+
+def test_a_blip_on_a_read_is_not_read_as_absent(tmp_path: Path) -> None:
+    # A failed read of the policy or the template must never lead to a create.
+    mod, fake = _load(), FakeAte()
+    assert _run(mod, fake, tmp_path) == 0
+    plain = fake.__call__
+    seen = {"n": 0}
+
+    def blip_then_answer(*args: str):
+        if args[:3] == ("get", "access-policy", "-a") and seen["n"] < 2:
+            seen["n"] += 1
+            return subprocess.CompletedProcess([], 1, "", "rpc error: Unavailable")
+        return plain(*args)
+
+    fake.calls.clear()
+    assert _run_apply(mod, blip_then_answer, tmp_path) == 0
+    assert seen["n"] == 2
+    assert fake.mutations() == []
+
+
+def test_a_read_that_keeps_failing_stops_the_job_before_any_write(tmp_path: Path) -> None:
+    mod, fake = _load(), FakeAte()
+    assert _run(mod, fake, tmp_path) == 0
+    plain = fake.__call__
+    for kind in ("access-policy", "actor-template", "atespace"):
+
+        def down(*args: str, kind=kind):
+            if args[:2] == ("get", kind):
+                return subprocess.CompletedProcess([], 1, "", "rpc error: Unavailable")
+            return plain(*args)
+
+        fake.calls.clear()
+        assert _run_apply(mod, down, tmp_path) == 1, kind
+        assert fake.mutations() == [], kind
+
+
+def test_empty_answer_and_not_found_are_absent_but_a_garbled_one_is_not() -> None:
+    mod = _load()
+    mod.ate = lambda *a: subprocess.CompletedProcess([], 0, "", "has no access policy")
+    assert mod.policy_json() is None
+    mod.ate = lambda *a: subprocess.CompletedProcess([], 1, "", "rpc error: NotFound")
+    assert mod.template_json() is None
+    mod.ate = lambda *a: subprocess.CompletedProcess([], 0, "{oops", "")
+    try:
+        mod.template_json()
+    except mod.Failed:
+        pass
+    else:
+        raise AssertionError("a garbled answer must not read as absent")
+
+
+def _run_apply(mod, ate, tmp_path: Path):
+    mod.ate = ate
+    mod.MODE = "apply"
+    mod.TEMPLATE_FILE = _HERE / "template.yaml"
+    mod.TEMPLATE_JSON_FILE = _HERE / "template.json"
+    os.environ["WORK_DIR"] = str(tmp_path)
+    return mod.main()
