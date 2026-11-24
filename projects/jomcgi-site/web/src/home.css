@@ -564,14 +564,15 @@ html:has(.home) {
     display: none;
   }
 
-  /* The footer links are small text. Each gets a 44px touch area without
-   * changing how the row looks. */
+  /* The footer links are small text. Each gets a touch area about 44px tall
+   * without changing how the row looks. The row gap keeps the areas of links
+   * on neighbouring rows from overlapping. */
   .home .foot {
-    row-gap: 0.2rem;
+    row-gap: 0.9rem;
   }
   .home .foot .links,
   .home .foot nav {
-    row-gap: 0;
+    row-gap: 0.9rem;
   }
   .home .foot a {
     position: relative;
@@ -579,7 +580,7 @@ html:has(.home) {
   .home .foot a::after {
     content: "";
     position: absolute;
-    inset: -0.75rem -0.5rem;
+    inset: -0.45rem -0.5rem;
   }
 
   /* Use a finer grille for the smaller portrait. */

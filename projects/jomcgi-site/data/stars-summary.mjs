@@ -26,6 +26,15 @@ const escape = (value) =>
       })[char],
   );
 
+/** An unnamed site is named by its position: 58.352°N 4.536°W. */
+export function coordinates(lat, lon) {
+  const [la, lo] = [Number(lat), Number(lon)];
+  return (
+    `${Math.abs(la).toFixed(3)}°${la >= 0 ? "N" : "S"} ` +
+    `${Math.abs(lo).toFixed(3)}°${lo >= 0 ? "E" : "W"}`
+  );
+}
+
 export function makeSummary(snapshot, now = Date.now(), snapshotAsOf = null) {
   const sites = Array.isArray(snapshot.sites) ? snapshot.sites : [];
   const twilight = snapshot.darkness === "twilight";
@@ -41,9 +50,7 @@ export function makeSummary(snapshot, now = Date.now(), snapshotAsOf = null) {
     count: snapshot.count ?? sites.length,
     renderedAt: now,
     rows: sites.slice(0, 6).map((site) => ({
-      name:
-        site.name ||
-        `${Number(site.lat).toFixed(3)}°, ${Number(site.lon).toFixed(3)}°`,
+      name: site.name || coordinates(site.lat, site.lon),
       hours: Number(
         (twilight ? site.clear_twilight_hours : site.clear_dark_hours) ?? 0,
       ),

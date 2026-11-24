@@ -206,6 +206,28 @@ describe("stars static and interactive page", () => {
     expect(screen.queryByText(/unavailable/i)).toBeNull();
     vi.useRealTimers();
   });
+  it("hides the card's six-site list only once the full list is on screen", async () => {
+    vi.useFakeTimers();
+    page();
+    const card = () => screen.getByLabelText("Forecast snapshot");
+    // Before the forecast loads the six sites are the only list.
+    expect(card().hasAttribute("data-full-list")).toBe(false);
+    await advance(50);
+    expect(screen.getByRole("button", { name: "Galloway" })).toBeTruthy();
+    expect(card().hasAttribute("data-full-list")).toBe(true);
+  });
+
+  it("keeps the card's list when the forecast cannot load", async () => {
+    vi.useFakeTimers();
+    fetcher.mockRejectedValue(new Error("offline"));
+    page();
+    await advance(50);
+    expect(screen.getByText(/Could not load the forecast/)).toBeTruthy();
+    expect(
+      screen.getByLabelText("Forecast snapshot").hasAttribute("data-full-list"),
+    ).toBe(false);
+  });
+
   it("keeps the copied title/description, new canonical and legacy redirects", () => {
     const html = readFileSync("stars.html", "utf8");
     expect(html).toContain(

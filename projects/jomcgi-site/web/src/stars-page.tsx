@@ -438,6 +438,9 @@ export function StarsPage() {
       <section
         id="stars-summary"
         aria-label="Forecast snapshot"
+        data-full-list={
+          (view.mode === "live" ? snapshot : history) ? "" : undefined
+        }
         dangerouslySetInnerHTML={{ __html: summaryHtml(summary, now) }}
       />
       {selected && (

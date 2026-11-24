@@ -155,8 +155,9 @@
 }
 
 /* The snapshot card is supporting detail: small and secondary. Its list of
- * six sites repeats the full list below, so it shows only where the page's
- * script cannot build that list. */
+ * six sites repeats the full list below, so the page marks the card once that
+ * list is on screen. Until then, and when the forecast fails to load, the six
+ * sites stay visible. */
 #stars-summary {
   color: var(--color-text-secondary);
   font-size: 0.875rem;
@@ -167,8 +168,6 @@
 #stars-summary p {
   margin-block: 0.25rem;
 }
-@media (scripting: enabled) {
-  #stars-summary ol {
-    display: none;
-  }
+#stars-summary[data-full-list] ol {
+  display: none;
 }

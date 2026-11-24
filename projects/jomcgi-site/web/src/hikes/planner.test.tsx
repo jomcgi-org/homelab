@@ -283,7 +283,7 @@ it("keeps on-schedule data quiet: one summary line, no per-walk timestamps", asy
   expect(button()).toBeTruthy();
   expect(screen.queryByRole("alert")).toBeNull();
   const summary = document.querySelector(".hikes-summary")!;
-  expect(summary.textContent).toMatch(/^1 walks · 1 viable today · updated /);
+  expect(summary.textContent).toMatch(/^1 walk · 1 viable today · updated /);
   // The walk row carries its numbers and nothing about forecast age.
   const row = document.querySelector(".hikes-results li")!;
   expect(row.textContent).not.toMatch(/Forecast|T\d\d:\d\d/);
