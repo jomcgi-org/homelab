@@ -631,6 +631,16 @@
               "authorApproved": {
                 "type": "boolean"
               },
+              "reviewAuthors": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "reviewAfterChecks": {
+                "type": "boolean"
+              },
               "skipLabels": {
                 "type": "array",
                 "items": {

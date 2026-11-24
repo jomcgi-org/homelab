@@ -1208,6 +1208,15 @@ check is a pass titled "Review skipped: author approves", and no task runs.
 Joe chose this on 2026-11-24 because his sessions review these PRs first, so
 the reviewer spends tokens on other PRs. Semgrep evidence turns it off.
 
+A binding with `reviewAuthors` reviews only PRs by those logins. Another
+author's PR gets no check and no task, like a skip label, and cannot merge
+because `factory review` is a required check. A binding with
+`reviewAfterChecks` starts a new model review only once every required check
+has passed on the head. A head that fails CI gets no review, and the connector
+sends the failure to the coder. A head that has a verdict or a running review
+is not held. Joe chose both on 2026-11-24 to spend review tokens only on the
+named actors' green heads.
+
 The saved review state keeps every blocking and model gate finding with
 its full ID and severity, and shortens descriptive text first. A failed
 history read blocks and retries on the next poll. State that overflowed

@@ -106,6 +106,8 @@ type Binding struct {
 	RequiredChecks         []Check
 	SkipLabels             []string
 	AuthorApproved         bool
+	ReviewAuthors          []string
+	ReviewAfterChecks      bool
 	EnqueueAuthors         []string
 	HumanGatePaths         []string
 	HumanGateLabels        []string
@@ -123,6 +125,9 @@ type Binding struct {
 func (b *Binding) repo() string { return b.Owner + "/" + b.Repo }
 
 func (b *Binding) skipped(pr *github.PullRequest) bool {
+	if len(b.ReviewAuthors) > 0 && !containsFold(b.ReviewAuthors, pr.Author) {
+		return true
+	}
 	for _, l := range pr.Labels {
 		if containsFold(b.SkipLabels, l) {
 			return true
@@ -1109,6 +1114,15 @@ func (e *Engine) readRecovery(ctx context.Context, b *Binding, pr github.PullReq
 func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (full bool) {
 	if e.authorApproved(ctx, b, pr, run) {
 		return false
+	}
+	if b.ReviewAfterChecks && (run == nil || (run.Status == "completed" && run.Conclusion == ConclusionCancelled)) {
+		// A new model review waits for green checks. A failed check starts
+		// the author's revision round without a review; a pending one only waits.
+		green, err := e.requiredGreen(ctx, b, pr.HeadSHA, e.prLog(b, pr))
+		if err != nil || !green {
+			e.prLog(b, pr).DebugContext(ctx, "review waits for required checks", "head", short(pr.HeadSHA))
+			return false
+		}
 	}
 	// Recheck the diff budget before a quota wait, without a review worker.
 	// This also handles checks that an older process paused before sizing.
