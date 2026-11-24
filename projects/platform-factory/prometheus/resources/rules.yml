@@ -421,6 +421,46 @@ groups:
           runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/ARCHITECTURE.md#worker-pool-autoscaling"
           summary: "The connector's worker wait ended as {{ $labels.outcome }} {{ $value | humanize }} time(s) in the last 15 min"
 
+  # The egress scanner (substrate/egress-scan README, "Alerts"). The failure
+  # counter starts when the first failure happens, so the first failure of a
+  # series is not seen by increase(); the next one is. Both rules use short
+  # windows, so they clear within 5 min of the last event.
+  - name: egress-scan
+    rules:
+      - alert: EgressScanDetectorFailing
+        expr: sum by (reason, mode) (increase(factory_egress_scan_detector_failures_total{job="egress-scan"}[5m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          action: "Read the scanner logs for the failing reason, then the dashboard panel Detector failures by reason."
+          graph: 'sum(increase(factory_egress_scan_detector_failures_total{job="egress-scan",reason={{ printf "%q" $labels.reason }}}[5m]))'
+          threshold: "0"
+          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/README.md#alerts"
+          summary: "The egress scan detector had {{ $value | humanize }} call(s) with no verdict ({{ $labels.reason }}, {{ $labels.mode }} mode) in the last 5 min"
+
+      - alert: EgressScanBlockSpike
+        expr: sum by (route) (increase(factory_egress_scan_detector_findings_total{job="egress-scan",class="block"}[5m])) >= 5
+        labels:
+          severity: warning
+        annotations:
+          action: "Check the dashboard panels Block findings by route and Block findings by source, then the scanner logs. A real credential may be leaving."
+          graph: 'sum(increase(factory_egress_scan_detector_findings_total{job="egress-scan",class="block",route={{ printf "%q" $labels.route }}}[5m]))'
+          threshold: "5"
+          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/README.md#alerts"
+          summary: "The egress scanner found {{ $value | humanize }} credential block finding(s) for route {{ $labels.route }} in the last 5 min (threshold 5)"
+
+      - alert: EgressScanScrapeDown
+        expr: (count(up{job="egress-scan"} == 1) or vector(0)) < 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          action: "Check that both egress-scan pods in ate-system are ready and that Prometheus can reach port 9090."
+          graph: 'count(up{job="egress-scan"} == 1) or vector(0)'
+          threshold: "2"
+          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/README.md#alerts"
+          summary: "Prometheus scrapes {{ $value }} egress scanner pod(s) (minimum 2, the chart replica count)"
+
   - name: capacity-shadow
     interval: 5m
     rules:

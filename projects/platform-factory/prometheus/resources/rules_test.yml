@@ -1406,3 +1406,86 @@ tests:
         exp_samples:
           - labels: 'capacity:workload_pod_memory_budget_exceeded{namespace="factory-r-homelab-review",workload="homelab-reviewer",policy="timestral"}'
             value: 1
+
+  # A detector call with no verdict: the counter starts at 0 and the first
+  # failure shows at 5 min. The alert fires while the window holds an increase
+  # and clears 5 min after the last failure.
+  - interval: 1m
+    input_series:
+      - series: 'factory_egress_scan_detector_failures_total{job="egress-scan",detector="betterleaks",reason="timeout",mode="observe",route="other",source="unknown"}'
+        values: "0x4 1 2 3 3x20"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: EgressScanDetectorFailing
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: EgressScanDetectorFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              reason: timeout
+              mode: observe
+            exp_annotations:
+              action: "Read the scanner logs for the failing reason, then the dashboard panel Detector failures by reason."
+              graph: 'sum(increase(factory_egress_scan_detector_failures_total{job="egress-scan",reason="timeout"}[5m]))'
+              threshold: "0"
+              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/README.md#alerts"
+              summary: "The egress scan detector had 3 call(s) with no verdict (timeout, observe mode) in the last 5 min"
+      - eval_time: 12m
+        alertname: EgressScanDetectorFailing
+        exp_alerts: []
+
+  # Findings of class block: 4 in 5 min stays quiet, 5 fire, and the alert
+  # clears when the window passes. Report-class findings never count.
+  - interval: 1m
+    input_series:
+      - series: 'factory_egress_scan_detector_findings_total{job="egress-scan",detector="betterleaks",rule="r1",class="block",mode="observe",route="hindsight",source="unknown"}'
+        values: "0x5 1 2 3 4 5 5x20"
+      - series: 'factory_egress_scan_detector_findings_total{job="egress-scan",detector="betterleaks",rule="egress-authorization-bearer",class="report",mode="observe",route="hindsight",source="unknown"}'
+        values: "0+10x30"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: EgressScanBlockSpike
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: EgressScanBlockSpike
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              route: hindsight
+            exp_annotations:
+              action: "Check the dashboard panels Block findings by route and Block findings by source, then the scanner logs. A real credential may be leaving."
+              graph: 'sum(increase(factory_egress_scan_detector_findings_total{job="egress-scan",class="block",route="hindsight"}[5m]))'
+              threshold: "5"
+              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/README.md#alerts"
+              summary: "The egress scanner found 5 credential block finding(s) for route hindsight in the last 5 min (threshold 5)"
+      - eval_time: 20m
+        alertname: EgressScanBlockSpike
+        exp_alerts: []
+
+  # One scanner pod stops answering the scrape at 9 min. The alert fires after
+  # 5 min and clears when the pod is back at 20 min.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="egress-scan",instance="a:9090"}'
+        values: "1x30"
+      - series: 'up{job="egress-scan",instance="b:9090"}'
+        values: "1x8 0x10 1x20"
+    alert_rule_test:
+      - eval_time: 13m
+        alertname: EgressScanScrapeDown
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: EgressScanScrapeDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              action: "Check that both egress-scan pods in ate-system are ready and that Prometheus can reach port 9090."
+              graph: 'count(up{job="egress-scan"} == 1) or vector(0)'
+              threshold: "2"
+              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/README.md#alerts"
+              summary: "Prometheus scrapes 1 egress scanner pod(s) (minimum 2, the chart replica count)"
+      - eval_time: 20m
+        alertname: EgressScanScrapeDown
+        exp_alerts: []
