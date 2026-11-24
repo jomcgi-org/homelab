@@ -101,7 +101,7 @@ spec:
             - name: HINDSIGHT_API_LLM_PROVIDER
               value: openai
             - name: HINDSIGHT_API_LLM_MODEL
-              value: openai/gpt-4.1-mini
+              value: deepseek/deepseek-v4.1-flash-1017
             - name: HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS
               value: "32768"
             - name: HINDSIGHT_API_LLM_BASE_URL
