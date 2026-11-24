@@ -1,4 +1,4 @@
-// invariant: FACT-19
+// invariant: HOME-175-1
 // invariant: FACT-10
 // invariant: FACT-20
 // Package review is the factory reviewer's loop. It polls each binding's
