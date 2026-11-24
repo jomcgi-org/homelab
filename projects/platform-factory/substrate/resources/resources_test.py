@@ -920,9 +920,7 @@ def test_engine_provisioning_is_not_wired() -> None:
     # Jobs (egress-scan/gate/provision) ran their course and are not in the
     # kustomization: the wired render holds none of their objects.
     names = {(d["kind"], d["metadata"]["name"]) for d in _docs()}
-    assert not {
-        n for k, n in names if k == "Job" and n.startswith("egress-engine-")
-    }
+    assert not {n for k, n in names if k == "Job" and n.startswith("egress-engine-")}
     assert not {n for k, n in names if n.startswith("egress-engine-provision")}
 
 
