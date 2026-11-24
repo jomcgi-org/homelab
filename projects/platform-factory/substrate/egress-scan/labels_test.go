@@ -13,11 +13,11 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func checkWith(host, principal string, context map[string]string, spiffe string) *authv3.CheckRequest {
+func checkWith(host, principal string, extensions map[string]string, spiffe string) *authv3.CheckRequest {
 	attrs := &authv3.AttributeContext{
 		Request:           &authv3.AttributeContext_Request{Http: &authv3.AttributeContext_HttpRequest{Host: host}},
 		Source:            &authv3.AttributeContext_Peer{Principal: principal},
-		ContextExtensions: context,
+		ContextExtensions: extensions,
 	}
 	if spiffe != "" {
 		meta, err := structpb.NewStruct(map[string]any{"spiffe": spiffe})
@@ -47,6 +47,22 @@ func TestRouteIsTheNormalizedHostAndBounded(t *testing.T) {
 		if got := l.route(host); got != want {
 			t.Errorf("route(%q) = %q, want %q", host, got, want)
 		}
+	}
+}
+
+// A client picks the Host header. A scanned request with a Host that is not on the
+// list keeps the route name of the gateway policy, so it does not hide in other.
+func TestUnlistedHostKeepsTheGatewayRouteName(t *testing.T) {
+	l := newLabeler([]string{"hindsight-api.hindsight.svc.cluster.local:8888"}, 0)
+	ext := map[string]string{contextRoute: "hindsight"}
+	if got, _ := l.labels(checkWith("evil.example.net", "", ext, "")); got != "route:hindsight" {
+		t.Errorf("route = %q, want route:hindsight", got)
+	}
+	if got, _ := l.labels(checkWith("evil.example.net", "", nil, "")); got != labelOther {
+		t.Errorf("route without a gateway name = %q, want other", got)
+	}
+	if got, _ := l.labels(checkWith("hindsight-api.hindsight.svc.cluster.local:8888", "", ext, "")); got != "hindsight-api.hindsight.svc.cluster.local:8888" {
+		t.Errorf("listed host route = %q", got)
 	}
 }
 

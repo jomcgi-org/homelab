@@ -91,18 +91,25 @@ query, header value, match or actor name):
 | `factory_egress_scan_detector_findings_total` | `detector`, `rule`, `class` (`block` or `report`), `mode`, `route`, `source` |
 | `factory_egress_scan_detector_failures_total` | `detector`, `reason` (`timeout`, `budget`, `oversize`, `error`, `panic`), `mode`, `route`, `source` |
 
-**Source.** The scanner reads the actor's atespace from the SPIFFE ID of the
-caller (`spiffe://substrate-actor.local/worker-for-actor/<atespace>/<name>`),
-in this order: the peer principal of the check, then the CEL metadata `actor.spiffe`
-that the gateway policy sends (`source.spiffeId`), then the static `route` context of the
-gateway policy (`route:hindsight`), then `unknown`. The gateway
-(agentgateway 1.7.0) knows the actor's atespace and name for its own logs
-(`ate.atespace`, `ate.actor.name`) but does not give them to CEL or to the
-ext_authz request, so the first two sources depend on what the inner request's
-TLS session carries. What is missing upstream: an actor identity in CEL (for
-example `source.actor.atespace`) that an ext_authz `metadata` or `context` can
-use. The upstream issue 4289 is about the policy uid and version and does not
-cover it.
+**Route.** The Host header comes from the client. When the Host is not on the
+list, a check that carries the gateway route name (`context.route`) gets the
+route `route:<name>` (`route:hindsight`). Scanned traffic with an unexpected Host
+is then visible. A check without a gateway name gets `other`.
+
+**Source.** The scanner reads the atespace from the actor SPIFFE ID
+(`spiffe://substrate-actor.local/worker-for-actor/<atespace>/<name>`) in this order:
+
+1. The peer principal of the check.
+2. The CEL metadata `actor.spiffe` that the gateway policy sends (`source.spiffeId`).
+3. The static route name of the gateway policy (`route:hindsight`).
+4. `unknown`.
+
+Agentgateway 1.7.0 knows the actor atespace and name for its own logs
+(`ate.atespace`, `ate.actor.name`). It does not give them to CEL or to the
+ext_authz request. Sources 1 and 2 therefore depend on the inner TLS session.
+Expect `route:hindsight` until upstream gives CEL an actor identity (for example
+`source.actor.atespace`). Upstream issue 4289 covers the policy uid and version
+only, not this.
 
 ## Second scan tier (Semgrep engine): deferred, removed from the code
 

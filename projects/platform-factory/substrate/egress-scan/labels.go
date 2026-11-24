@@ -80,6 +80,13 @@ func (l *labeler) labels(check *authv3.CheckRequest) (route, source string) {
 	}
 	attrs := check.GetAttributes()
 	route = l.route(attrs.GetRequest().GetHttp().GetHost())
+	if route == labelOther {
+		// The Host header comes from the client. A scanned request with an
+		// unexpected Host still carries the route name that the gateway set.
+		if name := attrs.GetContextExtensions()[contextRoute]; namePattern.MatchString(name) {
+			route = l.admit(l.routeN, "route:"+name)
+		}
+	}
 	source = l.source(attrs)
 	return route, source
 }
