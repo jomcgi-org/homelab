@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/internal/tracing"
@@ -89,12 +88,6 @@ func (e *Engine) stepAdmissions(ctx context.Context) error {
 					queue = append(queue, r)
 				}
 			}
-			if err := e.rankUnread(ctx, queue); err != nil {
-				errs = append(errs, err)
-				if fatal(err) {
-					return
-				}
-			}
 			e.orderAdmissions(queue)
 			for _, r := range queue {
 				if span == nil {
@@ -121,54 +114,6 @@ func (e *Engine) stepAdmissions(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-// rankUnread reads the issue of each queued run whose priority and due date
-// the order has not seen. The claim phase takes new runs only while a slot is
-// free, so without this read each new claim would lose that slot to an older
-// run. The reads run together under one deadline of half the tick's wait for
-// the pass, so a slow read never delays older holds. A run whose read fails
-// or times out ranks as none for this pass; its admission reports the failure.
-func (e *Engine) rankUnread(ctx context.Context, runs []*store.Run) error {
-	var todo []*store.Run
-	for _, r := range runs {
-		if _, ok := e.admissionRanks.Load(r.ID); ok || r.IssueID == 0 {
-			continue
-		}
-		if _, err := e.bindingFor(r); err == nil {
-			todo = append(todo, r)
-		}
-	}
-	if len(todo) == 0 {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(ctx, e.cfg.AdmissionBudget/2)
-	defer cancel()
-	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		readErr error
-	)
-	sem := make(chan struct{}, 4)
-	for _, r := range todo {
-		sem <- struct{}{}
-		wg.Add(1)
-		go func() {
-			defer func() { <-sem; wg.Done() }()
-			is, err := e.admissionIssue(ctx, r, r.IssueID)
-			if err != nil {
-				if fatal(err) {
-					mu.Lock()
-					readErr = errors.Join(readErr, err)
-					mu.Unlock()
-				}
-				return
-			}
-			e.admissionRanks.Store(r.ID, rankIssue(is))
-		}()
-	}
-	wg.Wait()
-	return readErr
 }
 
 func (e *Engine) stepAdmission(ctx context.Context, id int64) error {
