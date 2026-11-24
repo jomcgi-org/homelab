@@ -263,6 +263,109 @@ kubectl -n ate-system create serviceaccount engine-gate --dry-run=server
 
 The expected answer is `ValidatingAdmissionPolicy 'engine-gate-pods' with binding 'engine-gate-pods' denied request: Only ArgoCD may create the engine-gate ServiceAccount or run a workload as it` (and `engine-gate-serviceaccount` for the second). The `engine-gate-workloads` policy (a Deployment, DaemonSet, ReplicaSet or Job that names the ServiceAccount) has the same expression shape, and `manifests_test.py` checks it. A `Forbidden` from RBAC instead proves nothing: ask an operator to run them. A dry run that succeeds means the guard is not in force: stop and revert.
 
+## The scanner runs under gVisor
+
+The egress-scan pods set `runtimeClassName: gvisor`, so the network stack of the
+scanner is inside the sandbox. Cilium's default socket load balancer translates a
+Service address at `connect()`, and it never sees that call from a gVisor
+sandbox. Without the fix the scanner could not reach any ClusterIP (DNS included),
+and Cilium dropped the untranslated packets as "world". `projects/platform-factory/cilium/values.yaml`
+sets `socketLB.hostNamespaceOnly: true` (#8636): Cilium translates Service
+addresses per packet for pods, and by socket only for host processes. **The
+scanner reaches the gate only because of that value.** Reverting it makes every
+call to `engine-gate.ate-system.svc` fail, so in observe mode every Semgrep call
+counts as `error` (or `timeout`), and in enforce mode with `failureMode: deny` it
+would be a 503 on every Hindsight request. `resources_test.py`
+(`test_scanner_reaches_the_gate_only_with_per_packet_service_translation`) fails if
+the value goes while the scanner runs under gVisor with the tier on.
+
+## Live check
+
+A live check of the whole path, with no change to the cluster. It needs the
+break-glass kubeconfig (`~/.kube/factory.yaml`, operators only): `kubectl debug`
+adds an ephemeral container, which the sessions identity cannot do, and so does
+the metrics proxy of the API server (`kubectl get --raw .../proxy/metrics`).
+**An ephemeral container cannot be removed from a pod until the pod restarts.**
+It stays in the pod spec, finished, and the pod is Ready as before. Use a pod that
+a rollout will replace, and say so in the record of the check.
+
+The fake token is built in two parts in every command below, so that a secret
+scanner of this public repository does not match the source. It is not a
+credential: the engine must find it (`secrets.services.github_pat`).
+
+**1. The gate, from the scanner's identity.** The ephemeral container shares the
+pod's network and its Cilium identity, so it can call what the scanner calls:
+
+```bash
+export KUBECONFIG=~/.kube/factory.yaml
+POD=$(kubectl -n ate-system get pod -l app=egress-scan -o name | head -1)
+kubectl -n ate-system debug "$POD" -i --image=curlimages/curl --target=scanner -- sh -c '
+  FAKE=$(printf "ghp_%s" "16C7e42F292c6912E7710c838347Ae178B4a")
+  curl -s -m 5 -o /tmp/reply -w "status %{http_code} in %{time_total}s, %{size_download} bytes\n" \
+    -H "X-Deadline-Ms: 2000" --data-binary "token=$FAKE" \
+    http://engine-gate.ate-system.svc:8080/scan
+  grep -o "secrets\.services\.github_pat" /tmp/reply | head -1'
+```
+
+Expect status 200 in about 80 to 150 ms (a reply of about 73 KB with the 1586 rules)
+and the line `secrets.services.github_pat`. A `Could not resolve host` or a timeout
+is the gVisor case above (or the scanner's egress rule to the gate is missing).
+
+**2. The scanner, as the gateway calls it.** The gateway sends an ext_authz
+`Check` (gRPC) to the scanner pod. Send one by hand from an ephemeral container on
+the atenet-egress pod, which the network rules let reach the scanner on 8080. The
+`CheckRequest` is encoded by hand: `attributes` (field 1), `request` (4), `http`
+(2) and in it `method` (2), `headers` (3, a map entry with key 1 and value 2),
+`path` (4), `host` (5), `size` (9) and `raw_body` (12). The script is POSIX `sh`,
+builds each field in a file (so a length is `wc -c`), and is checked by decoding its
+output:
+
+```bash
+export KUBECONFIG=~/.kube/factory.yaml
+EG=$(kubectl -n ate-system get pod -l app=atenet-egress -o name | head -1)
+SC=$(kubectl -n ate-system get pod -l app=egress-scan -o name | head -1)
+IP=$(kubectl -n ate-system get "$SC" -o jsonpath='{.status.podIP}')
+kubectl -n ate-system debug "$EG" -i --image=curlimages/curl --target=agentgateway -- env IP="$IP" sh -s <<'SH'
+# Build a gRPC frame with an envoy.service.auth.v3.CheckRequest in /tmp/check.bin.
+# POSIX sh and printf. Each field is built in a file, so a length is wc -c and a
+# byte of 10 or above 127 never passes through a shell variable.
+cd /tmp || exit 1
+o() { printf '\\%03o' "$1"; }                       # the escape text of one byte
+v() { if [ "$1" -lt 128 ]; then o "$1"; else o $(($1 % 128 + 128)); o $(($1 / 128)); fi; }  # varint, below 16384
+f() { printf "$(o "$1")"; printf "$(v "$(wc -c < "$2")")"; cat "$2"; }  # f TAG FILE: one length-delimited field
+printf '%s' content-type > k; printf '%s' text/plain > t
+{ f 10 k; f 18 t; } > hdr                          # map entry: key = 1, value = 2
+printf '%s' POST > m; printf '%s' /v1/test > p; printf '%s' example.com > h
+printf 'token=ghp_%s' '16C7e42F292c6912E7710c838347Ae178B4a' > body
+{ f 18 m; f 26 hdr; f 34 p; f 42 h; printf "$(o 72)$(v "$(wc -c < body)")"; f 98 body; } > http  # method 2, headers 3, path 4, host 5, size 9, raw_body 12
+f 18 http > req                                    # Request.http = 2
+f 34 req > attr                                    # AttributeContext.request = 4
+f 10 attr > msg                                    # CheckRequest.attributes = 1
+n=$(wc -c < msg)
+{ printf '\000'; printf "$(o $((n >> 24 & 255)))$(o $((n >> 16 & 255)))$(o $((n >> 8 & 255)))$(o $((n & 255)))"; cat msg; } > check.bin
+curl -s --http2-prior-knowledge -o /dev/null -D - -H 'content-type: application/grpc' -H 'te: trailers' \
+  --data-binary @/tmp/check.bin "http://$IP:8080/envoy.service.auth.v3.Authorization/Check"
+SH
+```
+
+The reply shows `grpc-status: 0` in the trailers when the call worked. The verdict is
+in the binary body, so read it from the counters (step 3).
+
+**3. The counters.** Read them from the scanner pod before and after, through the API
+server's proxy (the scanner's metrics port is open to Prometheus only):
+
+```bash
+kubectl get --raw "/api/v1/namespaces/ate-system/pods/${SC#pod/}:9090/proxy/metrics" \
+  | grep -E '^factory_egress_scan_(checks_total|semgrep_requests_total|semgrep_observe_total|semgrep_agreement_total)'
+```
+
+After the check of step 2: `factory_egress_scan_checks_total{outcome="credential_blocked"}`
+rose by 1 (Gitleaks matches the token), `factory_egress_scan_semgrep_requests_total{outcome="found"}`
+rose by 1 (the engine found it too), and `semgrep_agreement_total{gitleaks="found",semgrep="found"}`
+rose by 1. A clean body (no token) raises `outcome="allowed"` and `outcome="clean"`.
+`outcome="error"` or `timeout` is the failure to chase. The calls of step 1 reach
+the gate only, not the scanner's counters.
+
 ## Enable steps
 
 Each step stays off until the one before it is verified. They follow the
@@ -275,7 +378,7 @@ skip the X gates for now and to wire the scanner in observe mode
 | --- | --- | --- | --- |
 | 1 | [`provision/`](provision): Jobs that create the atespace, its access policy and the template `engine`, or remove them (teardown) | None when it merged: not wired, suspended | Nothing at merge |
 | 2 | Router grant: `spiffe://cluster.local/ns/ate-system/sa/engine-gate` in `atenetRouter.ingressAllowedSPIFFEIDs` (`values/substrate.yaml`) | Added to the router ConfigMap (merged, #8627) | Approved (Joe, 2026-11-23, session; Decided 6) |
-| 3 | Wire `provision/` into `resources/` with `egress-engine-provision-1` not suspended | Creates the atespace, the policy and the template, once. The worker pins the atespace at the first seed, so the pool pod must have restarted before | Joe merges it (Decided 6), after the pool restart |
+| 3 | Wire `provision/` into `resources/` with `egress-engine-provision-2` not suspended (`-1` ran on 2026-11-23; `-2` follows the script nits and re-runs as a no-op: every object exists) | Creates the atespace, the policy and the template, once. The worker pins the atespace at the first seed, so the pool pod must have restarted before | Joe merges it (Decided 6), after the pool restart |
 | 4 | Wire the gate (`manifests/`), its image pin, the Prometheus job, rules and egress rule, and the observe-mode switch of the scanner | Starts the gate (one pod, 2 children), its network rules and the admission guard, and rolls the scanner pods (2) with `semgrep.mode=observe`. The scanner calls the gate off the request path. Replies do not change | Yes |
 | 5 | Check (below) | None | |
 
@@ -287,8 +390,8 @@ the gate has nothing to claim until the seed of the template is ready.
 
 ```bash
 export KUBECONFIG=~/.kube/factory-sessions.yaml
-kubectl -n ate-system get job egress-engine-provision-1        # COMPLETIONS 1/1
-kubectl -n ate-system logs job/egress-engine-provision-1 | grep '^PROVISION '
+kubectl -n ate-system get job egress-engine-provision-2        # COMPLETIONS 1/1
+kubectl -n ate-system logs job/egress-engine-provision-2 | grep '^PROVISION '
 ```
 
 The log shows `step=atespace`, `step=access_policy` and `step=template` (each
@@ -357,7 +460,7 @@ To restart, delete the pod: `kubectl -n ate-system delete pod engine-gate-0` (th
 StatefulSet controller makes it again; the gate deletes its children on SIGTERM
 and the new pod cleans up what is left). To change the spec, change git.
 
-**Provisioning Jobs.** `egress-engine-provision-1` runs `provision.py` with
+**Provisioning Jobs.** `egress-engine-provision-2` runs `provision.py` with
 `MODE=apply`. It waits for an ACTIVE worker of the pool, then makes the three
 objects, each only if it is not there, and waits for a ready seed. Run it again
 at any time: an object that exists is left alone, an access policy without the
@@ -377,7 +480,8 @@ and `delete atespace egress-scan-engine`, as `ate-client`. The pool's worker
 keeps the atespace pin until its pod restarts.
 
 **Blue/green rebuild.** A new image is a new template name, for example
-`engine-v2`: copy `provision/template.yaml` with the new name and digest, run
+`engine-v2`: change `EXPECTED_TEMPLATE` in `provision/provision.py` (it refuses any
+other name) in the same change, copy `provision/template.yaml` with the new name and digest, run
 the provisioning, wait for its seed, set `--template=engine-v2` on the gate,
 drain, then delete `engine` with the teardown steps.
 

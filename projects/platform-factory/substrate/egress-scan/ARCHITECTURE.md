@@ -37,6 +37,12 @@ Other egress is not scanned. So the scanner, and the gate behind it, see the tex
 of Hindsight requests, and the observe data and the enforce decision describe that
 traffic.
 
+The scanner pods run under gVisor (`runtimeClassName: gvisor`). They reach the gate
+and DNS only because Cilium sets `socketLB.hostNamespaceOnly: true`
+(`projects/platform-factory/cilium/values.yaml`, #8636): the default socket-level
+translation never sees a `connect()` from a gVisor sandbox. A revert of that value
+makes every Semgrep call fail (`gate/README.md`, "The scanner runs under gVisor").
+
 ## Engine path
 
 Three paths can carry a body to a child. All three use the same seed and the
