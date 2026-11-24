@@ -39,6 +39,8 @@ if command -v tailscale >/dev/null && systemctl is-active --quiet tailscaled; th
 	tailscale set --netfilter-mode=off
 fi
 sysctl --system >/dev/null
+# KSM off, now and at every boot (factory-ksm.conf).
+bash "${HERE}/ksm-off.sh"
 
 # Host firewall: only nodes, pods and the tailnet reach host ports.
 install -D -m 0644 "${HERE}/factory-firewall.nft" /etc/factory/firewall.nft
