@@ -5,8 +5,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # its path (below) and reads the manifests through the glob.
 # gazelle:exclude provision.py
 
-# The files ../../../resources renders through its "../egress-scan/gate/provision"
-# resource.
+# The files of the provisioning Jobs (not wired since 2026-11-24).
 filegroup(
     name = "kustomize_inputs",
     srcs = glob([

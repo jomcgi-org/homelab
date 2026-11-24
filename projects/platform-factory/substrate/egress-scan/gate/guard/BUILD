@@ -1,5 +1,5 @@
-# The files ../../../resources renders through its "../egress-scan/gate/guard"
-# resource, and ../manifests renders through "../guard".
+# The files of the admission guard (not wired since 2026-11-24). ../manifests
+# renders them through "../guard".
 filegroup(
     name = "kustomize_inputs",
     srcs = glob(["*.yaml"]),

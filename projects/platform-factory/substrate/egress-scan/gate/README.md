@@ -7,15 +7,17 @@ child. State: **deferred, not deployed**. Joe deferred the Semgrep tier on
 2026-11-24 (ARCHITECTURE.md "Decided" 9), and the gate's manifests left
 `resources/kustomization.yaml`. The source, the tests and this document stay. It
 ran in enforce mode on 2026-11-24 only (see "Enforce mode" and "Enable steps";
-those sections describe the gate when it is deployed). To deploy it again:
-list `manifests` and `guard` in `resources/kustomization.yaml`; add the
-`engine-gate` ServiceAccount ID to `atenetRouter.ingressAllowedSPIFFEIDs`
-(`values/substrate.yaml` and `resources/upstream/substrate/atenet-router.yaml`);
-restore the Prometheus scrape job, its egress rule and the `EngineGate*` and
-`EgressScanSemgrepDenying` alerts from the commit that removed them (#8658);
-run `provision/job.yaml` (the apply Job) for the atespace and the template; and
-switch the scanner tier on again (ARCHITECTURE.md "Decided" 8). The warm pool of
-single-use fork actors may serve tool-call sandboxes later. The design is
+those sections describe the gate when it is deployed). To deploy it again, do these steps:
+
+1. List `manifests` and `guard` in `resources/kustomization.yaml`.
+2. Add the `engine-gate` ServiceAccount ID to `atenetRouter.ingressAllowedSPIFFEIDs`
+   (`values/substrate.yaml` and `resources/upstream/substrate/atenet-router.yaml`).
+3. Restore the Prometheus scrape job, its egress rule and the `EngineGate*` and
+   `EgressScanSemgrepDenying` alerts from the commit that removed them (#8658).
+4. Run `provision/job.yaml` (the apply Job) for the atespace and the template.
+5. Switch the scanner tier on again (ARCHITECTURE.md "Decided" 8).
+
+The warm pool of single-use fork actors may serve tool-call sandboxes later. The design is
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Engine path" (path B).
 
 ```mermaid
@@ -410,7 +412,7 @@ enforce ("Decided" 8). The X gates still run.
 | # | Change | Cluster effect on merge | Joe approves |
 | --- | --- | --- | --- |
 | 1 | [`provision/`](provision): Jobs that create the atespace, its access policy and the template `engine`, or remove them (teardown) | Not wired since 2026-11-24. The teardown ran and left one orphaned seed, the access policy and the atespace ("Teardown") | Nothing |
-| 2 | Router grant: `spiffe://cluster.local/ns/ate-system/sa/engine-gate` in `atenetRouter.ingressAllowedSPIFFEIDs` (`values/substrate.yaml`) | Added to the router ConfigMap (merged, #8627) | Approved (Joe, 2026-11-23, session; Decided 6) |
+| 2 | Router grant: `spiffe://cluster.local/ns/ate-system/sa/engine-gate` in `atenetRouter.ingressAllowedSPIFFEIDs` (`values/substrate.yaml`) | Added to the router ConfigMap (merged, #8627). Removed on 2026-11-24 | Approved (Joe, 2026-11-23, session; Decided 6) |
 | 3 | Wire `provision/` into `resources/` with `egress-engine-provision-2` not suspended (`-1` ran on 2026-11-23; `-2` follows the script nits and re-runs as a no-op: every object exists) | Creates the atespace, the policy and the template, once. The worker pins the atespace at the first seed, so the pool pod must have restarted before | Joe merges it (Decided 6), after the pool restart |
 | 4 | Wire the gate (`manifests/`), its image pin, the Prometheus job, rules and egress rule, and the observe-mode switch of the scanner | Starts the gate (one pod, 2 children), its network rules and the admission guard, and rolls the scanner pods (2) with `semgrep.mode=observe`. The scanner calls the gate off the request path. Replies do not change | Yes |
 | 5 | Check (below) | None | |
