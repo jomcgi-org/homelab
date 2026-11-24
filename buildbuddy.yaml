@@ -265,7 +265,7 @@ actions:
             # heads included: the author and subject prove nothing.
             python3 ./bazel/tools/format/document_bundles/check_bundles.py
 
-            bazel run //bazel/tools/format/invariants:check_invariants --config=ci -- --base "$base_ref"
+            bazel run //bazel/tools/format/invariants:check_invariants --config=ci -- --base "$base_ref" --target "origin/${GIT_REPO_DEFAULT_BRANCH:-main}"
             # Format-bot heads skip formatting only; tests still gate them.
             AUTHOR="$(git log -1 --format='%an')"
             if [ "$AUTHOR" = "ci-format-bot" ] &&
