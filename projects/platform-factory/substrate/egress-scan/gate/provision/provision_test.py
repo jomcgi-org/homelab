@@ -864,7 +864,9 @@ def test_a_blip_on_a_read_is_not_read_as_absent(tmp_path: Path) -> None:
     assert fake.mutations() == []
 
 
-def test_a_read_that_keeps_failing_stops_the_job_before_any_write(tmp_path: Path) -> None:
+def test_a_read_that_keeps_failing_stops_the_job_before_any_write(
+    tmp_path: Path,
+) -> None:
     mod, fake = _load(), FakeAte()
     assert _run(mod, fake, tmp_path) == 0
     plain = fake.__call__
