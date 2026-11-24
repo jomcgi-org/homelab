@@ -942,7 +942,7 @@ def test_guest_script_fits_one_argument_and_parses() -> None:
 
 
 def test_gate_job_runs_as_ate_client() -> None:
-    job = _one(_docs(), "Job", "gvisor-fork-gates-1")
+    job = _one(_docs(), "Job", "gvisor-fork-gates-2")
     assert job["spec"]["suspend"] is False
     assert job["spec"]["backoffLimit"] == 0
     assert job["spec"]["activeDeadlineSeconds"] <= 3600

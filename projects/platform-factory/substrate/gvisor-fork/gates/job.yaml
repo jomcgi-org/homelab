@@ -21,7 +21,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: gvisor-fork-gates-1
+  name: gvisor-fork-gates-2
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: "2"
