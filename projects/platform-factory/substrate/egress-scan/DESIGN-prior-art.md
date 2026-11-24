@@ -8,8 +8,8 @@ scanner rebuilds something that exists.
 ## Result
 
 - No project covers the whole design. Two projects cover a large part of it.
-  Pipelock has the best credential detection and decoding we found. Betterleaks
-  has the best rule set to embed.
+  Pipelock has the best decoding we found. Betterleaks has the best rule set to
+  embed. On the corpus they differ by one secret (37 and 38 of 45).
 - Pipelock is a forward proxy, not an `ext_authz` service. Its detector lives in
   Go `internal/` packages, so no other module can import it. It does expose
   `POST /api/v1/scan` (kind `dlp`) over HTTP, and that fits our engine contract.
@@ -37,7 +37,7 @@ Repository `pipelab-org/pipelock` (moved from `luckyPipewrench/pipelock`).
 | Identity | An agent name in the request, and per-agent profiles (paid). SVID and AARP appraisal is verifier-side only. It does not key an inline verdict on a SPIFFE identity |
 | TLS | Own CA and leaf certificates. We already terminate TLS at the gateway, so we would not use it |
 | Evidence | Signed action receipts, a flight recorder, Prometheus metrics (`pipelock_scan_api_*`) |
-| Quality | 3,490 test files, fuzz and hardening workflows, OpenSSF Scorecard, signed releases with SBOMs. Security policy with response targets |
+| Quality | 3,493 test files, fuzz and hardening workflows, OpenSSF Scorecard, signed releases with SBOMs. Security policy with response targets |
 | Library use | Not possible. The scanner is in `internal/`. `sdk/` holds receipt verifiers only |
 
 ### Run on the corpus
@@ -52,7 +52,7 @@ JSON strings (the two gave the same verdicts).
 | --- | --- | --- | --- | --- |
 | Secrets found, of 45 | 29 | 38 | 32 | 37 |
 | False positives, of 18 | 0 | 0 | 0 | 1 |
-| Only this tool found it | none | 7 encoded | 2 headers | 3: `split-across-lines`, `jwt` (malformed), `db-url` |
+| Only this tool found it | none | none (7 encoded samples, which Pipelock also found) | 2 headers | 3: `split-across-lines`, `jwt` (malformed), `db-url` |
 
 - All four together found 43 of 45. The two misses are `split-lines-json-concat`
   and `gzip-b64-github`.
@@ -94,13 +94,13 @@ A 64 KiB body fits the 300 ms deadline. The limit of the Scan API text field is
 
 | Candidate | Finding | Verdict |
 | --- | --- | --- |
-| AgentShield (`kamuimk/agentshield`, Rust) | Apache-2.0, 1 star, one author, 25,000 lines. A desktop forward proxy with its own 15 to 20 regexes, base64 and JSON-escape decoding, a 10 MiB body cap, and a deny on any budget overrun or compressed upload. Domains on its allowlist skip DLP. No per-actor identity, no Prometheus, no git. Last release 2026-02-19 | Ignore. Copy one idea: a scan that cannot finish is a deny |
+| AgentShield (`kamuimk/agentshield`, Rust) | Apache-2.0, 1 star, one author, 25,000 lines. A desktop forward proxy. It has its own 15 to 20 regexes and base64 and JSON-escape decoding. Its body cap is 10 MiB. It denies on any budget overrun or compressed upload. Domains on its allowlist skip DLP. No per-actor identity, no Prometheus, no git. Last release 2026-02-19 | Ignore. Copy one idea: a scan that cannot finish is a deny |
 | agentgateway guardrails (v1.7.0) | `ai.promptGuard` and the webhook guardrail run on LLM backends only. The built-in detectors are PII (SSN, card, phone, email), with no secret patterns and no decoding. No git support. No open issue asks for a secret scanner | Ignore for this purpose |
-| agentgateway `extAuthz` and `extProc` | `extAuthz` takes `includeRequestBody.maxRequestBytes` (default 8 KiB). With `allowPartialMessage: true` only the prefix is scanned, so padding hides a secret. Our `false` returns 413. It passes a per-route `context` map to the server, which answers the per-route question in DESIGN-large-bodies.md. `extProc` can stream bodies and responses, with a 2 MiB buffer default and a fail-open gap after the first body byte (upstream issue 3836) | Keep `extAuthz`. `extProc` is the fallback for responses |
+| agentgateway `extAuthz` and `extProc` | `extAuthz` takes `includeRequestBody.maxRequestBytes` (default 8 KiB). With `allowPartialMessage: true` only the prefix is scanned, so padding hides a secret. Our `false` returns 413. In the gRPC variant it passes a per-route `context` map to the server, which answers the per-route question in DESIGN-large-bodies.md. `extProc` can stream bodies and responses, with a 2 MiB buffer default and a fail-open gap after the first body byte (upstream issue 3836) | Keep `extAuthz`. `extProc` is the fallback for responses |
 | ICAP, c-icap, Squid | Frameworks. The shipped services are antivirus and URL filters. Hobby DLP adapters only. Fortra's gateway is commercial | Ignore |
 | Envoy filters | An archived Wasm filter that calls a paid cloud DLP. Sample `ext_proc` servers | Ignore |
 | Kong, NGINX, Istio | No open source plugin that scans bodies for secrets (GitHub search only, not the plugin hubs) | Ignore |
-| `finos/git-proxy` | Apache-2.0, 270 stars, FINOS graduated, v2.3.1 (2026-11-16). The one proxy that handles `git-receive-pack`: it clones, applies the pack, diffs, then optionally runs the Gitleaks binary (off by default) before it forwards. Node, a clone per push, a user database and an approval flow | Design reference for git-as-code. Do not adopt |
+| `finos/git-proxy` | Apache-2.0, 270 stars, FINOS graduated, v2.3.1 (2026-11-16). The one proxy that handles `git-receive-pack`: it clones, applies the pack, diffs, then optionally runs the Gitleaks binary (off by default) before it forwards. Node, a clone per push, a user database and an approval flow | Design reference for git-as-code (it also has a built-in `scanDiff` step). Do not adopt |
 | GitLab secret push protection | Pre-receive hook, diff only, small high-confidence rule set. A scan timeout lets the push through (fail open). A user can skip it | Avoid its fail-open timeout |
 | GitHub push protection | Blocks pushes, API and UI commits. Users with write access can bypass it. The engine is undocumented | Ignore |
 | ggshield | MIT, 2,024 stars. A CLI that calls the GitGuardian service. Hooks, no proxy | Ignore |
@@ -129,17 +129,21 @@ A 64 KiB body fits the 300 ms deadline. The limit of the Scan API text field is
 | An `ext_authz` hook with a body | Yes, in agentgateway and Envoy. No open source credential scanner uses it |
 | TLS interception | Yes, at our gateway |
 | A licensed engine in a single-use gVisor child behind `engine-gate`, with no egress | No. Nothing found runs a scan engine in a sandbox per request |
-| A verdict keyed on the actor identity | No. The nearest is Pipelock's paid per-agent profile, which keys on a name and a network range |
-| Deny when a tier is out, with alerts and a planned HA roll | Partly. AgentShield and Pipelock fail closed on a budget or parse failure. None alerts on an outage of a tier or plans HA for it |
+| A verdict keyed on the actor identity | No. The nearest is Pipelock's paid per-agent profile, which binds to a listener or a source CIDR (names in a request are attribution only) |
+| Deny when a tier is out, with alerts and a planned HA roll | Partly. AgentShield and Pipelock fail closed on a budget or parse failure. We found no alerting design for a tier outage |
 | Git push scanned as code, with only high-confidence rules blocking | No. `git-proxy` unpacks and diffs but is a heavy Node service that runs Gitleaks off by default. Pipelock checks a repository allowlist only |
 | Windowed scan on parallel children | No |
 
 ## Decision for Joe
 
-1. Keep the Betterleaks build plan, pending this result. PR 2 (our decoder chain)
-   is the part Pipelock makes redundant if we run it as a tier.
+1. Hold the Betterleaks build PRs. PR 2 (our decoder chain) is the part Pipelock
+   makes redundant if we run it as a tier, so wait for the trial.
 2. Recommended: run a one-day observe trial of Pipelock's Scan API as a third tier
    before the decoder PR. It needs an adapter and one pod, and no decoder chain.
+   Plan the trial for a service that sees plaintext secrets: no egress except
+   the scanner, no log or evidence output of request text, and a check that the
+   binary makes no licence or telemetry call. The Scan API can also join
+   fragments across requests by `session_id`, which bears on split secrets.
 3. Alternative: build the Betterleaks tier and our own decoder, and treat
    Pipelock as a reference only.
 4. Contribute upstream only after the trial, and only small changes.
