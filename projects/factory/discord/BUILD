@@ -9,6 +9,7 @@ go_library(
         "gateway.go",
         "hindsight.go",
         "history.go",
+        "ingest.go",
         "policy.go",
         "rest.go",
     ],
@@ -26,6 +27,7 @@ go_test(
         "bridge_test.go",
         "clients_test.go",
         "history_test.go",
+        "ingest_test.go",
     ],
     embed = [":discord"],
     deps = [

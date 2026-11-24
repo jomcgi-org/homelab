@@ -1,6 +1,8 @@
 // discord-bridge connects Bosun to Discord's gateway (HOME-162): it answers
 // messages that tag the bot in allowlisted servers, with memory from
-// hindsight-discord and turns on a kagent Agent. "discord-bridge import"
+// hindsight-discord and turns on a kagent Agent. In a server whose policy
+// sets `ingest`, it also stores every human message (HOME-833).
+// "discord-bridge import"
 // replays allowlisted servers' history into their banks instead (HOME-164).
 package main
 
@@ -92,6 +94,7 @@ func run(log *slog.Logger) error {
 
 	botToken := fileValue(cfg.token)
 	rest := &discord.REST{Token: botToken}
+	memory := &discord.Hindsight{BaseURL: strings.TrimSuffix(cfg.hindsightURL, "/"), Key: fileValue(cfg.hindsightKey), RecallTokens: 2000}
 	bridge := &discord.Bridge{
 		Config: policy,
 		Agent: &discord.Kagent{
@@ -100,12 +103,29 @@ func run(log *slog.Logger) error {
 			Agent:    kagent.AgentRef{Namespace: ns, Name: name},
 			Log:      log,
 		},
-		Memory:  &discord.Hindsight{BaseURL: strings.TrimSuffix(cfg.hindsightURL, "/"), Key: fileValue(cfg.hindsightKey), RecallTokens: 2000},
+		Memory:  memory,
 		Replies: rest,
 		Log:     log,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// A server with `ingest` stores every human message (HOME-833). The
+	// ingestor outlives the gateway so the last turns' lines are stored.
+	intents := discord.IntentsFor(policy)
+	ingestDone := make(chan struct{})
+	stopIngest := func() {}
+	if intents&discord.IntentMessageContent != 0 {
+		bridge.Ingest = &discord.Ingestor{Memory: memory, Log: log}
+		ictx, cancel := context.WithCancel(context.Background())
+		stopIngest = cancel
+		go func() {
+			defer close(ingestDone)
+			bridge.Ingest.Run(ictx)
+		}()
+	} else {
+		close(ingestDone)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
@@ -123,11 +143,14 @@ func run(log *slog.Logger) error {
 		OnReady:   bridge.SetBot,
 		OnMessage: func(m discord.Message) { bridge.Handle(ctx, m) },
 		Log:       log,
+		Intents:   intents,
 	}
-	log.Info("discord bridge starting", "guilds", len(policy.Guilds), "agent", cfg.agent)
+	log.Info("discord bridge starting", "guilds", len(policy.Guilds), "agent", cfg.agent, "intents", intents)
 	err = gateway.Run(ctx)
 	stop()
 	bridge.Wait()
+	stopIngest()
+	<-ingestDone
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}

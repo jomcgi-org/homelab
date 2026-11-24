@@ -49,7 +49,6 @@ type Component struct {
 // HistoryMessage is a message read from a channel's history.
 type HistoryMessage struct {
 	Message
-	Type        int          `json:"type"`
 	Attachments []Attachment `json:"attachments"`
 	Components  []Component  `json:"components"`
 }

@@ -47,6 +47,9 @@ type Message struct {
 	Timestamp time.Time `json:"timestamp"`
 	Mentions  []User    `json:"mentions"`
 	WebhookID string    `json:"webhook_id"`
+	// Type is 0 for a message and 19 for a reply; other values are system
+	// messages.
+	Type int `json:"type"`
 }
 
 // MentionsUser reports whether the message tags user id: Discord lists the
