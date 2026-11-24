@@ -615,6 +615,20 @@ def _provisioned(mod, tmp_path: Path):
     return fake
 
 
+def test_teardown_names_only_the_engine_atespace(tmp_path: Path) -> None:
+    # Every call of the teardown names the engine atespace (a flag or the
+    # atespace object itself), so another atespace, such as a tool-call sandbox
+    # one, cannot be touched.
+    mod = _load()
+    fake = _provisioned(mod, tmp_path)
+    assert _run_teardown(mod, fake, tmp_path) == 0
+    assert fake.calls
+    for call in fake.calls:
+        if call[:3] == ("delete", "atespace", "egress-scan-engine"):
+            continue
+        assert "-a" in call and call[call.index("-a") + 1] == "egress-scan-engine", call
+
+
 def test_teardown_fails_when_a_delete_fails(tmp_path: Path) -> None:
     for kind in ("actor", "actor-template", "access-policy", "atespace"):
         mod = _load()

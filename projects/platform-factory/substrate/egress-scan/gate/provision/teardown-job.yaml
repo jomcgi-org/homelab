@@ -1,6 +1,6 @@
-# The teardown of the engine atespace. Wired since 2026-11-24 (Joe deferred the
-# Semgrep tier, and engine-gate is not deployed: it deleted its children on
-# SIGTERM). It runs once. The Job deletes the actors, the templates, the access
+# The teardown of the engine atespace. Wired by the PR of 2026-11-24 (Joe deferred
+# the Semgrep tier, and engine-gate is not deployed: it deletes its children on
+# SIGTERM). It runs once on the first sync. The Job deletes the actors, the templates, the access
 # policy and the atespace, and fails if a delete fails (provision.py,
 # MODE=teardown). Read the run with
 # kubectl -n ate-system logs job/egress-engine-teardown-1 | grep '^PROVISION '.
