@@ -1,5 +1,9 @@
 # engine-gate
 
+> **Deferred, not deployed (Joe, 2026-11-24).** The scanner no longer has the
+> `--semgrep-*` flags or the tier values. The rollback and enable steps below that
+> name them describe the code at commit `61a15fffb6`. Read them as history.
+
 `engine-gate` is the service behind the Semgrep tier of the egress scanner
 (`semgrep.endpoint`, tier merged as #8612). It keeps a warm pool of single-use
 gVisor fork children of the engine template and sends each scan request to one
