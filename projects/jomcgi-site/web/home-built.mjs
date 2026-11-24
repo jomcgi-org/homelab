@@ -65,7 +65,9 @@ export function checkHome(dist) {
   );
   assert.deepEqual(
     all(".pad .legend").map((node) => node.textContent),
-    [...legends, ...order.filter((slug) => slug !== "notes")],
+    [...legends, ...order.filter((slug) => slug !== "notes")]
+      // Homelab replaced Docs on this site; the hub page still says docs.
+      .map((legend) => (legend === "docs" ? "homelab" : legend)),
   );
   assert.deepEqual(
     all(".writing a").map((node) => [
