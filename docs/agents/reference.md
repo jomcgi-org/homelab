@@ -50,6 +50,13 @@ they do not launch their own planner, review or landing sequence.
   fail.
 - Run `ci` before pushing when available, otherwise use PR CI. Read failed
   logs before retrying. Never push to a merged branch.
+- Keep a PR in draft while you push. The reviewer skips drafts, and each
+  ready head costs one review. Mark it ready when `pr-checks` passes on the
+  head, you have read your own diff, and about 60 seconds have passed since
+  your last push. When you start to iterate again (a finding, a CI failure,
+  a change of plan), convert the PR to draft first and mark it ready when the
+  new head is stable. A factory worker does not change PR state: the
+  connector opens its PR.
 - The landing owner checks required CI and independent approval against the
   current PR head. On main, that is `pr-checks` and the reviewer App's
   `factory review` check. A failing `factory review` lists its findings, so

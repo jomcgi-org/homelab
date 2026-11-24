@@ -11,7 +11,10 @@ approval. Use the routes below or the connected GitHub tools; if neither can
 enqueue, report the transport blocker and PR state.
 
 - **Open a draft PR:** `POST /repos/{owner}/{repo}/pulls` with
-  `{"title","body","head","base":"main","draft":true}`.
+  `{"title","body","head","base":"main","draft":true}`. Keep it a draft while
+  you push. `POST ready_for_review` (below) once `pr-checks` passes on the
+  head. To iterate after that, `POST convert_to_draft` first, so no review
+  starts on a head you are about to replace.
 - **State, mergeability, head:** `GET /repos/{owner}/{repo}/pulls/{n}`, fields
   `state`, `mergeable_state` and `head.sha`. Compare `head.sha` with
   `git rev-parse HEAD` after a push.
