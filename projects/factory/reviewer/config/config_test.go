@@ -1,4 +1,4 @@
-// invariant: FACT-19
+// invariant: HOME-278-1
 
 package config
 

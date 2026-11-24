@@ -210,7 +210,7 @@ invariants:
   - projects/factory/reviewer/review/report.go
   test: //projects/factory/reviewer/review:review_test
   state: live
-- id: FACT-20
+- id: HOME-278-1
   statement: The default human gate covers the files that configure its lists, determine its verdict or define its required check.
   mechanism:
   - projects/factory/reviewer/config/config.go
