@@ -1,4 +1,4 @@
-// invariant: FACT-19
+// invariant: HOME-278-1
 
 // Package config loads the reviewer's settings from one YAML file, strictly:
 // an unknown field is an error.
