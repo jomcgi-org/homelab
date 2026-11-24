@@ -4,7 +4,7 @@
 # lists the steps. Design: ../../ARCHITECTURE.md, "Engine path". What it changes
 # and what Joe approves: ../README.md, "Enable steps".
 #
-# Wired, and it runs once: egress-engine-provision-1 is not suspended. Merge the
+# Wired, and it runs once: egress-engine-provision-2 is not suspended. Merge the
 # change that wired it only after the pool pod restarted (a worker pins the
 # atespace of its first seed for the life of its process, ARCHITECTURE.md,
 # "Atespace pin") and before engine-gate is wired (the gate has nothing to claim
@@ -12,7 +12,10 @@
 # ACTIVE worker, then makes the three objects (each only if missing) and waits
 # up to 600 s for the seed.
 #
-# A Job's pod template is immutable. Editing anything in this directory
+# The run suffix is 2: the script nits (retried reads, JSON errors as Failed, the
+# template name check) changed provision.py after -1 ran at 23:54Z on 2026-11-23.
+# A re-run is a no-op, because every object exists. A Job's pod template is
+# immutable. Editing anything in this directory
 # (provision.py, template.yaml, template.json) changes the generated ConfigMap's
 # hash, and with it the Job's config volume: bump the run suffix in the name in
 # the same change (resources_test.py pins the hash). The teardown Job is in
@@ -28,7 +31,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: egress-engine-provision-1
+  name: egress-engine-provision-2
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: "2"

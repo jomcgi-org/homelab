@@ -53,6 +53,9 @@ ATESPACE = "egress-scan-engine"
 # The template name comes from template.yaml (apply sets it); "engine" is the
 # name of the one that engine-gate uses.
 TEMPLATE = "engine"
+# The name engine-gate takes by its --template flag. A blue/green rebuild changes
+# this and the flag in one change (gate README, "Blue/green rebuild").
+EXPECTED_TEMPLATE = "engine"
 POOL = os.environ.get("POOL", "gvisor-fork")
 # The editor member. The API wants "user:<principal>". The principal of a
 # ServiceAccount token is system:serviceaccount:<ns>:<name>.
@@ -125,12 +128,40 @@ def first(node: object, key: str) -> object:
     return None
 
 
-def get_json(*args: str) -> object:
-    done = ate_ok(*args, "-o", "json")
+def read_file(path: Path) -> str:
     try:
-        return json.loads(done.stdout)
+        return path.read_text()
+    except OSError as err:
+        raise Failed(f"{path}: {err.strerror or err}") from err
+
+
+def parse_json(text: str, what: str) -> object:
+    """JSON from a kubectl-ate answer. A bad answer is a Failed, not a traceback."""
+    try:
+        return json.loads(text)
     except ValueError as err:
-        raise Failed(f"{' '.join(args)}: not JSON: {done.stdout[:200]!r}") from err
+        raise Failed(f"{what}: not JSON: {text[:200]!r}") from err
+
+
+# A read that fails is tried again: one blip of the API must not fail a Job that
+# runs once. A call that works but answers badly is tried again too. The writes
+# are never retried here (create and delete are not safe to repeat blind).
+GET_TRIES = 3
+
+
+def get_json(*args: str) -> object:
+    last: Failed | None = None
+    for attempt in range(GET_TRIES):
+        if attempt:
+            time.sleep(POLL)
+        try:
+            done = ate_ok(*args, "-o", "json")
+            return parse_json(done.stdout, " ".join(args))
+        except Failed as err:
+            last = err
+            log(event="get_retry", args=repr(" ".join(args)), attempt=attempt + 1)
+    assert last is not None
+    raise last
 
 
 def wait_for(what: str, limit: float, ready, detail=None) -> float:
@@ -221,6 +252,8 @@ def template_json_problems(text: str, desired: dict) -> list[str]:
     if image_digests(" ".join(images)) != image_digests(text):
         problems.append("template.json and template.yaml name different images")
     meta = desired.get("metadata") or {}
+    if meta.get("name") != EXPECTED_TEMPLATE:
+        problems.append(f"template.json metadata.name is not {EXPECTED_TEMPLATE}")
     if meta.get("atespace") != ATESPACE:
         problems.append("template.json metadata.atespace is not the atespace")
     if not re.search(rf"(?m)^  name: {re.escape(str(meta.get('name')))}$", text):
@@ -398,7 +431,7 @@ def actors() -> list[dict]:
         raise Failed(f"get actors: exit {done.returncode}")
     return [
         a
-        for a in walk(json.loads(done.stdout or "{}"))
+        for a in walk(parse_json(done.stdout or "{}", "get actors"))
         if isinstance(a.get("metadata"), dict)
         and isinstance(a.get("status"), dict)
         and isinstance(a["status"].get("state"), str)
@@ -441,7 +474,7 @@ def teardown() -> None:
             delete(failures, "actor", str(actor["metadata"]["name"]), "-a", ATESPACE)
     done = ate("get", "actor-template", "-a", ATESPACE, "-o", "json")
     if done.returncode == 0:
-        for t in walk(json.loads(done.stdout or "{}")):
+        for t in walk(parse_json(done.stdout or "{}", "get actor-template")):
             if isinstance(t.get("metadata"), dict) and "containers" in t:
                 delete(
                     failures,
@@ -488,9 +521,11 @@ def main() -> int:
     try:
         if MODE == "apply":
             # Before any API contact: a template that cannot work makes no call.
-            text = TEMPLATE_FILE.read_text()
-            desired = json.loads(TEMPLATE_JSON_FILE.read_text())
-            TEMPLATE = str(desired["metadata"]["name"])
+            text = read_file(TEMPLATE_FILE)
+            desired = parse_json(read_file(TEMPLATE_JSON_FILE), "template.json")
+            if not isinstance(desired, dict) or not isinstance(desired.get("metadata"), dict):
+                raise Failed("template.json: no metadata")
+            TEMPLATE = str(desired["metadata"].get("name"))
             problems = template_checks(text) + template_json_problems(text, desired)
             if problems:
                 for p in problems:
