@@ -18,11 +18,15 @@ flowchart LR
 ```
 
 Wait age is the time since the connector claimed the run. Priority and
-`dueDate` come from the issue read of the run's last admission poll. A run
-not yet read, such as a new claim or any run after a restart, ranks as `none`
-for its first pass, and a changed priority applies on the next pass. A slow
-read of a new claim never delays an older hold. `DueWindow` (72 h) and
-`StarveAfter` (168 h) set the two bounds.
+`dueDate` come from the issue read of the run's last admission poll. A pass
+first reads each run it has not seen, together and under half the tick's wait.
+A read that fails or times out ranks the run as `none` for that pass, and a
+changed priority applies on the next pass. A slow read never delays older
+holds. `DueWindow` (72 h) and `StarveAfter` (168 h) set the two bounds.
+
+Only claimed runs are ordered. The claim phase takes runs from itsaplan in its
+own order, and only while an agent has a free slot. A delegated run enters the
+order after the runs ahead of it in itsaplan's queue are claimed.
 
 **Why.** Admission used last-poll order, so on 2026-11-24 low work could run
 before urgent work: 115 of 132 delegated Todo tickets (39 high, 76 medium,
