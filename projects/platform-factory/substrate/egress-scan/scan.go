@@ -14,6 +14,7 @@ import (
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/detect"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 )
@@ -27,8 +28,9 @@ const (
 
 type scanner struct {
 	authv3.UnimplementedAuthorizationServer
-	detector *requestDetector
-	slots    chan struct{}
+	// host runs the one active detector under its limits, mode and failure mode.
+	host  *detect.Host
+	slots chan struct{}
 }
 
 func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv3.CheckResponse, error) {
@@ -128,12 +130,24 @@ func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv
 			return deny(codes.InvalidArgument, typev3.StatusCode_UnsupportedMediaType, "unsupported content type"), nil
 		}
 	}
-	matched, err := s.detector.find(scanCtx, fields.String(), string(body), decoded)
-	if err != nil {
-		return scanBudgetResponse(ctx)
+	inputs := []detect.Input{{Bytes: []byte(fields.String()), Source: "address"}}
+	if len(body) != 0 {
+		inputs = append(inputs, detect.Input{Bytes: body, Source: "body"})
 	}
-	if matched {
+	if decoded != "" {
+		inputs = append(inputs, detect.Input{Bytes: []byte(decoded), Source: "body", Via: []string{"json"}})
+	}
+	// The caller's context, not scanCtx: the host applies the detector deadline
+	// itself and tells a caller that left (no verdict) from a deadline (a failure).
+	verdict := s.host.Scan(ctx, inputs...)
+	if verdict.Canceled != nil {
+		return nil, verdict.Canceled
+	}
+	switch {
+	case verdict.Outcome == detect.OutcomeBlocked && verdict.Deny:
 		return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, "request contains a credential pattern"), nil
+	case verdict.Outcome == detect.OutcomeFailed && verdict.Deny:
+		return scanBudgetResponse(ctx)
 	}
 	return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
 }

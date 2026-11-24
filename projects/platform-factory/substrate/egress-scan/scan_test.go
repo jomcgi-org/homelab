@@ -5,7 +5,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -16,21 +15,28 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+
+	"github.com/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/detect"
 )
+
+// Every detector registered by detectors.go runs the same request table.
+var detectorNames = []string{"gitleaks", "betterleaks"}
+
+type checkCase struct {
+	name    string
+	target  string
+	media   string
+	body    string
+	headers map[string]string
+	partial bool
+	status  typev3.StatusCode
+}
 
 func TestCheck(t *testing.T) {
 	// A synthetic example of a recognized credential format.
 	fixture := "gh" + "p_" + "8Jdm9u1Qa7bWdF2p7XZ9sWy7Qnf2gXMbRFqa"
 	escaped := `\u0067` + fixture[1:]
-	cases := []struct {
-		name    string
-		target  string
-		media   string
-		body    string
-		headers map[string]string
-		partial bool
-		status  typev3.StatusCode
-	}{
+	cases := []checkCase{
 		{name: "clean MCP call", target: "/mcp/homelab/", media: "application/json", body: `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"retain","arguments":{"content":"Test passed"}}}`},
 		{name: "escape decoded", target: "/", media: "application/json", body: `{"content":"` + escaped + `"}`, status: typev3.StatusCode_Forbidden},
 		{name: "suppression ignored", target: "/", media: "text/plain", body: fixture + " # gitleaks:allow", status: typev3.StatusCode_Forbidden},
@@ -47,7 +53,13 @@ func TestCheck(t *testing.T) {
 		{name: "size limit", target: "/", media: "text/plain", body: strings.Repeat("x", maxBody+1), status: typev3.StatusCode_PayloadTooLarge},
 	}
 
-	server := newTestScanner(t)
+	for _, name := range detectorNames {
+		server := newTestScanner(t, name, nil)
+		t.Run(name, func(t *testing.T) { runCheckCases(t, server, cases, fixture) })
+	}
+}
+
+func runCheckCases(t *testing.T, server *scanner, cases []checkCase, fixture string) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := &authv3.AttributeContext_HttpRequest{
@@ -83,8 +95,17 @@ func TestCheck(t *testing.T) {
 	}
 }
 
+func TestBothDetectorsAreRegistered(t *testing.T) {
+	registered := strings.Join(detect.Names(), ",")
+	for _, name := range detectorNames {
+		if !strings.Contains(registered, name) {
+			t.Errorf("detector %s is not registered by detectors.go (registered: %s)", name, registered)
+		}
+	}
+}
+
 func TestCheckOverGRPC(t *testing.T) {
-	backend := newTestScanner(t)
+	backend := newTestScanner(t, "gitleaks", nil)
 	registry := prometheus.NewRegistry()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -153,72 +174,6 @@ func TestCheckOverGRPC(t *testing.T) {
 	}
 }
 
-func TestOperatorRules(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gitleaks.toml")
-	const config = `title = "Operator test rules"
-
-[[rules]]
-id = "test-credential"
-description = "Synthetic pattern added by operator"
-regex = 'TEST_CREDENTIAL_[A-Z0-9]{12}'
-`
-	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	detector, err := newDetector(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if matched, err := detector.find(context.Background(), "TEST_CREDENTIAL_AB12CD34EF56"); !matched || err != nil {
-		t.Fatalf("configured rule did not match: %v", err)
-	}
-	if err := os.WriteFile(path, []byte(config+`path = '\.go$'`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := newDetector(path); err == nil {
-		t.Fatal("configured a rule that requires a repository path")
-	}
-	if err := os.WriteFile(path, []byte("rules = []"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := newDetector(path); err == nil {
-		t.Fatal("configured an empty ruleset")
-	}
-}
-
-func TestLineAllowlistUsesMatchedLines(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gitleaks.toml")
-	const config = `[[rules]]
-id = 'synthetic-marker'
-regex = '(?m)^MARK:[^\r\n]+\r?\n'
-[[rules.allowlists]]
-regexTarget = 'line'
-regexes = ['approved-line']
-`
-	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	detector, err := newDetector(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, endings := range []struct {
-		name string
-		text string
-	}{{"LF", "\n"}, {"CRLF", "\r\n"}} {
-		t.Run(endings.name, func(t *testing.T) {
-			matched, err := detector.find(context.Background(), "MARK:example"+endings.text+"approved-line")
-			if err != nil || !matched {
-				t.Fatalf("a marker on the next line suppressed the match: %v", err)
-			}
-			matched, err = detector.find(context.Background(), "MARK:example approved-line"+endings.text+"next line")
-			if err != nil || matched {
-				t.Fatalf("a marker on the matched line did not suppress the match: %v", err)
-			}
-		})
-	}
-}
-
 func TestDenseMatchesReleaseScanSlot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gitleaks.toml")
 	if err := os.WriteFile(path, []byte(`[[rules]]
@@ -230,11 +185,8 @@ regexes = ['approved-line']
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	detector, err := newDetector(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	backend := &scanner{detector: detector, slots: make(chan struct{}, 1)}
+	backend := newTestScanner(t, "gitleaks", map[string]string{"rules": path})
+	backend.slots = make(chan struct{}, 1)
 	check := func(body string, code codes.Code) {
 		t.Helper()
 		reply, err := backend.Check(context.Background(), request(&authv3.AttributeContext_HttpRequest{
@@ -252,31 +204,23 @@ regexes = ['approved-line']
 	check("clean text", codes.OK)
 }
 
-func TestRegexReaderStopsAfterCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	reader := newScanReader(ctx, strings.Repeat("abcd", 1024)+"MARK:other")
-	if _, _, err := reader.ReadRune(); err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-	cancel()
-	match := regexp.MustCompile(`MARK:[a-z]+`).FindReaderIndex(reader)
-	if match != nil || reader.count > 256 {
-		t.Fatal("regex kept reading input after cancellation")
-	}
-}
-
 func request(http *authv3.AttributeContext_HttpRequest) *authv3.CheckRequest {
 	return &authv3.CheckRequest{Attributes: &authv3.AttributeContext{
 		Request: &authv3.AttributeContext_Request{Http: http},
 	}}
 }
 
-func newTestScanner(t *testing.T) *scanner {
+func newTestScanner(t *testing.T, name string, options map[string]string) *scanner {
 	t.Helper()
-	detector, err := newDetector("")
+	host, err := detect.New(detect.Config{
+		Name:        name,
+		Mode:        detect.ModeEnforce,
+		FailureMode: detect.FailDeny,
+		Limits:      detect.Limits{MaxInputBytes: maxBody, Deadline: maxScanTime},
+		Options:     options,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &scanner{detector: detector, slots: make(chan struct{}, 8)}
+	return &scanner{host: host, slots: make(chan struct{}, 8)}
 }

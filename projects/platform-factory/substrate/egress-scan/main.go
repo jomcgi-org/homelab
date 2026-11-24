@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -15,11 +14,10 @@ import (
 	"time"
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
+	"github.com/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/detect"
+	"github.com/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/detect/gitleaks"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/spf13/viper"
-	"github.com/zricethezav/gitleaks/v8/config"
-	"github.com/zricethezav/gitleaks/v8/logging"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -28,17 +26,32 @@ import (
 func main() {
 	addr := flag.String("listen", ":8080", "listen address")
 	metricsAddr := flag.String("metrics-listen", ":9090", "Prometheus metrics listen address")
-	rules := flag.String("rules", "", "path to operator-supplied Gitleaks TOML")
+	rules := flag.String("rules", "", "path to operator-supplied Gitleaks TOML (the gitleaks detector only)")
+	detectorName := flag.String("detector", gitleaks.Name, "detector name: one of "+strings.Join(detect.Names(), ", "))
+	detectorMode := flag.String("detector-mode", string(detect.ModeEnforce), "enforce: a finding denies; observe: counted, never denies")
+	detectorFailure := flag.String("detector-failure-mode", string(detect.FailDeny), "when the detector gives no verdict: deny or allow")
+	detectorDeadline := flag.Duration("detector-deadline", maxScanTime, "detector time for one request; keep the gateway requestTimeout at least 5ms above it")
+	detectorMaxInput := flag.Int("detector-max-input-bytes", maxBody, "largest input in bytes that a detector call takes; larger is a failure")
+	detectorData := flag.String("detector-data-path", "", "mounted path of the private data of a detector that holds any")
 	concurrency := flag.Int("concurrency", 8, "maximum simultaneous scans")
 	flag.Parse()
 	if *concurrency < 1 || *concurrency > 64 {
 		log.Fatal("concurrency must be between 1 and 64")
 	}
-	// Library diagnostics can contain source-derived fields.
-	logging.Logger = logging.Logger.Output(io.Discard)
-	detector, err := newDetector(*rules)
+	options := map[string]string{}
+	if *rules != "" {
+		options[gitleaks.OptionRules] = *rules
+	}
+	host, err := detect.New(detect.Config{
+		Name:        *detectorName,
+		Mode:        detect.Mode(*detectorMode),
+		FailureMode: detect.FailureMode(*detectorFailure),
+		Limits:      detect.Limits{MaxInputBytes: *detectorMaxInput, Deadline: *detectorDeadline},
+		DataPath:    *detectorData,
+		Options:     options,
+	})
 	if err != nil {
-		log.Fatal("cannot load secret scan rules")
+		log.Fatal("cannot load the secret detector: ", err)
 	}
 
 	sock, err := net.Listen("tcp", *addr)
@@ -47,7 +60,7 @@ func main() {
 	}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(maxCheckMessage))
 	registry := prometheus.NewRegistry()
-	authv3.RegisterAuthorizationServer(server, newMeteredScanner(&scanner{detector: detector, slots: make(chan struct{}, *concurrency)}, registry))
+	authv3.RegisterAuthorizationServer(server, newMeteredScanner(&scanner{host: host, slots: make(chan struct{}, *concurrency)}, registry))
 	metricsListener, err := net.Listen("tcp", *metricsAddr)
 	if err != nil {
 		log.Fatal(err)
@@ -82,36 +95,4 @@ func main() {
 	if err := server.Serve(sock); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func newDetector(path string) (*requestDetector, error) {
-	loader := viper.New()
-	loader.SetConfigType("toml")
-	var err error
-	if path == "" {
-		err = loader.ReadConfig(strings.NewReader(config.DefaultConfig))
-	} else {
-		loader.SetConfigFile(path)
-		err = loader.ReadInConfig()
-	}
-	if err != nil {
-		return nil, err
-	}
-	var raw config.ViperConfig
-	if err := loader.Unmarshal(&raw); err != nil {
-		return nil, err
-	}
-	if raw.Extend.Path != "" || raw.Extend.URL != "" {
-		return nil, errors.New("request rules can extend the embedded rules only")
-	}
-	for _, rule := range raw.Rules {
-		if path != "" && rule.Path != "" {
-			return nil, errors.New("operator request rules cannot require a file path")
-		}
-	}
-	rules, err := raw.Translate()
-	if err != nil {
-		return nil, err
-	}
-	return compileRequestRules(rules)
 }

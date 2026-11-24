@@ -4,21 +4,21 @@ load("//bazel/tools/oci:go_image.bzl", "go_image")
 go_library(
     name = "egress-scan_lib",
     srcs = [
+        "detectors.go",
         "main.go",
         "metrics.go",
-        "rules.go",
         "scan.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/platform-factory/substrate/egress-scan",
     visibility = ["//visibility:private"],
     deps = [
+        "//projects/platform-factory/substrate/egress-scan/detect",
+        "//projects/platform-factory/substrate/egress-scan/detect/betterleaks",
+        "//projects/platform-factory/substrate/egress-scan/detect/gitleaks",
         "@com_github_envoyproxy_go_control_plane_envoy//service/auth/v3:auth",
         "@com_github_envoyproxy_go_control_plane_envoy//type/v3:type",
         "@com_github_prometheus_client_golang//prometheus",
         "@com_github_prometheus_client_golang//prometheus/promhttp",
-        "@com_github_spf13_viper//:viper",
-        "@com_github_zricethezav_gitleaks_v8//config",
-        "@com_github_zricethezav_gitleaks_v8//logging",
         "@org_golang_google_genproto_googleapis_rpc//status",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
@@ -45,6 +45,7 @@ go_test(
     srcs = ["scan_test.go"],
     embed = [":egress-scan_lib"],
     deps = [
+        "//projects/platform-factory/substrate/egress-scan/detect",
         "@com_github_envoyproxy_go_control_plane_envoy//service/auth/v3:auth",
         "@com_github_envoyproxy_go_control_plane_envoy//type/v3:type",
         "@com_github_prometheus_client_golang//prometheus",

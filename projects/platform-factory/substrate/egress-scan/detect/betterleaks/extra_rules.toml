@@ -1,0 +1,39 @@
+# Rules that the egress scanner adds to the Betterleaks defaults. The default
+# global filters (placeholders such as $VAR and ${VAR}) apply to them too.
+# They cover what the defaults missed on the spike corpus (2026-11-24): a
+# database URL with a password, and an Authorization header with a bearer token
+# or a basic credential. egress-scan/DESIGN-detectors.md has the corpus result.
+title = "egress-scan extra rules"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "egress-database-url-password"
+description = "A database or broker URL that carries a password."
+regex = '''(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?|mssql|sqlserver)://[^\s:/@]{1,64}:([^\s@/]{6,128})@[^\s/]{1,128}'''
+confidence = "high"
+keywords = ["postgres", "mysql", "mariadb", "mongodb", "redis", "amqp", "mssql", "sqlserver"]
+filter = '''
+entropy(finding["secret"]) <= 1.5
+'''
+
+[[rules]]
+id = "egress-authorization-bearer"
+description = "An Authorization header or field with a bearer token."
+regex = '''(?i)\bauthorization["']?[ \t]{0,3}[:=][ \t]{0,3}["']?bearer[ \t]+([A-Za-z0-9._~+/=-]{20,512})'''
+confidence = "high"
+keywords = ["authorization"]
+filter = '''
+entropy(finding["secret"]) <= 3.0
+'''
+
+[[rules]]
+id = "egress-authorization-basic"
+description = "An Authorization header or field with a basic credential."
+regex = '''(?i)\bauthorization["']?[ \t]{0,3}[:=][ \t]{0,3}["']?basic[ \t]+([A-Za-z0-9+/]{16,512}={0,2})'''
+confidence = "high"
+keywords = ["authorization"]
+filter = '''
+entropy(finding["secret"]) <= 3.0
+'''
