@@ -826,7 +826,9 @@ def test_the_template_must_be_named_engine(tmp_path: Path) -> None:
     desired = json.loads((_HERE / "template.json").read_text())
     assert mod.template_json_problems(_TEMPLATE, desired) == []
     desired["metadata"]["name"] = "engine-v2"
-    assert any("not engine" in p for p in mod.template_json_problems(_TEMPLATE, desired))
+    assert any(
+        "not engine" in p for p in mod.template_json_problems(_TEMPLATE, desired)
+    )
     # main refuses it before any API call, even when both files agree.
     fake = FakeAte()
     mod.ate = fake

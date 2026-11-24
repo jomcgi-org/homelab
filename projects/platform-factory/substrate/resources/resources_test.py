@@ -1264,7 +1264,9 @@ def test_scanner_reaches_the_gate_only_with_per_packet_service_translation() -> 
     scanner = _one(
         [d for d in yaml.safe_load_all(manifest) if d], "Deployment", "egress-scan"
     )
-    runs_in_gvisor = scanner["spec"]["template"]["spec"].get("runtimeClassName") == "gvisor"
+    runs_in_gvisor = (
+        scanner["spec"]["template"]["spec"].get("runtimeClassName") == "gvisor"
+    )
     tier_on = bool(_semgrep_values()["enabled"])
     cilium = yaml.safe_load(Path(os.environ["CILIUM_VALUES"]).read_text())
     translated_per_packet = cilium.get("socketLB", {}).get("hostNamespaceOnly") is True
