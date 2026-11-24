@@ -37,6 +37,7 @@ const INTRO = `# Joe McGinley
 
 - [CV](${PUBLIC_BASE}/cv): full work history and project case studies
 - [Home](${PUBLIC_BASE}/): overview and homelab status
+- [Homelab](${PUBLIC_BASE}/homelab): what runs, how a threat is contained, and where to read more
 
 ## Scotland connector
 

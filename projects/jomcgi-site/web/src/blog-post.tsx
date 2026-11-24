@@ -1,10 +1,11 @@
 import { Shell } from "./Shell";
 import { BlogEmbed } from "./blog-embed";
-import { Tags, formatDate } from "./blog-shared";
+import { Tags, formatDate, retiredProject } from "./blog-shared";
 import type { Post } from "./blog-types";
 import "./blog.css";
 
 export function BlogPost({ post }: { post: Post }) {
+  const retired = retiredProject(post.tags);
   return (
     <Shell current="/blog">
       <article className="blog">
@@ -16,6 +17,12 @@ export function BlogPost({ post }: { post: Post }) {
           <h1>{post.title}</h1>
           <p>{post.summary}</p>
           <Tags tags={post.tags} />
+          {retired && (
+            <p className="blog-note" role="note">
+              {retired} was retired in November 2026. This post stays as
+              history, so some details no longer match what runs.
+            </p>
+          )}
         </header>
         {post.slug === "125b-on-a-4090" && (
           <section aria-labelledby="inference-demo">

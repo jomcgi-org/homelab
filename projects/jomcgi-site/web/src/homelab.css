@@ -1,0 +1,256 @@
+/* /homelab: a long read, so it keeps one calm column. Text is ink on the
+ * page, hairlines separate, and nothing relies on colour alone. */
+.homelab {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+}
+.homelab h1,
+.homelab h2,
+.homelab h3,
+.homelab h4 {
+  font-family: var(--font-family-heading);
+}
+.homelab section {
+  margin-block: 3rem 0;
+}
+.homelab section section {
+  margin-block: 1.5rem 0;
+}
+.homelab h2 {
+  margin-block: 0 1rem;
+}
+.homelab h3 {
+  margin-block: 2rem 0.5rem;
+}
+.homelab h4 {
+  margin-block: 0 0.25rem;
+}
+.homelab p {
+  line-height: 1.65;
+  margin-block: 0.75rem;
+}
+.homelab a {
+  color: var(--color-text-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+.homelab :focus-visible {
+  outline: 2px solid var(--focus-outline-color);
+  outline-offset: 3px;
+  border-radius: var(--radius-inner);
+}
+.homelab-lede {
+  font-size: 1.125rem;
+  max-width: 62ch;
+}
+.homelab-meta {
+  color: var(--color-text-secondary);
+}
+.homelab-stale {
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--color-border-emphasized);
+  border-left-width: 4px;
+  border-radius: var(--radius-element);
+}
+.homelab-index,
+.homelab-steps,
+.homelab-projects,
+.homelab-limits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.homelab-index {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.25rem;
+  margin-top: 1rem;
+}
+/* A 44px target with the underline kept on the text. */
+.homelab-index a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+}
+
+/* Layout cards and positions share a definition-list shape. */
+.homelab-layout,
+.homelab-positions {
+  display: grid;
+  margin: 0;
+}
+.homelab-layout {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 1rem 2rem;
+}
+.homelab-layout dt,
+.homelab-positions dt {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.homelab-layout dd,
+.homelab-positions dd {
+  margin: 0.25rem 0 0;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  max-width: 60ch;
+}
+.homelab-positions > div {
+  display: grid;
+  grid-template-columns: minmax(10rem, 14rem) minmax(0, 1fr);
+  gap: 0.25rem 1.5rem;
+  padding-block: 0.9rem;
+  border-top: 1px solid var(--color-border);
+}
+.homelab-positions > div:last-child {
+  border-bottom: 1px solid var(--color-border);
+}
+.homelab-positions dd {
+  margin: 0;
+  color: var(--color-text-primary);
+}
+
+/* The three paths, each a row of steps with arrows between them. */
+.homelab-paths {
+  display: grid;
+  gap: 1.5rem;
+}
+.homelab-paths section {
+  margin: 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+}
+.homelab-paths p {
+  margin-block: 0 0.75rem;
+  color: var(--color-text-secondary);
+}
+.homelab-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.25rem;
+}
+.homelab-steps li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.homelab-step {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--color-border-emphasized);
+  border-radius: var(--radius-element);
+  font-size: 0.9375rem;
+}
+/* The arrow is drawn, not typed: the body font has no arrow glyph. */
+.homelab-arrow {
+  display: inline-block;
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin: 0 0.35rem 0 0.2rem;
+  border-top: 1.5px solid var(--color-text-secondary);
+  border-right: 1.5px solid var(--color-text-secondary);
+  transform: rotate(45deg);
+}
+
+/* The principles: a numbered run, title then a short paragraph. */
+.homelab-principles {
+  margin: 1.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: principle;
+}
+.homelab-principles li {
+  counter-increment: principle;
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  column-gap: 0.5rem;
+  padding-block: 1.1rem;
+  border-top: 1px solid var(--color-border);
+}
+.homelab-principles li::before {
+  content: counter(principle);
+  grid-row: 1 / span 2;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+.homelab-principles h3 {
+  margin: 0;
+  font-size: 1.0625rem;
+  line-height: 1.4;
+}
+.homelab-principles p {
+  margin: 0.25rem 0 0;
+  max-width: 62ch;
+}
+.homelab-limits {
+  margin-block: 0.5rem;
+  padding-left: 1rem;
+  border-left: 2px solid var(--color-border-emphasized);
+}
+.homelab-limits li {
+  padding-block: 0.3rem;
+  max-width: 62ch;
+}
+
+/* Projects: a name, its status, one line. */
+.homelab-projects li {
+  padding-block: 0.8rem;
+  border-top: 1px solid var(--color-border);
+}
+.homelab-project-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+}
+.homelab-project-head a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  margin-block: -0.5rem;
+  font-weight: 600;
+}
+.homelab-projects p {
+  margin: 0;
+  max-width: 62ch;
+  color: var(--color-text-secondary);
+}
+/* The status is a word first. The small mark repeats it by shape. */
+.homelab-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}
+.homelab-status::before {
+  content: "";
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: var(--radius-inner);
+  background: var(--color-text-primary);
+}
+.homelab-status[data-status="moving"]::before {
+  background: none;
+  box-shadow: inset 0 0 0 2px var(--color-text-primary);
+}
+.homelab-status[data-status="experiment"]::before {
+  background: none;
+  box-shadow: inset 0 0 0 2px var(--color-text-secondary);
+  border-style: dashed;
+}
+.homelab-status[data-status="retired"]::before {
+  background: var(--color-border-emphasized);
+}
+
+@media (max-width: 40rem) {
+  .homelab section {
+    margin-block: 2.5rem 0;
+  }
+  .homelab-positions > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

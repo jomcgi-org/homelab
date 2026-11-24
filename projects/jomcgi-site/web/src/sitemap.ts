@@ -4,7 +4,7 @@ export function sitemap(entries: string[]): string {
   const priorities: Record<string, string> = {
     "/": "1.0",
     "/cv": "0.9",
-    "/docs": "0.8",
+    "/homelab": "0.8",
     "/blog": "0.8",
   };
   const listed = [HOME, ...SECTIONS].filter(

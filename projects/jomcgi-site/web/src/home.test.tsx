@@ -61,7 +61,8 @@ describe("home port", () => {
       "utf8",
     );
     for (const key of HOME_KEYS) {
-      expect(source).toContain(key.small);
+      // Homelab replaced Docs here and has no readout on the hub page.
+      if (key.section !== "Homelab") expect(source).toContain(key.small);
       const section = SECTIONS.find((section) => section.name === key.section)!;
       expect(sectionHref(key.section)).toBe(hrefFor(section));
       const before = section.live;

@@ -35,7 +35,7 @@ export const HOME_KEYS = [
       "Agents doing platform work on this cluster, live. Tag one in Discord and it answers.",
   },
   key("CV", "Ten years, underwriting to platform engineering."),
-  key("Docs", "How this is built: cluster, build, agents."),
+  key("Homelab", "What runs here, and how a threat is kept small."),
   key("Grimoire", "A D&D campaign manager built on grants."),
   key("Ships", "Every ship off Scotland right now, from live AIS."),
   key("Stars", "Where the sky will be dark and clear tonight."),
