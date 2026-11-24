@@ -23,9 +23,13 @@ import (
 // reviewer queue has its own order (HOME-685, HOME-406).
 //
 // Priority and dueDate come from the issue read of the run's last admission
-// poll. A run not yet read, such as a new claim or any run after a restart,
-// ranks as none for its first pass, and a changed priority applies on the
-// next pass. A slow read of a new claim therefore never delays an older hold.
+// poll. Before ordering, a pass reads each run it has not seen, together under
+// half the tick's wait, so a new claim ranks right in the pass that claimed it.
+// A run whose read fails or times out ranks as none for that pass, and a changed
+// priority applies on the next pass. A slow read never delays older holds.
+//
+// Only claimed runs are ordered. The claim phase takes runs from itsaplan in
+// its order, and only while an agent has a free slot; held runs cost none.
 const (
 	defaultDueWindow   = 72 * time.Hour
 	defaultStarveAfter = 7 * 24 * time.Hour
