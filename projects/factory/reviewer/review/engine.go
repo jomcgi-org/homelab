@@ -403,6 +403,7 @@ type running struct {
 // page reads shifts the next one off both pages.
 const closedAfter = 2
 
+// invariant: HOME-423-1
 var (
 	errPriorStateUnread = errors.New("could not read prior review state")
 	errSuperseded       = errors.New("a newer head of the PR superseded this one")
