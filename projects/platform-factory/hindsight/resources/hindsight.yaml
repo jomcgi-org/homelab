@@ -187,9 +187,12 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
           resources:
+            # The 7-day working set had a p50 near 200 MiB and a p95 near
+            # 330 MiB, with bursts to about 3 GiB. The request only reserves
+            # node memory; the 3Gi limit covers the bursts.
             requests:
               cpu: 250m
-              memory: 1536Mi
+              memory: 768Mi
             limits:
               memory: 3Gi
           volumeMounts:
