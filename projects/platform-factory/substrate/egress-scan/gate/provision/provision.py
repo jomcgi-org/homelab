@@ -523,7 +523,9 @@ def main() -> int:
             # Before any API contact: a template that cannot work makes no call.
             text = read_file(TEMPLATE_FILE)
             desired = parse_json(read_file(TEMPLATE_JSON_FILE), "template.json")
-            if not isinstance(desired, dict) or not isinstance(desired.get("metadata"), dict):
+            if not isinstance(desired, dict) or not isinstance(
+                desired.get("metadata"), dict
+            ):
                 raise Failed("template.json: no metadata")
             TEMPLATE = str(desired["metadata"].get("name"))
             problems = template_checks(text) + template_json_problems(text, desired)
