@@ -298,6 +298,9 @@ reviewer:
   commentAuthor: jomcgi-factory-review[bot]
   bindings:
     homelab:
+      # Joe 2026-11-24: his own PRs pass without a model review (his sessions
+      # review them first). Only the authorship waiver's evidence qualifies.
+      authorApproved: true
       enqueueAuthors: []
       # Used only by enqueues, which are off; kept for when they return.
       requiredChecks:

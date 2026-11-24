@@ -92,6 +92,10 @@ type Binding struct {
 	KagentAgent     string   `yaml:"kagentAgent"`
 	RequiredChecks  []Check  `yaml:"requiredChecks"`
 	SkipLabels      []string `yaml:"skipLabels"`
+	// AuthorApproved passes a new head without a model review when the PR
+	// meets the authorship waiver (author and every pusher in HumanApprovers,
+	// no hold). Off unless set (Joe, 2026-11-24).
+	AuthorApproved bool `yaml:"authorApproved"`
 	// EnqueueAuthors are the PR authors whose passing heads the reviewer
 	// enqueues; other authors' PRs get the check only. The connector
 	// enqueues the factory's own PRs, since it sees their stops.
