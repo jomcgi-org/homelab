@@ -3,6 +3,8 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 py_test(
     name = "priority_test",
     srcs = ["priority_test.py"],
+    # The chart filegroups carry their own *_test.py files; run only this one.
+    args = ["$(rootpath priority_test.py)"],
     data = [
         "priority-class.yaml",
         "//projects/platform-factory/edge/chart",
