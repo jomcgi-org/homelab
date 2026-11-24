@@ -29,7 +29,7 @@ Semgrep Pro engine stays private behind the generic HTTP engine interface.
 | Version | `v2.0.0-rc.11` (2026-11-23). Latest stable: `v1.10.1` (2026-11-12) | `v8.24.3` (2025-04-11). Latest: `v8.30.1` (2026-03-21) |
 | Licence | MIT | MIT |
 | API | `config.Default()` or `config.LoadFile()`, then `scan.New(cfg, opts...)`. `Scanner.ScanString(text)` returns findings. `Scanner.Scan(ctx, source, handler)` takes a context. Options: decode depth, workers, minimum confidence, regex engine | `config` and `detect` packages. The scanner uses only `config` and its own matcher |
-| Rules | 483 embedded rules, Aho-Corasick keyword prefilter, RE2 regexes (linear time). Reads `.gitleaks.toml` | 203 embedded rules loaded by the scanner (217 in `v8.30.1`) |
+| Rules | 483 embedded rules, Aho-Corasick keyword prefilter, RE2-style rule regexes (stdlib engine). Reads `.gitleaks.toml` | 203 embedded rules loaded by the scanner (217 in `v8.30.1`) |
 | Decoding | base64, hex, percent, Unicode, nested up to `WithMaxDecodeDepth`. The codec is in `internal/`, so a caller cannot use it alone | None |
 | Network | None in `scan` and `config`. The run of the corpus worked in an empty network namespace. Validation (`analyze`) is a separate package that we would not import | None |
 | Dependencies | `scan` plus `config` pull 8 modules besides itself: `expr-lang/expr`, `dlclark/regexp2`, `rrethy/ahocorasick`, `go-toml/v2`, `hashicorp/go-version`, `go-isatty`, `x/sync`, `x/sys`. The Git, Docker and archive modules sit in `sources/` and stay out. Binary of the probe: 16 MB | Viper and its modules |
@@ -42,7 +42,9 @@ Semgrep Pro engine stays private behind the generic HTTP engine interface.
 The library fits an in-process tier. There is no CLI-only limit. `ScanString`
 has no context, so a deny-path caller uses `Scan` with a `sources.Reader` to
 get cancellation. The scanner checks the context between rules, not inside a
-regex, and Go regexes run in linear time, so body size bounds the time.
+regex. The rule regexes use the Go standard engine, which runs in linear time,
+so body size bounds the time. The confidence tokenizer uses `regexp2`, a
+backtracking engine, and rule filters run in `expr`. Both see short inputs.
 
 ## Corpus
 
@@ -57,7 +59,8 @@ three tools miss it by design. A valid JWT (`jwt-valid`) is in the set.
 
 Gitleaks ran as the scanner runs it: the `rules.go` matcher with the embedded
 `v8.24.3` rules, on the body and the decoded JSON strings. Betterleaks ran on
-the same two texts with its default decode depth. The Pro engine ran through
+the same two texts with decode depth 8. The library default is 0, which turns
+decoding off, so the caller must set a depth. The Pro engine ran through
 `engine-gate` (`X-Deadline-Ms: 5000`) from an ephemeral container on an
 `egress-scan` pod, with the engine text the scanner builds. 178 gate scans in
 all, one at a time. Gitleaks `v8.30.1` ran on the same samples as an upgrade
@@ -173,9 +176,9 @@ decoding was under 0.5 ms on these bodies.
    over its 75 ms deadline, so the scanner denies it (fail closed). The engine
    limit of 64 KiB keeps Hindsight below this (33 ms). Windows or a larger
    limit must keep the Gitleaks cost in view (DESIGN-large-bodies.md).
-3. Encoded secrets pass the Gitleaks tier and the Pro engine in 7 of 7 samples
-   (base64, double base64, hex, percent-encoded names). The scanner decodes
-   JSON strings only.
+3. 7 encoded samples pass both the Gitleaks tier and the Pro engine (base64,
+   double base64, hex, a percent-encoded name). Betterleaks with decoding finds
+   all 7. The scanner decodes JSON strings only.
 
 ## Generic design
 
@@ -202,7 +205,9 @@ type Input struct {
 	Via    []string // decoders applied, in order, such as "json", "base64"
 }
 
-// Finding names a rule and where the match sits in Input.Text.
+// Finding names a rule and where the match sits in Input.Text. A detector that
+// matches on its own decoded text maps the offsets back, or sets Start and End
+// to the whole Input.
 type Finding struct {
 	Detector, RuleID string
 	Start, End       int
@@ -251,28 +256,44 @@ tag.
 ## Recommendation
 
 Add Betterleaks beside Gitleaks, switch after an observe window, and keep the
-Pro engine. It finds more (38 against 29 here), makes no false positive on this
-set, is as fast or faster, and its decoding is the one gap no other tier covers.
-Replace Gitleaks only after a stable v2 tag, or accept an exact rc pin with a
-digest.
+Pro engine. It finds more (38 against 29 here) and makes no false positive on
+this set. It is as fast or faster. Its decoding covers a gap that no other tier
+covers. Deny on any finding from either detector is the default, so Gitleaks
+stays as the second detector. Drop Gitleaks only after a stable v2 tag, or
+after an exact rc pin with a digest, and only if the nightly replay shows
+Betterleaks finds everything Gitleaks finds.
 
 | # | PR | Tests |
 | --- | --- | --- |
 | 1 | The `Detector` interface and the Gitleaks matcher behind it. No behavior change. Per-detector counters | Existing scanner tests pass. A fake detector shows merge, deadline and failure mode |
 | 2 | The decoder chain (base64, hex, percent, Unicode, depth 3, size cap) feeding every tier, behind a flag | A corpus test: each encoded sample decodes, a clean random base64 sample does not make a finding, caps hold |
-| 3 | The Betterleaks detector in observe mode, off the request path, with `recover()`. Pin the exact version in `go.mod` | Build and image size. A panic test. The agreement counter moves on the corpus |
+| 3 | The Betterleaks detector in observe mode, off the request path, with `recover()`. Pin the exact version in `go.mod`. Set `WithMaxDecodeDepth(3)` and `WithAllowSignatures()` with no signature | Build and image size. A panic test. The agreement counter moves on the corpus. A sample with `betterleaks:allow` and `gitleaks:allow` on the secret line still finds it |
 | 4 | Observe window: 1 day of Hindsight traffic plus a corpus replay Job each night through the live check | The counters in `detector_agreement_total`. No Betterleaks-only finding on clean traffic. Review them |
 | 5 | Enforce Betterleaks with Gitleaks as the fallback flag | The synthetic table of the enforce PR. Roll back with the flag |
-| 6 | Drop the Gitleaks dependency, or keep it as a second detector | Image size, latency table |
+| 6 | Drop the Gitleaks dependency, if the replay allows it. The default keeps both | Image size, latency table, a superset check on the replay |
 
 Risks:
 
 - v2 is a release candidate. The API can change before 2.0.0. An exact pin and
   the observe window cover this.
 - A new dependency on a deny path. It runs in process with no network, but a
-  panic or a slow regex would deny requests. `recover()`, a deadline and observe
-  mode first cover this.
+  panic or a slow regex would deny requests. `recover()` and observe mode
+  first cover this.
+- The 75 ms deadline cannot stop a rule in the middle of a match. A keyword-heavy
+  body of 512 KiB took 198 ms. Before enforce, the PR must pick one of three
+  controls: abandon the call (the CPU keeps running), a work budget like the
+  64-match budget of the Gitleaks matcher, or a body limit per tier.
+- Decoding at depth 8 can amplify memory. Depth 3 and a size cap bound it.
+- Allow markers. Betterleaks skips a finding when its line holds
+  `betterleaks:allow` or `gitleaks:allow` (the default of `scan.New`). A request
+  could add the marker beside a secret. Read from the code, not run. The
+  scanner passes no signature, as the current matcher does (`scan_test.go`,
+  "suppression ignored"), and a test pins it.
 - More rules (483) means more false positives on real agent text. The observe
   window measures it. A custom config that pins the rule set keeps upgrades
   stable (the Betterleaks README advises it).
-- The corpus is small and ours. It shows direction, not rates.
+- The corpus is small and ours. It shows direction, not rates. Its generator
+  is not in the repository, because token-shaped text must not be public. The
+  nightly replay builds its values at run time from parts.
+- Facts about Betterleaks (release dates, counts, the advisory) come from the
+  GitHub API and a shallow clone on 2026-11-24. They age.
