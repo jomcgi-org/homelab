@@ -262,6 +262,7 @@ filegroup(
         "//projects/platform-factory/substrate/egress-scan/gate:repo_docs",
         "//projects/platform-factory/substrate/gvisor-fork/engine:repo_docs",
         "//projects/platform-factory/substrate/gvisor-fork/engine-pro:repo_docs",
+        "//projects/platform-gke/polylane:repo_docs",
         "//projects/platform/argocd:repo_docs",
         "//projects/platform/authentik:repo_docs",
         "//projects/platform/cert-manager:repo_docs",
