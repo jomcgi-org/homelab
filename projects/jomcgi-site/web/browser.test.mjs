@@ -42,16 +42,15 @@ await withSiteBrowser(
           );
           assert.deepEqual(violations, [], label);
           if (entry === "homelab.html") {
-            // Each in-page link lands on a section that exists, and a page
-            // reviewed today shows no stale notice after hydration.
+            // Each in-page link lands on a section that exists. The stale
+            // notice depends on the clock, so homelab.test.tsx covers it with
+            // a fake one.
             const page_ = await page.evaluate(() => ({
               missing: [...document.querySelectorAll(".homelab-index a")]
                 .map((link) => link.getAttribute("href").slice(1))
                 .filter((id) => !document.getElementById(id)),
-              stale: document.querySelectorAll(".homelab-stale").length,
             }));
             assert.deepEqual(page_.missing, [], `${label}: index anchors`);
-            assert.equal(page_.stale, 0, `${label}: stale notice`);
           }
           console.log(`PASS ${label}: axe, contrast, CSP, hydration`);
         }

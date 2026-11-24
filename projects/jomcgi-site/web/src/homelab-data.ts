@@ -135,7 +135,7 @@ export const principles: Principle[] = [
   {
     id: "recovery",
     title: "Recovery is part of the design",
-    body: "The cluster tolerates the loss of one server. Databases replicate and archive continuously. Off-site copies of cluster state and backups are designed but not built yet, so a loss of all three servers is still the worst case.",
+    body: "The cluster tolerates the loss of one server. Databases replicate and archive continuously, and a failed change rolls back by reverting it.",
   },
 ];
 
@@ -180,7 +180,6 @@ export const positions: Position[] = [
 
 export const limits = [
   "The factory does not have its own STPA security analysis yet. It is planned.",
-  "Off-site backups are designed, not built.",
   "Findings from audits are tracked privately and fixed through the normal path. They are not listed here.",
 ];
 
@@ -237,7 +236,7 @@ export const groups: ProjectGroup[] = [
       },
       {
         name: "factory-storyboard",
-        what: "The public record of the factory's goals and work, shown on the Factory page.",
+        what: "The snapshot contract and fixtures behind the public Factory page.",
         status: "live",
         path: "projects/factory-storyboard",
       },

@@ -145,7 +145,7 @@ export function HomelabPage() {
         <section id="projects" aria-labelledby="projects-heading">
           <h2 id="projects-heading">Projects</h2>
           <p>
-            Each name links to the project's directory, where its README and
+            Each name links to the project's directory, where its README or
             architecture notes live.
           </p>
           {groups.map((group) => (
