@@ -173,3 +173,10 @@ invariants:
   - projects/factory/broker/actorjwt/verifier.go
   test: //projects/factory/broker/actorjwt:actorjwt_test
   state: live
+- id: FACT-633
+  statement: The goal check can justify only listed exposure IDs under a trusted accepted issue, with a service-written note.
+  mechanism:
+  - projects/factory/reviewer/review/goal.go
+  - projects/factory/reviewer/review/report.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
