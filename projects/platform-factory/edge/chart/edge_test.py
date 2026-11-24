@@ -272,7 +272,16 @@ def test_t3_requires_admin_group_on_the_entire_host(docs):
         {
             "matches": [{"path": {"type": "PathPrefix", "value": "/"}}],
             "timeouts": {"request": "0s", "backendRequest": "0s"},
-            "backendRefs": [{"name": "t3-relay", "namespace": "t3", "port": 8080}],
+            "backendRefs": [
+                {
+                    "group": "",
+                    "kind": "Service",
+                    "name": "t3-relay",
+                    "namespace": "t3",
+                    "port": 8080,
+                    "weight": 1,
+                }
+            ],
         }
     ]
     policy = docs["SecurityPolicy", "t3-authentik-oidc"]["spec"]
