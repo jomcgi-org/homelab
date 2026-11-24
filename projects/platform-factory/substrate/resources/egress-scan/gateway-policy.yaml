@@ -1,10 +1,8 @@
 # Route policy read by render_egress_gateway.py.
-# requestTimeout is coupled to the second scan tier of the egress-scan chart.
-# With the tier off it is 80ms: Gitleaks alone scans. With the tier on in
-# enforce mode it must be at least semgrep.deadline + 10ms (310ms for a 300ms
-# deadline). In observe mode the engine is off the request path, so it stays at
-# 80ms or more. The tier is off since 2026-11-24 (Joe deferred it).
-# resources_test.py enforces all three. See egress-scan/README.md.
+# requestTimeout is 80ms: the scanner scans for at most 75ms (scan.go
+# maxScanTime) and the gateway must not cancel a check that the scanner still
+# answers. resources_test.py checks it. The second scan tier (Semgrep) left on
+# 2026-11-24 (ARCHITECTURE.md "Decided" 9); it had a 310ms timeout.
 conditional:
   - condition: destination.hostname == "hindsight-api.hindsight.svc.cluster.local" && destination.port == 8888
     host: egress-scan.ate-system.svc:8080

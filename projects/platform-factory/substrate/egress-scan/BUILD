@@ -6,10 +6,8 @@ go_library(
     srcs = [
         "main.go",
         "metrics.go",
-        "observe.go",
         "rules.go",
         "scan.go",
-        "semgrep.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/platform-factory/substrate/egress-scan",
     visibility = ["//visibility:private"],
@@ -45,9 +43,7 @@ go_image(
 go_test(
     name = "egress-scan_test",
     srcs = [
-        "observe_test.go",
         "scan_test.go",
-        "semgrep_test.go",
     ],
     embed = [":egress-scan_lib"],
     deps = [

@@ -1143,163 +1143,22 @@ def test_workerpool_crd_has_the_fork_platform_field() -> None:
     assert "platform" not in item["required"]
 
 
-# In enforce mode the second scan tier waits for the engine up to
-# semgrep.deadline. The gateway gives the whole check requestTimeout. If the
-# gateway timeout is shorter, the gateway cancels the check first and the tier
-# deadline never applies. In observe mode the engine is off the request path:
-# the reply comes from Gitleaks alone, so the timeout stays at the Gitleaks
-# value or above and does not depend on the deadline.
-_GATEWAY_MARGIN_MS = 10
-_GATEWAY_TIMEOUT_TIER_OFF_MS = 80
+# The gateway gives the whole check requestTimeout. Gitleaks scans for at most
+# 75ms (scan.go maxScanTime), so the timeout is 80ms: shorter and the gateway
+# cancels a check that the scanner would still answer. The second scan tier
+# (Semgrep) left on 2026-11-24 (egress-scan/ARCHITECTURE.md "Decided" 9).
+_GATEWAY_TIMEOUT = "80ms"
 
 
-def _ms(duration: str) -> int:
-    match = re.fullmatch(r"([0-9]+)(ms|s)", duration)
-    assert match, f"use a whole number of ms or s, got {duration!r}"
-    return int(match[1]) * (1000 if match[2] == "s" else 1)
-
-
-def _check_gateway_covers_tier(
-    enabled: bool, deadline: str, gateway_timeout: str, mode: str = "enforce"
-) -> None:
-    assert mode in ("enforce", "observe"), f"unknown semgrep.mode {mode!r}"
-    timeout_ms = _ms(gateway_timeout)
-    if not enabled:
-        # The tier is staged off, so the gateway timeout must not change.
-        assert timeout_ms == _GATEWAY_TIMEOUT_TIER_OFF_MS, (
-            f"requestTimeout is {gateway_timeout} with semgrep.enabled false;"
-            f" it must stay {_GATEWAY_TIMEOUT_TIER_OFF_MS}ms until the tier is on"
-        )
-        return
-    if mode == "observe":
-        # The engine is off the request path. Gitleaks alone needs its 80ms.
-        assert timeout_ms >= _GATEWAY_TIMEOUT_TIER_OFF_MS, (
-            f"requestTimeout {gateway_timeout} is below the Gitleaks value"
-            f" {_GATEWAY_TIMEOUT_TIER_OFF_MS}ms"
-        )
-        return
-    needed = _ms(deadline) + _GATEWAY_MARGIN_MS
-    assert timeout_ms >= needed, (
-        f"requestTimeout {gateway_timeout} is below semgrep.deadline {deadline}"
-        f" + {_GATEWAY_MARGIN_MS}ms in enforce mode; the gateway would cancel"
-        " the check first"
-    )
-
-
-def _semgrep_values() -> dict:
-    """The chart defaults overlaid with the values the Application passes."""
-    chart_values = _HERE.parent / "egress-scan" / "chart" / "values.yaml"
-    values = yaml.safe_load(chart_values.read_text())["semgrep"]
-    app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
-    helm = app["spec"]["sources"][0]["helm"]
-    assert not [
-        p for p in helm.get("parameters", []) if p["name"].startswith("semgrep.")
-    ], "set semgrep values in helm.valuesObject so that this test reads them"
-    given = helm.get("valuesObject", {})
-    if "values" in helm:
-        given = {**yaml.safe_load(helm["values"]), **given}
-    values.update(given.get("semgrep", {}))
-    return values
-
-
-def _tier_problems(values: dict) -> list[str]:
-    """What the scanner's tier values must say: off (since 2026-11-24, Joe
-    deferred the Semgrep tier). Gitleaks alone scans the Hindsight route."""
-    bad = []
-    if values.get("enabled") is not False:
-        bad.append("semgrep.enabled is not false")
-    if values.get("endpoint"):
-        bad.append("semgrep.endpoint is set while the tier is off")
-    return bad
-
-
-def test_scanner_reaches_the_gate_only_with_per_packet_service_translation() -> None:
-    # The scanner pods run under gVisor. Cilium's default socket-level Service
-    # translation never sees a connect() from a gVisor sandbox, so they reach no
-    # ClusterIP (DNS included, and the gate) unless Cilium translates per packet
-    # for pods: socketLB.hostNamespaceOnly (#8636). Reverting it makes every
-    # Semgrep call fail (egress-scan/gate/README.md, "The scanner runs under gVisor").
-    manifest = Path(os.environ["SCANNER_MANIFEST"]).read_text()
-    scanner = _one(
-        [d for d in yaml.safe_load_all(manifest) if d], "Deployment", "egress-scan"
-    )
-    pod_spec = scanner["spec"]["template"]["spec"]
-    runs_in_gvisor = pod_spec.get("runtimeClassName") == "gvisor"
-    tier_on = bool(_semgrep_values()["enabled"])
-    cilium = yaml.safe_load(Path(os.environ["CILIUM_VALUES"]).read_text())
-    translated_per_packet = cilium.get("socketLB", {}).get("hostNamespaceOnly") is True
-    # Only a gVisor scanner that calls the gate needs the value, so turning the
-    # tier off (the rollback) does not trip this.
-    assert translated_per_packet or not (runs_in_gvisor and tier_on), (
-        "the scanner runs under gVisor with the Semgrep tier on, so Cilium needs "
-        "socketLB.hostNamespaceOnly: true (projects/platform-factory/cilium/values.yaml)"
-    )
-
-
-def test_scanner_tier_is_off() -> None:
-    values = _semgrep_values()
-    assert _tier_problems(values) == []
-    # Each mutation must be caught, so that the check cannot pass on a wrong value.
-    mutations = {
-        "tier on": {"enabled": True},
-        "tier on in observe mode": {"enabled": True, "mode": "observe"},
-        "endpoint set": {"endpoint": "http://engine-gate.ate-system.svc:8080/scan"},
-    }
-    for name, change in mutations.items():
-        assert _tier_problems({**values, **change}), name
-
-
-def test_gateway_timeout_is_coupled_to_the_semgrep_deadline() -> None:
+def test_gateway_timeout_covers_the_gitleaks_deadline() -> None:
     policy = yaml.safe_load((_HERE / "egress-scan" / "gateway-policy.yaml").read_text())
     (check,) = policy["conditional"]
-    semgrep = _semgrep_values()
-    _check_gateway_covers_tier(
-        bool(semgrep["enabled"]),
-        semgrep["deadline"],
-        check["policies"]["http"]["requestTimeout"],
-        semgrep["mode"],
-    )
+    assert check["policies"]["http"]["requestTimeout"] == _GATEWAY_TIMEOUT
 
 
-def test_the_coupling_check_fails_when_the_gateway_is_too_short() -> None:
-    _check_gateway_covers_tier(False, "300ms", "80ms")
-    _check_gateway_covers_tier(True, "300ms", "310ms")
-    _check_gateway_covers_tier(True, "75ms", "1s")
-    _check_gateway_covers_tier(True, "300ms", "310ms", "enforce")
-    for enabled, deadline, timeout in (
-        (True, "300ms", "80ms"),
-        (True, "300ms", "309ms"),
-        (True, "1s", "1s"),
-        (False, "300ms", "310ms"),
-    ):
-        try:
-            _check_gateway_covers_tier(enabled, deadline, timeout)
-        except AssertionError:
-            continue
-        raise AssertionError(f"accepted {enabled} {deadline} {timeout}")
-
-
-def test_observe_mode_needs_only_the_gitleaks_timeout() -> None:
-    # The engine is off the request path, so a long deadline needs no longer
-    # gateway timeout.
-    _check_gateway_covers_tier(True, "300ms", "80ms", "observe")
-    _check_gateway_covers_tier(True, "10s", "80ms", "observe")
-    _check_gateway_covers_tier(True, "300ms", "310ms", "observe")
-    # The same values fail in enforce mode.
-    for deadline, timeout in (("300ms", "80ms"), ("10s", "80ms"), ("300ms", "309ms")):
-        try:
-            _check_gateway_covers_tier(True, deadline, timeout, "enforce")
-        except AssertionError:
-            continue
-        raise AssertionError(f"enforce accepted {deadline} {timeout}")
-    # Gitleaks needs its 80ms in both modes, and the tier off keeps it exact.
-    for enabled, mode, timeout in (
-        (True, "observe", "79ms"),
-        (False, "observe", "310ms"),
-        (True, "audit", "80ms"),
-    ):
-        try:
-            _check_gateway_covers_tier(enabled, "300ms", timeout, mode)
-        except AssertionError:
-            continue
-        raise AssertionError(f"accepted {enabled} {mode} {timeout}")
+def test_the_application_sets_no_scan_tier_values() -> None:
+    # The chart has no Semgrep values any more. The Application must not set
+    # them, or a later chart that reuses the name would read stale values.
+    app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
+    helm = app["spec"]["sources"][0]["helm"]
+    assert "semgrep" not in str(helm)

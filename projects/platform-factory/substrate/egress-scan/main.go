@@ -30,32 +30,10 @@ func main() {
 	metricsAddr := flag.String("metrics-listen", ":9090", "Prometheus metrics listen address")
 	rules := flag.String("rules", "", "path to operator-supplied Gitleaks TOML")
 	concurrency := flag.Int("concurrency", 8, "maximum simultaneous scans")
-	semgrepEnabled := flag.Bool("semgrep-enabled", false, "send each request's scanned text to a Semgrep engine as a second scan tier")
-	semgrep := semgrepConfig{}
-	flag.StringVar(&semgrep.Endpoint, "semgrep-endpoint", "", "URL of the Semgrep engine (a cluster address; no TLS or credentials are added)")
-	flag.DurationVar(&semgrep.Deadline, "semgrep-deadline", 300*time.Millisecond, "engine deadline per request; keep the gateway requestTimeout at least 10ms above it")
-	flag.StringVar(&semgrep.FailureMode, "semgrep-failure-mode", failureDeny, "when the engine gives no verdict: deny or allow")
-	flag.StringVar(&semgrep.Mode, "semgrep-mode", modeEnforce, "enforce: the engine verdict can deny; observe: the engine runs in the background, never changes a reply and is only counted and logged")
-	flag.IntVar(&semgrep.MaxBody, "semgrep-max-body", maxBody, "largest request body in bytes that is sent to the engine")
-	flag.IntVar(&semgrep.Concurrency, "semgrep-concurrency", 8, "maximum simultaneous engine calls; more are shed")
-	flag.Int64Var(&semgrep.MaxResponse, "semgrep-max-response", 1<<20, "largest engine response in bytes")
-	flag.IntVar(&semgrep.BreakerFailures, "semgrep-breaker-failures", 5, "consecutive engine failures that open the breaker; 0 turns it off")
-	flag.DurationVar(&semgrep.BreakerCooldown, "semgrep-breaker-cooldown", 5*time.Second, "time the breaker stays open before one probe call")
 	flag.Parse()
 	if *concurrency < 1 || *concurrency > 64 {
 		log.Fatal("concurrency must be between 1 and 64")
 	}
-	var tier *semgrepTier
-	if *semgrepEnabled {
-		engine, err := newHTTPEngine(semgrep.Endpoint, semgrep.MaxResponse)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if tier, err = newSemgrepTier(semgrep, engine); err != nil {
-			log.Fatal(err)
-		}
-	}
-
 	// Library diagnostics can contain source-derived fields.
 	logging.Logger = logging.Logger.Output(io.Discard)
 	detector, err := newDetector(*rules)
@@ -69,7 +47,7 @@ func main() {
 	}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(maxCheckMessage))
 	registry := prometheus.NewRegistry()
-	authv3.RegisterAuthorizationServer(server, newMeteredScanner(&scanner{detector: detector, slots: make(chan struct{}, *concurrency), semgrep: tier}, registry))
+	authv3.RegisterAuthorizationServer(server, newMeteredScanner(&scanner{detector: detector, slots: make(chan struct{}, *concurrency)}, registry))
 	metricsListener, err := net.Listen("tcp", *metricsAddr)
 	if err != nil {
 		log.Fatal(err)
