@@ -29,6 +29,12 @@ invariants:
   - projects/factory/broker/config/config.go
   test: //projects/factory/broker/config:config_test
   state: live
+- id: HOME-650-1
+  statement: A traced review keeps one root across restarts, including when tracing starts mid-review or later pushes supersede its head.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
 - id: FACT-5
   statement: The relay serves only a verified actor JWT from an allowed namespace.
   mechanism:

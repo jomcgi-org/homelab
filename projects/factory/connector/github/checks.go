@@ -11,8 +11,9 @@ import (
 
 // CheckRunFilter narrows a check run listing. Zero fields do not filter.
 type CheckRunFilter struct {
-	Name  string
-	AppID int64
+	Name   string
+	Status string
+	AppID  int64
 	// All includes older runs for recovery. A truncated result is an error.
 	All bool
 }
@@ -53,6 +54,9 @@ func (r restCheckRun) run() CheckRun {
 // include older runs and fail if the response omits any matching history.
 func (c *Client) ListCheckRuns(ctx context.Context, repo, sha string, f CheckRunFilter) ([]CheckRun, error) {
 	q := url.Values{"filter": {"latest"}, "per_page": {"100"}}
+	if f.Status != "" {
+		q.Set("status", f.Status)
+	}
 	if f.All {
 		q.Set("filter", "all")
 	}
