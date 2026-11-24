@@ -1,5 +1,10 @@
 # Detector tiers and the Betterleaks spike
 
+> **Updated 2026-11-24 (Joe, "Decided" 10).** The scanner has one detector call path and a
+> swappable `Detector` interface (`detect/`). Betterleaks is the single entrypoint after the
+> flip. Multi-detector merging, Pipelock, windows and the Pro engine tier are deferred. The
+> spike results below stay as the evidence for the choice.
+
 Status: spike result (2026-11-24). No code or cluster change. It belongs to
 [ARCHITECTURE.md](ARCHITECTURE.md). Joe's goals: block credentials at all
 egress, and keep the scanner generic enough to propose to Agent Substrate. The
@@ -180,123 +185,89 @@ decoding was under 0.5 ms on these bodies.
    double base64, hex, a percent-encoded name). Betterleaks with decoding finds
    all 7. The scanner decodes JSON strings only.
 
-## Generic design
+## Detector interface (built)
 
-The scanner calls tiers that share one shape. It names nothing from this
-repository, so it can move to Agent Substrate.
+The scanner calls exactly one detector. The contract, the registry, the host
+that enforces limits and the swap procedure are in the doc comment of package
+`detect` (`detect/doc.go`). This section is the summary.
 
 ```mermaid
 flowchart LR
-  I["request: address, headers, body"] --> D["decoders: JSON, base64, hex, percent"]
-  D --> T["texts with provenance"]
-  T --> A["detector: in-process regex"]
-  T --> B["detector: another in-process regex"]
-  T --> E["engine: HTTP, external"]
-  A --> M["merge: deny on any finding"]
-  B --> M
-  E --> M
+  I["request: address, headers, body, decoded JSON"] --> H["detect.Host: limits, deadline, mode, failure mode"]
+  H --> D["one Detector, chosen by --detector"]
+  D -- "findings: rule, class, offsets, no text" --> H
+  H --> V["verdict: deny or allow"]
 ```
 
-```go
-// Input is one text to scan, with where it came from.
-type Input struct {
-	Text   string
-	Source string   // "path", "query", "header", "body"
-	Via    []string // decoders applied, in order, such as "json", "base64"
-}
+| Part | What it is |
+| --- | --- |
+| `Input` | `Bytes` (not necessarily UTF-8), `Source`, `Filename` (may be empty), `Via` (decoders applied) |
+| `Finding` | `Detector`, `RuleID`, `Class` (`block` by default, or `report`), `Start` and `End` (or `NoOffset`). Never the matched text |
+| `Detector` | `Name()` and `Detect(ctx, Input)`. It stops when the context ends, never skips a finding because the input asks it to, and is safe for concurrent calls |
+| `Config` | Per detector: `Mode` (enforce or observe), `FailureMode` (deny or allow), `Limits` (max input bytes, deadline), `DataPath`, `Options`. All of it comes from flags and chart values |
+| `Host` | Enforces the limits for every detector the same way: an input over the cap is a failure and never a skip, the deadline holds even for a detector that ignores its context, a panic is a failure, observe mode never denies |
+| `PrivateData` | Optional: `Load(path)`, `Reload()`, `Health()`, for a detector with data kept outside the public repository. Betterleaks and Gitleaks do not use it |
+| Registry | `Register(name, Factory)` in a package `init`. `detectors.go` imports the public ones. A private build adds a file such as `detectors_private.go` that imports its own package, and the public code does not change |
+| Conformance | `detecttest.Conformance` is the table every detector passes: clean input allowed, a finding denied, an allow marker next to a secret still denied, observe mode, the size cap, the deadline, a canceled caller, the context respected, concurrent calls, and no matched text in a verdict or a log. Gitleaks and Betterleaks run it. A new detector reuses it with a fixture of its own. `detecttest.Corpus` builds the fake samples at run time |
 
-// Finding names a rule and where the match sits in Input.Text. A detector that
-// matches on its own decoded text maps the offsets back, or sets Start and End
-// to the whole Input.
-type Finding struct {
-	Detector, RuleID string
-	Start, End       int
-}
+### Swap procedure
 
-// Detector scans one Input. It stops when ctx is done and never logs the match.
-type Detector interface {
-	Name() string
-	Detect(ctx context.Context, in Input) ([]Finding, error)
-}
+1. Write a package that implements `Detector` and registers itself.
+2. Import it in the binary (`detectors.go` for a public one).
+3. Pass `detecttest.Conformance` with a fixture of your own.
+4. Set `detector.name` in the chart values of the Application.
+5. Keep the previous detector for one release: the revert is the value.
 
-// Decoder derives more Inputs from one Input, with depth and size caps.
-type Decoder interface {
-	Decode(ctx context.Context, in Input) ([]Input, error)
-}
-```
+### Betterleaks settings that a test pins
 
-- **Tiers.** Gitleaks, Betterleaks and any other regex tool are `Detector`
-  values. The HTTP engine is a `Detector` that posts the text and reads
-  findings. Each tier has a mode (observe or enforce), a failure mode and a
-  deadline.
-- **Decoding.** One `Decoder` chain makes the texts for every tier, so the
-  engine sees decoded forms too. The Betterleaks codec is internal, so the
-  chain is ours (base64, hex, percent, Unicode, depth 3, a size cap). Betterleaks
-  keeps its own decoding for its own findings.
-- **Merge.** Any finding denies. A tier failure follows the failure mode. This
-  is the rule of DESIGN-large-bodies.md.
-- **Counters.** `detector_requests_total{detector,outcome}` and
-  `detector_agreement_total{a,b}` give the observe window its data.
+- **Allow markers off.** `betterleaks:allow` and `gitleaks:allow` are on by
+  default in the library, and a request could put one beside a secret. The
+  adapter passes `WithAllowSignatures()` with no signature. A test shows the
+  secret is found with the markers present, and fails when the option is removed.
+- **Decode depth 3.** Base64, hex, percent and Unicode text decode up to 3
+  passes. The host caps the input at 512 KiB, which bounds the decoded size. A
+  test fails when decoding is off.
+- **Work bound.** The call takes the request context, which the library checks
+  between rules, and the host stops waiting at the 75 ms deadline. A 512 KiB
+  keyword-heavy body fails at the deadline and is denied (failure mode deny).
+- **Extra rules as data.** `detect/betterleaks/extra_rules.toml` extends the
+  default rules with a database URL that holds a password and an Authorization
+  header with a bearer token or a basic credential. These are the gaps that the
+  Pro engine and Pipelock covered on the spike corpus.
+- **Version.** Module `v2.0.0-rc.11`, exact pin in `go.mod`. The latest stable
+  line is `v1.10.1`. Its `detect.Detector` can ignore only `gitleaks:allow`
+  (`IgnoreGitleaksAllow`): `betterleaks:allow` is a fixed package variable
+  there, so a marker beside a secret would still hide it (read in the `v1.10.1`
+  source). Only v2 has `WithAllowSignatures()` to turn both markers off. A
+  release candidate pins an API that can change before 2.0.0: the upgrade is a
+  reviewed change, and the conformance test and the corpus catch a regression.
+  The checksum is in `go.sum` and was checked against the Go checksum database
+  when the module was added.
 
-What to say in an upstream issue first (Agent Substrate; do not open it yet):
+## Plan
 
-1. The gap: an egress gateway can call an `ext_authz` scanner for a route, but
-   the repository ships none that blocks credentials.
-2. The proposal: a small scanner with the interfaces above, rules from TOML
-   (Gitleaks and Betterleaks format), no network call, fail closed.
-3. The engine contract: `POST` the text, an `X-Deadline-Ms` header, a JSON reply
-   with a list of findings (rule and offsets). A private engine can sit behind it.
-4. Questions: does Substrate want it in tree or as a sample; what policy API
-   names a route and a mode; which licence terms for bundled rules.
-
-For Betterleaks (a separate issue, also not opened): export the codec or a
-`Decode` view, add a context to `ScanString`, and state when v2 reaches a stable
-tag.
-
-## Recommendation
-
-Add Betterleaks beside Gitleaks, switch after an observe window, and keep the
-Pro engine. It finds more (38 against 29 here) and makes no false positive on
-this set. It is as fast or faster. Its decoding covers a gap that no other tier
-covers. Deny on any finding from either detector is the default, so Gitleaks
-stays as the second detector. Drop Gitleaks only after a stable v2 tag, or
-after an exact rc pin with a digest, and only if the nightly replay shows
-Betterleaks finds everything Gitleaks finds.
-
-Pending the prior-art result ([DESIGN-prior-art.md](DESIGN-prior-art.md)): do not build these PRs yet.
-Pipelock may replace the decoder chain of PR 2.
-
-| # | PR | Tests |
+| # | PR | State |
 | --- | --- | --- |
-| 1 | The `Detector` interface and the Gitleaks matcher behind it. No behavior change. Per-detector counters | Existing scanner tests pass. A fake detector shows merge, deadline and failure mode |
-| 2 | The decoder chain (base64, hex, percent, Unicode, depth 3, size cap) feeding every tier, behind a flag | A corpus test: each encoded sample decodes, a clean random base64 sample does not make a finding, caps hold |
-| 3 | The Betterleaks detector in observe mode, off the request path, with `recover()`. Pin the exact version in `go.mod`. Set `WithMaxDecodeDepth(3)` and `WithAllowSignatures()` with no signature | Build and image size. A panic test. The agreement counter moves on the corpus. A sample with `betterleaks:allow` and `gitleaks:allow` on the secret line still finds it |
-| 4 | Observe window: 1 day of Hindsight traffic plus a corpus replay Job each night through the live check | The counters in `detector_agreement_total`. No Betterleaks-only finding on clean traffic. Review them |
-| 5 | Enforce Betterleaks with Gitleaks as the fallback flag | The synthetic table of the enforce PR. Roll back with the flag |
-| 6 | Drop the Gitleaks dependency, if the replay allows it. The default keeps both | Image size, latency table, a superset check on the replay |
+| 1 | Remove the Semgrep tier code: one detector call path (#8662) | Done |
+| 2 | The `detect` package, the Gitleaks and Betterleaks detectors, `--detector`, the conformance test and the corpus. Default stays `gitleaks` | Done in this change |
+| 3 | Flip `detector.name` to `betterleaks`. Run the synthetic table and the fake corpus against the live scanner. Gitleaks stays for one release as the revert lever | Next |
+| 4 | Remove the Gitleaks adapter after one release | Later |
 
-Risks:
+Deferred (Joe, 2026-11-24), kept as notes only: a second detector joined to the
+first, the decoder chain of our own, the windowed scan, the Pro engine tier, the
+Pipelock trial, git push scanning, scanning all egress, the HA policy. A
+Mandoline-based detector (exact match of known private content from a private
+index) is the planned second plug-in, in a private build, through `PrivateData`.
 
-- v2 is a release candidate. The API can change before 2.0.0. An exact pin and
-  the observe window cover this.
-- A new dependency on a deny path. It runs in process with no network, but a
-  panic or a slow regex would deny requests. `recover()` and observe mode
-  first cover this.
-- The 75 ms deadline cannot stop a rule in the middle of a match. A keyword-heavy
-  body of 512 KiB took 198 ms. Before enforce, the PR must pick one of three
-  controls: abandon the call (the CPU keeps running), a work budget like the
-  64-match budget of the Gitleaks matcher, or a body limit per tier.
-- Decoding at depth 8 can amplify memory. Depth 3 and a size cap bound it.
-- Allow markers. Betterleaks skips a finding when its line holds
-  `betterleaks:allow` or `gitleaks:allow` (the default of `scan.New`). A request
-  could add the marker beside a secret. Read from the code, not run. The
-  scanner passes no signature, as the current matcher does (`scan_test.go`,
-  "suppression ignored"), and a test pins it.
-- More rules (483) means more false positives on real agent text. The observe
-  window measures it. A custom config that pins the rule set keeps upgrades
-  stable (the Betterleaks README advises it).
-- The corpus is small and ours. It shows direction, not rates. Its generator
-  is not in the repository, because token-shaped text must not be public. The
-  nightly replay builds its values at run time from parts.
+## Risks
+
+- v2 is a release candidate. See the version note above.
+- A new dependency on a deny path. It runs in process with no network. The host
+  recovers a panic and fails the call (deny with failure mode deny).
+- More rules (483 against 203) can raise false positives on real agent text. The
+  corpus and the synthetic replay measure it before the flip, and the revert is
+  one value.
+- Decoding at depth 3 adds work. The 75 ms deadline and the 512 KiB cap bound it.
+- The corpus is small and ours. It shows direction, not rates.
 - Facts about Betterleaks (release dates, counts, the advisory) come from the
   GitHub API and a shallow clone on 2026-11-24. They age.

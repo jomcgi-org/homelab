@@ -1,3 +1,22 @@
 image:
   repository: ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan
   digest: "" # Supplied by the image build during packaging.
+
+# The detector of the scanner: exactly one, chosen by name. The host enforces the
+# mode, the failure mode and the limits for every detector the same way
+# (detect/doc.go). The names are the detectors that the binary registers
+# (detectors.go): gitleaks and betterleaks.
+detector:
+  name: gitleaks
+  # enforce: a finding denies. observe: counted, never denies.
+  mode: enforce
+  # What a call without a verdict does in enforce mode: deny or allow.
+  failureMode: deny
+  # Time for one request. Keep the gateway requestTimeout at least 5ms above it
+  # (a test enforces this).
+  deadline: 75ms
+  # Largest input in bytes that one call takes. Larger is a failure, not a skip.
+  maxInputBytes: 524288
+  # Mounted path of the private data of a detector that holds any. Empty for
+  # gitleaks and betterleaks.
+  dataPath: ""

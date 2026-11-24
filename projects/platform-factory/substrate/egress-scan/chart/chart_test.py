@@ -1,8 +1,8 @@
 """Render-test the egress-scan chart.
 
-The scanner takes no container args until the detector values arrive. The
-Semgrep tier left the chart on 2026-11-24 (egress-scan/ARCHITECTURE.md
-"Decided" 9), so its old values change nothing.
+The scanner gets one detector, chosen by name, and its mode, failure mode and
+limits. The Semgrep tier left the chart on 2026-11-24 (egress-scan/ARCHITECTURE.md
+"Decided" 9 and 10), so its old values change nothing.
 """
 
 from __future__ import annotations
@@ -39,11 +39,51 @@ def _scanner(*sets: str) -> dict:
     return container
 
 
-def test_default_render_has_no_args_and_no_tier() -> None:
+def test_default_render_selects_gitleaks_with_the_documented_limits() -> None:
     result = _render()
     assert result.returncode == 0, result.stderr
     assert "semgrep" not in result.stdout
-    assert "args" not in _scanner()
+    assert _scanner()["args"] == [
+        "--detector=gitleaks",
+        "--detector-mode=enforce",
+        "--detector-failure-mode=deny",
+        "--detector-deadline=75ms",
+        "--detector-max-input-bytes=524288",
+    ]
+
+
+def test_the_detector_name_and_limits_follow_the_values() -> None:
+    args = _scanner(
+        "detector.name=betterleaks",
+        "detector.mode=observe",
+        "detector.failureMode=allow",
+        "detector.deadline=60ms",
+        "detector.maxInputBytes=65536",
+    )["args"]
+    assert args == [
+        "--detector=betterleaks",
+        "--detector-mode=observe",
+        "--detector-failure-mode=allow",
+        "--detector-deadline=60ms",
+        "--detector-max-input-bytes=65536",
+    ]
+
+
+def test_a_data_path_is_passed_only_when_set() -> None:
+    assert not [a for a in _scanner()["args"] if "data-path" in a]
+    args = _scanner("detector.dataPath=/data/index")["args"]
+    assert "--detector-data-path=/data/index" in args
+
+
+def test_a_bad_mode_or_failure_mode_fails_the_render() -> None:
+    for sets, message in (
+        (["detector.mode=audit"], "detector.mode must be enforce or observe"),
+        (["detector.failureMode=ignore"], "detector.failureMode must be deny or allow"),
+        (["detector.name="], "detector.name is required"),
+    ):
+        result = _render(*sets)
+        assert result.returncode != 0
+        assert message in result.stderr
 
 
 def test_the_removed_tier_values_change_nothing() -> None:

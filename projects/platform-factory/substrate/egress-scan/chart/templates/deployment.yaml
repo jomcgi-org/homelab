@@ -31,6 +31,23 @@ spec:
       containers:
         - name: scanner
           image: {{ printf "%s@%s" .Values.image.repository (required "image.digest is required" .Values.image.digest) | quote }}
+{{- with .Values.detector }}
+{{- if not (has .mode (list "enforce" "observe")) }}
+{{- fail "detector.mode must be enforce or observe" }}
+{{- end }}
+{{- if not (has .failureMode (list "deny" "allow")) }}
+{{- fail "detector.failureMode must be deny or allow" }}
+{{- end }}
+          args:
+            - {{ printf "--detector=%s" (required "detector.name is required" .name) | quote }}
+            - {{ printf "--detector-mode=%s" .mode | quote }}
+            - {{ printf "--detector-failure-mode=%s" .failureMode | quote }}
+            - {{ printf "--detector-deadline=%s" .deadline | quote }}
+            - {{ printf "--detector-max-input-bytes=%d" (int .maxInputBytes) | quote }}
+{{- if .dataPath }}
+            - {{ printf "--detector-data-path=%s" .dataPath | quote }}
+{{- end }}
+{{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

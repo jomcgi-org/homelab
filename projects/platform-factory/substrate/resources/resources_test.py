@@ -1143,22 +1143,73 @@ def test_workerpool_crd_has_the_fork_platform_field() -> None:
     assert "platform" not in item["required"]
 
 
-# The gateway gives the whole check requestTimeout. Gitleaks scans for at most
-# 75ms (scan.go maxScanTime), so the timeout is 80ms: shorter and the gateway
-# cancels a check that the scanner would still answer. The second scan tier
-# (Semgrep) left on 2026-11-24 (egress-scan/ARCHITECTURE.md "Decided" 9).
+# The gateway gives the whole check requestTimeout. The scanner gives its one
+# detector `detector.deadline` (75ms), so the timeout is the deadline plus a
+# margin: shorter and the gateway cancels a check that the scanner would still
+# answer. The second scan tier (Semgrep) left on 2026-11-24 (egress-scan/
+# ARCHITECTURE.md "Decided" 9 and 10).
+_GATEWAY_MARGIN_MS = 5
 _GATEWAY_TIMEOUT = "80ms"
+_DETECTORS = {"gitleaks", "betterleaks"}
 
 
-def test_gateway_timeout_covers_the_gitleaks_deadline() -> None:
-    policy = yaml.safe_load((_HERE / "egress-scan" / "gateway-policy.yaml").read_text())
-    (check,) = policy["conditional"]
-    assert check["policies"]["http"]["requestTimeout"] == _GATEWAY_TIMEOUT
+def _ms(duration: str) -> int:
+    match = re.fullmatch(r"([0-9]+)(ms|s)", duration)
+    assert match, f"use a whole number of ms or s, got {duration!r}"
+    return int(match[1]) * (1000 if match[2] == "s" else 1)
 
 
-def test_the_application_sets_no_scan_tier_values() -> None:
-    # The chart has no Semgrep values any more. The Application must not set
-    # them, or a later chart that reuses the name would read stale values.
+def _detector_values() -> dict:
+    """The chart defaults overlaid with the values the Application passes."""
+    chart_values = _HERE.parent / "egress-scan" / "chart" / "values.yaml"
+    values = yaml.safe_load(chart_values.read_text())["detector"]
     app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
     helm = app["spec"]["sources"][0]["helm"]
-    assert "semgrep" not in str(helm)
+    assert not [
+        p for p in helm.get("parameters", []) if p["name"].startswith("detector.")
+    ], "set detector values in helm.valuesObject so that this test reads them"
+    values.update(helm.get("valuesObject", {}).get("detector", {}))
+    return values
+
+
+def _check_gateway_covers_detector(deadline: str, gateway_timeout: str) -> None:
+    needed = _ms(deadline) + _GATEWAY_MARGIN_MS
+    assert _ms(gateway_timeout) >= needed, (
+        f"requestTimeout {gateway_timeout} is below detector.deadline {deadline}"
+        f" + {_GATEWAY_MARGIN_MS}ms; the gateway would cancel the check first"
+    )
+
+
+def test_gateway_timeout_covers_the_detector_deadline() -> None:
+    policy = yaml.safe_load((_HERE / "egress-scan" / "gateway-policy.yaml").read_text())
+    (check,) = policy["conditional"]
+    timeout = check["policies"]["http"]["requestTimeout"]
+    assert timeout == _GATEWAY_TIMEOUT
+    _check_gateway_covers_detector(_detector_values()["deadline"], timeout)
+
+
+def test_the_coupling_check_fails_when_the_gateway_is_too_short() -> None:
+    _check_gateway_covers_detector("75ms", "80ms")
+    _check_gateway_covers_detector("300ms", "310ms")
+    for deadline, timeout in (("75ms", "79ms"), ("1s", "80ms")):
+        try:
+            _check_gateway_covers_detector(deadline, timeout)
+        except AssertionError:
+            continue
+        raise AssertionError(f"accepted {deadline} {timeout}")
+
+
+def test_the_scanner_runs_one_known_detector_in_enforce_mode() -> None:
+    values = _detector_values()
+    assert values["name"] in _DETECTORS
+    assert values["mode"] == "enforce"
+    assert values["failureMode"] == "deny"
+    assert values["maxInputBytes"] <= 512 * 1024
+    assert not values["dataPath"]
+
+
+def test_the_application_sets_no_semgrep_values() -> None:
+    # The chart has no Semgrep values any more (egress-scan/ARCHITECTURE.md
+    # "Decided" 10). The Application must not set them.
+    app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
+    assert "semgrep" not in str(app["spec"]["sources"][0]["helm"])

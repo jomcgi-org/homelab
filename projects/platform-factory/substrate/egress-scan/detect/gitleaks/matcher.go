@@ -1,4 +1,4 @@
-package main
+package gitleaks
 
 import (
 	"context"
@@ -48,7 +48,8 @@ func compileRequestRules(cfg config.Config) (*requestDetector, error) {
 	return d, nil
 }
 
-func (d *requestDetector) find(ctx context.Context, fields ...string) (bool, error) {
+// find returns the ID of the first rule that matches, or "".
+func (d *requestDetector) find(ctx context.Context, fields ...string) (string, error) {
 	remaining := maxSuppressedMatches
 	for _, text := range fields {
 		if text == "" {
@@ -57,7 +58,7 @@ func (d *requestDetector) find(ctx context.Context, fields ...string) (bool, err
 		lower := strings.ToLower(text)
 		for _, rule := range d.rules {
 			if err := ctx.Err(); err != nil {
-				return false, err
+				return "", err
 			}
 			if !hasKeyword(lower, rule.Keywords) {
 				continue
@@ -66,7 +67,7 @@ func (d *requestDetector) find(ctx context.Context, fields ...string) (bool, err
 			for {
 				index := rule.match(ctx, text, pos)
 				if err := ctx.Err(); err != nil {
-					return false, err
+					return "", err
 				}
 				if index == nil {
 					break
@@ -74,13 +75,13 @@ func (d *requestDetector) find(ctx context.Context, fields ...string) (bool, err
 				start, end := index[0], index[1]
 				if start < end && !d.suppresses(ctx, rule.Rule, text, index) {
 					if err := ctx.Err(); err != nil {
-						return false, err
+						return "", err
 					}
-					return true, nil
+					return rule.RuleID, nil
 				}
 				remaining--
 				if remaining == 0 {
-					return false, errScanBudget
+					return "", errScanBudget
 				}
 				pos = end
 				if start == end {
@@ -93,7 +94,7 @@ func (d *requestDetector) find(ctx context.Context, fields ...string) (bool, err
 			}
 		}
 	}
-	return false, ctx.Err()
+	return "", ctx.Err()
 }
 
 func hasKeyword(lower string, keywords []string) bool {
