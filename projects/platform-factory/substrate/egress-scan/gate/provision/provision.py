@@ -497,12 +497,16 @@ def teardown() -> None:
                     "-a",
                     ATESPACE,
                 )
+
     def seeds_left() -> list[dict]:
         return [a for a in actors() if role(a) == "FORK_ROLE_SEED"]
 
     def seed_detail() -> list[tuple[str, str]]:
         # Names and states only: nothing of the actors' content.
-        return [(str(a["metadata"]["name"]), str(a["status"]["state"])) for a in seeds_left()]
+        return [
+            (str(a["metadata"]["name"]), str(a["status"]["state"]))
+            for a in seeds_left()
+        ]
 
     try:
         wait_for("the seeds removed", STATE_WAIT, lambda: not seeds_left(), seed_detail)
