@@ -2,4 +2,4 @@ apiVersion: v2
 name: egress-scan
 description: Factory egress credential scanner
 type: application
-version: 0.8.27
+version: 0.9.18
