@@ -12,6 +12,14 @@
 rollOutCiliumPods: true
 
 kubeProxyReplacement: true
+# Translate Service addresses per packet for pods, and by socket only for host
+# processes. The default (socket-level for every pod) never sees a connect()
+# from a gVisor sandbox, whose network stack is in the sandbox: the egress-scan
+# pods (runtimeClassName gvisor) could not reach any ClusterIP, DNS included,
+# and Cilium denied the untranslated packets as "world". See the Cilium docs on
+# socketLB.hostNamespaceOnly for Kata and gVisor.
+socketLB:
+  hostNamespaceOnly: true
 # On a k3s server 127.0.0.1:6444 is the apiserver's own port, so the agent can
 # reach it before any Service routing exists.
 k8sServiceHost: "127.0.0.1"
