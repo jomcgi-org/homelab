@@ -213,7 +213,7 @@ func (e *Engine) replaceRuntimeAttempt(ctx context.Context, r *store.Run, wi *st
 
 const checkoutProbe = "git symbolic-ref --short HEAD && git rev-parse --verify HEAD"
 
-// invariant: FACT-20
+// invariant: HOME-404-1
 func observedStart(t *kagent.Task, branch string) string {
 	calls := map[string]bool{}
 	for _, artifact := range t.Artifacts {
