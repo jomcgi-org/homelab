@@ -39,6 +39,7 @@ py_test(
         "patches/*.yaml",
         "upstream/**",
     ]) + [
+        "//projects/platform-factory/cilium:values.yaml",
         "//projects/platform-factory/substrate/credential-provider:image_digest",
         "//projects/platform-factory/substrate/egress-scan/chart:image_values",
         "//projects/platform-factory/substrate/egress-scan/chart:values",
@@ -51,6 +52,7 @@ py_test(
         "@multitool//tools/kustomize",
     ],
     env = {
+        "CILIUM_VALUES": "$(rootpath //projects/platform-factory/cilium:values.yaml)",
         "KUSTOMIZE_BIN": "$(rootpath @multitool//tools/kustomize)",
         "GATE_DIGEST": "$(rootpath //projects/platform-factory/substrate/egress-scan/gate/image:image_digest)",
         "PROVIDER_DIGEST": "$(rootpath //projects/platform-factory/substrate/credential-provider:image_digest)",
