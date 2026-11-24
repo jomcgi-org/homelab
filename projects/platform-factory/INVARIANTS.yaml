@@ -36,6 +36,8 @@ invariants:
   # Wired: kvm-pool.yaml runs one worker since step 6
   # (projects/factory-cluster/README.md, "gVisor sandbox fork").
   - projects/platform-factory/substrate/gvisor-fork/kvm-pool.yaml
+  # Staged, to be removed with the isolation gates (README step 9).
+  - projects/platform-factory/substrate/gvisor-fork/gates/pool.yaml
   state: unproven
 - id: PLAT-7
   statement: 1Password Connect, ArgoCD redis and the repo-server accept requests only from their own controllers.

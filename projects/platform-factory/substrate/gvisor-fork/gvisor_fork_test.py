@@ -893,10 +893,12 @@ def test_gate_template_is_separate_from_the_production_pool() -> None:
     # matches the gate pool's label.
     assert template["workerSelector"]["matchLabels"] == pool["metadata"]["labels"]
     assert pool["metadata"]["labels"] != prod["metadata"]["labels"]
-    assert (
-        yaml.safe_load(_TEMPLATE.read_text())["workerSelector"]
-        != template["workerSelector"]
-    )
+    # The production template (the engine-gate provisioning template selects the
+    # same label as conformance and latency) never matches the gate pool.
+    for other in (_TEMPLATE, _GATES.parent / "latency" / "template.yaml"):
+        selector = yaml.safe_load(other.read_text())["workerSelector"]
+        assert selector == {"matchLabels": {"workload": "gvisor-fork"}}, other
+        assert selector != template["workerSelector"], other
     assert template["metadata"]["atespace"] == "gvisor-fork-gates"
     assert pool["metadata"]["namespace"] == _GATES_NS
     # The same fork worker image as production, and tiny, with one worker.
@@ -1045,8 +1047,47 @@ def test_gates_script_runs_every_mode_and_the_storm_against_a_fake_cli(
     assert "event=summary result=ok" in run.stdout
     calls = json.loads(state.read_text())["calls"]
     assert calls[-1] == "delete atespace gvisor-fork-gates"
+    # Every call that names an atespace names the gate atespace, and every actor
+    # call uses the gate template.
+    for call in calls:
+        words = call.split()
+        if "-a" in words:
+            assert words[words.index("-a") + 1] == "gvisor-fork-gates", call
+        if "--template" in words:
+            assert words[words.index("--template") + 1] == "gate", call
     # The template the CLI got is the rendered one: the guest, not the placeholder.
     assert any(c.startswith("create actor-template -f ") for c in calls)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"ATESPACE": "egress-scan-engine"},
+        {"POOL": "gvisor-fork"},
+        {"TEMPLATE": "engine"},
+    ],
+)
+def test_gates_script_refuses_another_atespace_pool_or_template(tmp_path, env) -> None:
+    fake = tmp_path / "kubectl-ate"
+    fake.write_text(f"#!{sys.executable}\n" + _FAKE_GATES)
+    fake.chmod(0o755)
+    run = subprocess.run(
+        [sys.executable, "-I", str(_GATES / "gates.py")],
+        env={
+            "ATE_BIN": str(fake),
+            "FAKE_STATE": str(tmp_path / "state.json"),
+            "TEMPLATE_FILE": str(_GATES / "template.yaml"),
+            "GUEST_FILE": str(_GATES / "guest.sh"),
+            **env,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == 1
+    assert "event=error message=\"'refusing" in run.stdout or "refusing" in run.stdout
+    # It made no call at all: nothing reached the cluster.
+    assert not (tmp_path / "state.json").exists()
 
 
 def test_gates_script_refuses_a_template_without_the_guest_slot() -> None:
