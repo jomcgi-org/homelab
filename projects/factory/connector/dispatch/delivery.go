@@ -1466,13 +1466,16 @@ func (e *Engine) startSplitRound(ctx context.Context, tx *sql.Tx, wi *store.Work
 // review that applied the cap and still fails outside the human gate (a
 // critical or high finding, an unaccounted or revoked one, or incomplete
 // history) starts a re-cut while MaxRecuts allows, else closes the PR and
-// stops delivery. It reads only the head's newest reviewer check, so it also
+// stops delivery. It does nothing while a hold label is on the PR, so the PR
+// and its branch stay for the person. It reads only the head's newest
+// reviewer check, so it also
 // acts on a PR whose failure was recorded as round_limit before deferral
 // existed, and it is idempotent: StartRecut and JournalCapClose move only a
 // work item in review.
 func (e *Engine) capOutcome(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail, checks []github.CheckRun) (bool, error) {
 	p := &b.Review
-	if !p.atCap(wi) || wi.State != store.WorkReview || p.ReviewerCheck == nil || p.ReviewerCheck.AppID == 0 {
+	if !p.atCap(wi) || wi.State != store.WorkReview || p.ReviewerCheck == nil || p.ReviewerCheck.AppID == 0 ||
+		p.held(d.Labels) != "" {
 		return false, nil
 	}
 	var latest *github.CheckRun
