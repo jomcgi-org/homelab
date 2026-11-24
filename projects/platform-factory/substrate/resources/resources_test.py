@@ -913,7 +913,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
         if v["name"] == "config"
     ]
     assert gates_volume["configMap"]["name"] == gates_map
-    assert gates_map == "gvisor-fork-gates-22995hc762"
+    assert gates_map == "gvisor-fork-gates-72cd5bf9tg"
     assert gates_job["spec"]["suspend"] is True
     gates_pool = _one(docs, "WorkerPool", "gvisor-fork-gates")
     assert gates_pool["metadata"]["namespace"] == _GATES_NS
