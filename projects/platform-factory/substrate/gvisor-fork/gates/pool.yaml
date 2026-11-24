@@ -1,0 +1,6 @@
+# Retired 2026-11-24. This file held the isolation-gate WorkerPool, and the
+# pool and its Job are gone. The results are in projects/factory-cluster/README.md,
+# step 9, "Gate pool run". The marker below stays because the invariant ratchet
+# (bazel/tools/format/invariants/check_invariants.py) does not allow a PR to
+# drop a marker. Delete this file when the ratchet has a retire path.
+# invariant: PLAT-6
