@@ -107,6 +107,9 @@ func run(log *slog.Logger) error {
 		Replies: rest,
 		Log:     log,
 	}
+	if err := wireOperator(log, bridge, rest, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions); err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

@@ -1529,6 +1529,119 @@ def test_discord_import_runs_once_per_run_id_with_the_bridge_boundary() -> None:
         _render(_DISCORD[:1] + _DISCORD[2:3] + ["discord.import.enabled=true"])
 
 
+_OPERATOR = [
+    "discord.agent.enabled=true",
+    "discord.bridge.enabled=true",
+    "discord.bridge.enforceAgentPath=true",
+    "kagent.rbac.namespaces={kagent,factory-r-homelab,factory-discord-agent,factory-discord-operator}",
+    "string:discord.bridge.policy.guilds.123.channels={456}",
+    "discord.operator.enabled=true",
+    "string:discord.operator.guild=123",
+    "string:discord.operator.channels={457}",
+]
+
+
+def _broker_atespaces(docs: list[dict[str, Any]]) -> list[str]:
+    config = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory", "factory-broker")["data"]["config.yaml"]
+    )
+    return config["actorJwt"]["allowedAtespaces"]
+
+
+def test_discord_operator_session_ships_off() -> None:
+    # Off (the default) renders no operator Agent and leaves the bridge, its
+    # policy and the broker as they were; deploy/render.sha256 covers the
+    # deploy values byte for byte.
+    off = _render(_DISCORD)
+    assert not [
+        d
+        for d in off
+        if d["metadata"].get("namespace") == "factory-discord-operator"
+        or d["metadata"]["name"] == "factory-discord-operator"
+    ]
+    (c,) = _in(off, "Deployment", "factory-discord", "discord-bridge")["spec"][
+        "template"
+    ]["spec"]["containers"]
+    assert not [e for e in c["env"] if e["name"].startswith("DISCORD_OPERATOR")]
+    policy = _in(off, "ConfigMap", "factory-discord", "discord-bridge-policy")
+    assert "operator" not in yaml.safe_load(policy["data"]["policy.json"])
+    assert "factory-discord-operator" not in _broker_atespaces(off)
+
+
+def test_discord_operator_session_runs_codex_through_the_broker() -> None:
+    docs = _render(_OPERATOR)
+    ns = "factory-discord-operator"
+    model = _in(docs, "ModelConfig", ns, "bosun-operator")["spec"]
+    assert model["openAI"] == {
+        "baseUrl": "http://factory-broker.factory.svc.cluster.local/v1",
+        "apiFormat": "responses",
+    }
+    assert model["actorJwt"] == {"audiences": ["factory-broker"]}
+    agent = _in(docs, "Agent", ns, "bosun-operator")["spec"]
+    assert "tools" not in agent["template"]["inline"]
+    assert "egressPolicyRefs" not in agent
+    assert _in(docs, "Harness", ns, "codex")["spec"]["codex"] == {}
+    # The namespace holds no credential, and the broker admits it while the
+    # public Bosun atespace stays out.
+    assert not [
+        d
+        for d in docs
+        if d["metadata"].get("namespace") == ns
+        and d["kind"] in ("Secret", "OnePasswordItem")
+    ]
+    atespaces = _broker_atespaces(docs)
+    assert ns in atespaces and "factory-discord-agent" not in atespaces
+    # The bridge gets the Agent, Joe's ID as an optional Secret file, and the
+    # policy's place for the session.
+    pod = _in(docs, "Deployment", "factory-discord", "discord-bridge")["spec"][
+        "template"
+    ]["spec"]
+    (c,) = pod["containers"]
+    env = {e["name"]: e["value"] for e in c["env"]}
+    assert env["DISCORD_OPERATOR_AGENT"] == "factory-discord-operator/bosun-operator"
+    assert (
+        env["DISCORD_OPERATOR_USER_FILE"] == "/var/run/secrets/discord-operator/user-id"
+    )
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert volumes["operator"]["secret"] == {
+        "secretName": "discord-bot",
+        "optional": True,
+        "items": [{"key": "operator-user-id", "path": "user-id"}],
+    }
+    policy = _in(docs, "ConfigMap", "factory-discord", "discord-bridge-policy")
+    parsed = yaml.safe_load(policy["data"]["policy.json"])
+    assert parsed["operator"] == {"guild": "123", "channels": ["457"]}
+    assert "700" not in policy["data"]["policy.json"]
+    rules = _controller_egress(
+        _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")["spec"]
+    )["toPorts"][0]["rules"]["http"]
+    assert {
+        "method": "POST",
+        "path": "^/agents/factory-discord-operator/bosun-operator$",
+    } in rules
+    assert {
+        "method": "POST",
+        "path": "^/kagent\\.api\\.v1\\.SessionService/(CreateSession|RevertSession)$",
+    } in rules
+
+
+def test_discord_operator_session_checks_its_wiring() -> None:
+    # Helm applies --set-string after --set, so channel cases drop the string
+    # entry, the last in _OPERATOR.
+    with pytest.raises(RuntimeError, match="server ID from discord.bridge.policy"):
+        _render(_OPERATOR + ["string:discord.operator.guild=999"])
+    with pytest.raises(RuntimeError, match="quote each channel ID"):
+        _render(_OPERATOR[:-1] + ["discord.operator.channels={1234567890123456789}"])
+    with pytest.raises(RuntimeError, match="name at least one parent channel"):
+        _render(_OPERATOR[:-1] + ["discord.operator.channels=null"])
+    with pytest.raises(RuntimeError, match="kagent.rbac.namespaces"):
+        _render(_OPERATOR + ["discord.operator.namespace=factory-discord-other"])
+    with pytest.raises(RuntimeError, match="must be the operator Agent's alone"):
+        _render(_OPERATOR + ["discord.operator.namespace=factory-discord-agent"])
+    with pytest.raises(RuntimeError, match="needs discord.bridge and broker"):
+        _render(_OPERATOR + ["discord.bridge.enabled=false"])
+
+
 @pytest.mark.parametrize(
     "flag", ["codexAdminRouteEnabled", "edge.codexAdminRouteEnabled"]
 )

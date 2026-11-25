@@ -14,6 +14,14 @@ type policyFile struct {
 	GuildLimit           limitFile         `json:"guildLimit"`
 	GlobalLimit          limitFile         `json:"globalLimit"`
 	QueueDepth           int               `json:"queueDepth"`
+	Operator             *operatorFile     `json:"operator"`
+}
+
+// operatorFile is the operator session's place (HOME-314). Joe's user ID is
+// not in the policy: it comes from a Secret file.
+type operatorFile struct {
+	Guild    string   `json:"guild"`
+	Channels []string `json:"channels"`
 }
 
 type limitFile struct {
@@ -56,5 +64,19 @@ func ParsePolicy(data []byte) (Config, error) {
 		c.Guilds = map[string]Guild{}
 	}
 	c.QueueDepth = max(p.QueueDepth, 1)
+	if o := p.Operator; o != nil {
+		if o.Guild == "" || len(o.Channels) == 0 {
+			return Config{}, fmt.Errorf("operator: guild and channels are required")
+		}
+		if _, ok := c.Guilds[o.Guild]; !ok {
+			return Config{}, fmt.Errorf("operator: guild %s is not allowlisted", o.Guild)
+		}
+		for _, ch := range o.Channels {
+			if ch == "" {
+				return Config{}, fmt.Errorf("operator: empty channel ID")
+			}
+		}
+		c.Operator = Operator{Guild: o.Guild, Channels: o.Channels}
+	}
 	return c, nil
 }

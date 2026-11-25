@@ -41,6 +41,8 @@ type Config struct {
 	GlobalLimit Limit            `json:"-"`
 	// QueueDepth bounds the messages waiting in one channel.
 	QueueDepth int `json:"-"`
+	// Operator places Joe's operator session (HOME-314); zero for none.
+	Operator Operator `json:"-"`
 }
 
 // dedupeWindow is how long a message ID is remembered. An older message
@@ -72,6 +74,12 @@ type Bridge struct {
 	Now     func() time.Time
 	// Ingest stores the messages of servers with `ingest`; nil stores none.
 	Ingest *Ingestor
+	// Operator runs Joe's operator session turns (HOME-314). Channels finds
+	// a thread's parent channel and History reads a thread's earlier
+	// messages. All are unused while Config.Operator is zero.
+	Operator OperatorAgent
+	Channels ChannelReader
+	History  ThreadHistory
 
 	mu      sync.Mutex
 	botID   string
@@ -80,6 +88,11 @@ type Bridge struct {
 	turns   map[string][]time.Time
 	notices chan notice
 	wg      sync.WaitGroup
+	// parents maps a channel in the operator's server to its parent: a
+	// thread's parent channel, or "" for a channel that is not a thread.
+	parents map[string]string
+	// pending holds the messages of a channel whose parent is being read.
+	pending map[string][]Message
 }
 
 // notice is a fixed reply sent off the gateway's reader.
@@ -123,6 +136,9 @@ func (b *Bridge) Accept(m Message) bool {
 // Handle takes one gateway message. It never blocks the gateway: a turn
 // runs on the channel's queue, one at a time per channel.
 func (b *Bridge) Handle(ctx context.Context, m Message) {
+	if b.operatorScope(ctx, m) {
+		return // The operator's channels: no ingest and no public turn.
+	}
 	b.ingest(m)
 	if !b.Accept(m) {
 		return
@@ -132,12 +148,7 @@ func (b *Bridge) Handle(ctx context.Context, m Message) {
 		return // Older than the IDs the bridge remembers.
 	}
 	b.mu.Lock()
-	if b.seen == nil {
-		b.seen, b.turns, b.queues = map[string]time.Time{}, map[string][]time.Time{}, map[string]chan Message{}
-		b.notices = make(chan notice, maxNotices)
-		b.wg.Add(1)
-		go b.notify(ctx)
-	}
+	b.start(ctx)
 	if _, dup := b.seen[m.ID]; dup {
 		b.mu.Unlock()
 		return // A resumed gateway can replay a message.
@@ -150,7 +161,7 @@ func (b *Bridge) Handle(ctx context.Context, m Message) {
 		q = make(chan Message, max(b.Config.QueueDepth, 1))
 		b.queues[m.ChannelID] = q
 		b.wg.Add(1)
-		go b.worker(ctx, q)
+		go b.worker(ctx, q, b.Turn)
 	}
 	notices := b.notices
 	b.mu.Unlock()
@@ -163,6 +174,17 @@ func (b *Bridge) Handle(ctx context.Context, m Message) {
 	default:
 		b.queueNotice(ctx, notices, m, ReplyBusy)
 	}
+}
+
+// start makes the bridge's state and its notice sender once. b.mu is held.
+func (b *Bridge) start(ctx context.Context) {
+	if b.seen != nil {
+		return
+	}
+	b.seen, b.turns, b.queues = map[string]time.Time{}, map[string][]time.Time{}, map[string]chan Message{}
+	b.notices = make(chan notice, maxNotices)
+	b.wg.Add(1)
+	go b.notify(ctx)
 }
 
 // ingesting reports whether a server's messages are stored as they arrive.
@@ -226,14 +248,14 @@ func (b *Bridge) notify(ctx context.Context) {
 // Wait waits for the channel workers after ctx ends.
 func (b *Bridge) Wait() { b.wg.Wait() }
 
-func (b *Bridge) worker(ctx context.Context, q chan Message) {
+func (b *Bridge) worker(ctx context.Context, q chan Message, turn func(context.Context, Message)) {
 	defer b.wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case m := <-q:
-			b.Turn(ctx, m)
+			turn(ctx, m)
 		}
 	}
 }

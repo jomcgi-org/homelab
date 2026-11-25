@@ -194,6 +194,12 @@ spec:
 {{- $b := $d.bridge }}
 {{- $ns := $b.namespace }}
 {{- $name := "discord-bridge" }}
+{{- $o := $d.operator }}
+{{- /* The operator session's place joins the policy only while it is on. */}}
+{{- $policy := $b.policy }}
+{{- if $o.enabled }}
+{{- $policy = merge (dict "operator" (dict "guild" $o.guild "channels" $o.channels)) (deepCopy $b.policy) }}
+{{- end }}
 ---
 # The bridge runs as this account; its only token is the projected
 # kagent-invocation token below.
@@ -238,7 +244,7 @@ metadata:
   labels:
     {{- include "factory.labels" . | nindent 4 }}
 data:
-  policy.json: {{ toJson $b.policy | quote }}
+  policy.json: {{ toJson $policy | quote }}
 {{- if .Values.connector.notify.enabled }}
 ---
 apiVersion: onepassword.com/v1
@@ -286,7 +292,7 @@ spec:
         # hindsight-discord admits only this label (its network policies).
         app.kubernetes.io/name: factory-discord-bridge
       annotations:
-        checksum/policy: {{ toJson $b.policy | sha256sum }}
+        checksum/policy: {{ toJson $policy | sha256sum }}
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false
@@ -325,6 +331,12 @@ spec:
               value: {{ printf "%s/%s" $d.agent.namespace $d.agent.name | quote }}
             - name: HEALTH_ADDR
               value: ":8080"
+            {{- if $o.enabled }}
+            - name: DISCORD_OPERATOR_AGENT
+              value: {{ printf "%s/%s" $o.namespace $o.name | quote }}
+            - name: DISCORD_OPERATOR_USER_FILE
+              value: /var/run/secrets/discord-operator/user-id
+            {{- end }}
           ports:
             - name: health
               containerPort: 8080
@@ -358,7 +370,23 @@ spec:
             - name: policy
               mountPath: /etc/discord-bridge
               readOnly: true
+            {{- if $o.enabled }}
+            - name: operator
+              mountPath: /var/run/secrets/discord-operator
+              readOnly: true
+            {{- end }}
       volumes:
+        {{- if $o.enabled }}
+        # Joe's Discord user ID. Optional: without the field the bridge
+        # starts and keeps the operator channels closed.
+        - name: operator
+          secret:
+            secretName: discord-bot
+            optional: true
+            items:
+              - key: {{ $o.userIdKey }}
+                path: user-id
+        {{- end }}
         {{- if .Values.connector.notify.enabled }}
         - name: notify
           secret:
@@ -466,6 +494,13 @@ spec:
               # The per-turn session delete (gRPC, HOME-162 "Short sessions").
               - method: POST
                 path: "^/kagent\\.api\\.v1\\.SessionService/DeleteSession$"
+              {{- if $o.enabled }}
+              # The operator session's Agent and its persistent sessions.
+              - method: POST
+                path: {{ printf "^/agents/%s/%s$" (regexQuoteMeta $o.namespace) (regexQuoteMeta $o.name) | quote }}
+              - method: POST
+                path: "^/kagent\\.api\\.v1\\.SessionService/(CreateSession|RevertSession)$"
+              {{- end }}
           {{- end }}
 {{- end }}
 {{- end }}

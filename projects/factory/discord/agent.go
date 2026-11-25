@@ -63,11 +63,16 @@ func (k *Kagent) Turn(ctx context.Context, messageID, prompt string) (string, er
 	if task.ContextID != "" && k.Sessions != nil {
 		defer k.deleteSession(task.ContextID)
 	}
+	return awaitAnswer(ctx, k.A2A, k.Agent, task, poll)
+}
+
+// awaitAnswer polls task until it ends and returns its answer.
+func awaitAnswer(ctx context.Context, a *kagent.A2A, agent kagent.AgentRef, task *kagent.Task, poll time.Duration) (string, error) {
 	for !kagent.Terminal(task.Status.State) {
 		if err := sleep(ctx, poll); err != nil {
 			return "", err
 		}
-		next, err := k.A2A.GetTask(ctx, k.Agent, task.ID)
+		next, err := a.GetTask(ctx, agent, task.ID)
 		if err != nil {
 			if ctx.Err() != nil {
 				return "", err

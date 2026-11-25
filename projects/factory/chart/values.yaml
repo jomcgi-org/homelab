@@ -555,6 +555,54 @@ discord:
         memory: 32Mi
       limits:
         memory: 256Mi
+  # Joe's operator session (HOME-314 step 1; ARCHITECTURE.md, "Discord
+  # operator session"). Each thread under `channels` in `guild` is one
+  # persistent kagent session on this Agent, which runs Codex through the
+  # broker. The bridge sends it only Joe's own messages, and never recalls or
+  # retains Bosun's memory for it. Off renders nothing and leaves the bridge
+  # as it was. On needs discord.bridge, broker, and `namespace` in
+  # kagent.rbac.namespaces.
+  operator:
+    enabled: false
+    # The Agent's own namespace and atespace: the broker admits this
+    # atespace, so it must never hold the public Bosun Agent.
+    namespace: factory-discord-operator
+    name: bosun-operator
+    # The server, which must be in discord.bridge.policy.guilds, and the
+    # parent channels of the session threads. Quote every ID.
+    guild: ""
+    channels: []
+    # Joe's Discord user ID is this field of the bot's 1Password item
+    # (discord.bridge.tokenItemPath), not a value here: the repository is
+    # public. Without it the bridge keeps the operator channels closed.
+    userIdKey: operator-user-id
+    # The model relay. Empty: the broker's Codex relay, which serves
+    # broker.grant. HOME-328 adds the secondary grant; point this at its
+    # relay when that exists.
+    baseUrl: ""
+    # Empty: agents.codex.model.
+    model: ""
+    # Must equal kagent.config.runtimeDefaults (templates/validate.yaml).
+    resources:
+      cpu: "4"
+      memory: 8Gi
+    concurrency: 1
+    worker:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+        limits:
+          cpu: "4"
+          memory: 9Gi
+    systemPrompt: |
+      You are Bosun in Joe's operator session on Discord. Joe owns this
+      homelab and its software factory. Each task holds one JSON object: a
+      message Joe wrote and, when the session is new, his earlier messages
+      in this thread. The bridge checked that Joe wrote them. Help Joe think
+      the conversation through to an outcome. You cannot file tickets, start
+      work or change anything yet, so say so when he asks. Answer briefly in
+      Markdown, under 1,500 characters. Never print credentials.
   # The history import (HOME-164): one Job per runId, for the servers whose
   # policy entry has `history: true`. It needs the bridge's policy, token and
   # network policy, so it renders only with the bridge.

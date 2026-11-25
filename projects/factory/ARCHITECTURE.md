@@ -1327,7 +1327,7 @@ version write-back.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
-| Let Joe triage from Discord or start urgent work on reserved capacity. | [HOME-314](https://factory-plan.jomcgi.dev/factory/issue/HOME-314) | designed |
+| Let Joe triage from Discord or start urgent work on reserved capacity. | [HOME-314](https://factory-plan.jomcgi.dev/factory/issue/HOME-314) | step 1 staged off behind `discord.operator.enabled` |
 | Deliver private goal-assessment reasons to the delivery owner. | [HOME-251](https://factory-plan.jomcgi.dev/factory/issue/HOME-251) | staged off behind `reviewer.goalReasons.enabled` |
 | Verify the factory App author when adopting a PR. | [#7920](https://github.com/jomcgi-org/homelab/issues/7920) | live |
 | Remove third-party Apps from the merge trust path. | [#7921](https://github.com/jomcgi-org/homelab/issues/7921) | designed |
@@ -1337,13 +1337,37 @@ version write-back.
 ### Discord operator session
 
 Joe chooses the outcome of a conversation in a dedicated operator session.
-Before assembling any agent input, the Discord bridge checks the author’s
-Discord user ID against Joe’s configured ID. It builds context solely from
-Joe’s own messages in that session, excluding bot and webhook events, forwarded
-messages, reply previews, shared channel history and Bosun’s channel memory.
-This session-specific exception to HOME-162 rules 1 and 4 leaves the public
-Bosun path and member access (HOME-303) outside its scope. The operator session
-uses the Codex secondary account through the second broker grant in HOME-328.
+Each thread under a configured parent channel (`discord.operator.channels`) is
+one session: one kagent session on the `bosun-operator` Agent, kept across
+turns. Before assembling any agent input, the Discord bridge checks the
+author’s Discord user ID against Joe’s configured ID. It builds context solely
+from Joe’s own messages in that session, excluding bot and webhook events,
+forwarded messages, reply previews, shared channel history and Bosun’s channel
+memory. This session-specific exception to HOME-162 rules 1 and 4 leaves the
+public Bosun path unchanged.
+
+```mermaid
+flowchart LR
+  m["message in the operator server"] --> p{"channel placed?"}
+  p -->|no| r["hold; read the parent channel once"] --> p
+  p -->|"thread under an operator channel"| j{"Joe's own message?"}
+  p -->|"other channel"| pub["public Bosun path"]
+  j -->|no| x["drop: no ingest, no turn"]
+  j -->|yes| s["thread session: no recall, no retain"]
+```
+
+- **Identity.** Joe’s ID is field `operator-user-id` of the bot’s 1Password
+  item, mounted as an optional file, so the public repository does not hold
+  it. Without the field the operator channels stay closed.
+- **Session.** The session’s request ID derives from the thread ID, so a
+  restarted bridge finds the same session. A deleted session moves the thread
+  to the next generation. A session with no turn gets Joe’s earlier messages
+  in the thread, under the same author rules.
+- **Model.** The Agent has its own namespace and atespace, which the broker
+  admits; the public Bosun atespace stays out. It runs Codex through the
+  broker relay at `discord.operator.baseUrl`. The relay serves one grant
+  (`broker.grant`) today. The secondary account needs HOME-328’s second
+  grant; set `baseUrl` to its relay when it exists.
 
 - **Triage.** Summarize the conversation into a homelab Backlog ticket, leave
   it unassigned and return its link. Filing it ends triage without a worker run.

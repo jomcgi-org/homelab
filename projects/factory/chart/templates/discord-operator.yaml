@@ -1,0 +1,155 @@
+{{- /*
+Joe's operator session (HOME-314 step 1). The Agent lives in its own
+namespace and atespace, apart from the public Bosun Agent: the broker admits
+this atespace, and the public Agent must never reach the Codex relay. The
+bridge sends it only Joe's own messages.
+*/}}
+{{- $o := .Values.discord.operator }}
+{{- if $o.enabled }}
+{{- $ns := $o.namespace }}
+{{- $worker := printf "%s-worker" $o.name }}
+---
+# Kept: deleting it would take the WorkerPool and the sessions' snapshots.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    # Substrate's worker egress policy selects worker pods only in namespaces
+    # with this label (projects/platform-factory/substrate).
+    factory.jomcgi.dev/substrate-workers: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.keep" . | nindent 4 }}
+---
+# Worker pods run as this account, with no API token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $worker }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+automountServiceAccountToken: false
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: {{ $o.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    kagent.dev/worker-pool-name: {{ $o.name }}
+    kagent.dev/worker-pool-namespace: {{ $ns }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: {{ $o.concurrency }}
+  workerImage: {{ .Values.workers.image | quote }}
+  sandboxClasses:
+    - name: gvisor
+      configRef:
+        name: {{ .Values.workers.sandboxConfig }}
+  template:
+    serviceAccountName: {{ $worker }}
+    resources:
+      {{- toYaml $o.worker.resources | nindent 6 }}
+---
+# The broker's Codex relay. kagent binds the origin's Authorization header
+# (prefix "Bearer ") to an actor JWT for audience factory-broker; Codex holds
+# only a placeholder.
+apiVersion: api.kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: {{ $o.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  provider: OpenAI
+  model: {{ $o.model | default .Values.agents.codex.model | quote }}
+  openAI:
+    baseUrl: {{ $o.baseUrl | default (include "factory.brokerRelayURL" .) | quote }}
+    apiFormat: responses
+  actorJwt:
+    audiences: [factory-broker]
+---
+apiVersion: api.kagent.dev/v1alpha3
+kind: Harness
+metadata:
+  name: codex
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  codex: {}
+  substrate:
+    workerPoolRef:
+      name: {{ $o.name }}
+    snapshotPolicy:
+      location: {{ printf "%s%s/" .Values.workers.snapshotLocationPrefix $ns | quote }}
+---
+# No tools and no egress grants: the actor reaches only the model relay.
+apiVersion: api.kagent.dev/v1alpha3
+kind: Agent
+metadata:
+  name: {{ $o.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  template:
+    inline:
+      description: "Bosun's operator session for Joe (HOME-314)"
+      modelConfig:
+        name: {{ $o.name }}
+      systemPrompt: {{ $o.systemPrompt | quote }}
+  harnessRef:
+    name: codex
+{{- if .Values.networkPolicy.cilium }}
+---
+# Worker pods: actor traffic arrives only from Substrate's router and leaves
+# only through its egress gateway.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: substrate-workers
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: ate.dev/worker-pool
+        operator: Exists
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: atenet-router
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+{{- end }}
+{{- end }}
