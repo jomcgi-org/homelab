@@ -102,7 +102,7 @@ routes. No external data host is permitted by this Job's network policy.
 | Component | Untrusted input | Credentials held |
 | --- | --- | --- |
 | web | Section data from the R2 snapshot, added at deploy time | No credential; the deploy Job holds the tokens |
-| preview | A session's archive of built files for one PR, and GitHub's public PR data | Worker Scripts token for jomcgi-site-dev and the Access service token |
+| preview | A session's archive of built files for one PR, and GitHub's public PR data | The account's Workers Scripts: Edit token (`jomcgi-site-cloudflare`) and the Access service token |
 
 The preview uploader treats its archive as untrusted and accepts static files
 only (README "PR previews").

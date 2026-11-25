@@ -454,10 +454,14 @@ port-forward, and the pod listens on loopback with no ingress.
 `chart/values.yaml` keeps `preview.enabled: false` until these exist. A PR
 then sets `preview.enabled: true` in `deploy/application.yaml`.
 
-- **Cloudflare Access** in the dashboard: Workers & Pages, "Protect all
-  Workers", "Previews only". Policy: allow Joe's email, and a Service Auth
-  rule for a new service token. The policy must not bypass the home
-  network's address, or the uploader's anonymous check fails.
+- **Cloudflare Access** in the dashboard, for the previews of
+  jomcgi-site-dev only: an Access application on that Worker's preview
+  URLs, not "Protect this Worker", which also gates `next.jomcgi.dev`. If
+  the dashboard offers only the account-wide "Protect all Workers",
+  "Previews only", the service token then opens every Worker's previews.
+  Policy: allow Joe's email, and a Service Auth rule for a new service
+  token. The policy must not bypass the home network's address, or the
+  uploader's anonymous check fails.
 - **Service token item:** 1Password item
   `vaults/k8s-homelab/items/jomcgi-site-preview-access`, fields `client-id`
   and `client-secret`.
