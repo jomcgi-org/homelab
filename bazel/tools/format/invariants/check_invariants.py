@@ -180,11 +180,50 @@ def check_markers(documents, base):
     }
     # A retired invariant's markers go with the code it guarded. The row and
     # its ID stay, so the ID is never reused.
+    # A marker may also go when this change removes its path from the
+    # invariant's mechanism. That edits INVARIANTS.yaml, which the human
+    # gate reviews (REVIEW.md "Joe decides"), so the loss is not silent.
+    before = mechanisms_at(base)
     for path, ident in sorted(markers_at(base)):
         if ident in rows and rows[ident]["state"] == "retired":
             continue
+        if (
+            ident in rows
+            and covers(before.get(ident, []), path)
+            and not covers(rows[ident]["mechanism"], path)
+        ):
+            continue
         if (renames.get(path, path), ident) not in head:
             raise ValueError(f"{path}: dropped invariant marker {ident}")
+
+
+def covers(mechanism, path):
+    """Whether a mechanism list names the path or one of its directories."""
+    return any(path == Path(n) or Path(n) in path.parents for n in mechanism)
+
+
+def mechanisms_at(revision):
+    """Map each invariant ID on a revision to its mechanism paths."""
+    names = subprocess.check_output(
+        ["git", "ls-tree", "-r", "-z", "--name-only", revision]
+    ).split(b"\0")
+    mechanisms = {}
+    for name in sorted(names):
+        path = Path(os.fsdecode(name))
+        if path.name != "INVARIANTS.yaml" or path == TEMPLATE:
+            continue
+        text = subprocess.check_output(["git", "show", f"{revision}:{path}"])
+        try:
+            document = yaml.load(text, Loader=InvariantLoader)
+        except yaml.YAMLError:
+            continue
+        rows = document.get("invariants") if isinstance(document, dict) else None
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and isinstance(row.get("id"), str):
+                paths = row.get("mechanism")
+                if isinstance(paths, list):
+                    mechanisms[row["id"]] = [p for p in paths if isinstance(p, str)]
+    return mechanisms
 
 
 def ids_at(revision):
