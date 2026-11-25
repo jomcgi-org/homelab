@@ -190,6 +190,8 @@ spec:
         - ports: [{port: {{ $b.adminPort | quote }}, protocol: TCP}]
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports: [{port: "6443", protocol: TCP}]
     - toFQDNs: [{matchName: api.github.com}]
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
