@@ -1,5 +1,6 @@
-# Grimoire's private database: three instances, one per node, with WAL
-# archiving and daily base backups to the private grimoire-backups bucket.
+# Grimoire's private database: one instance, with WAL archiving and daily
+# base backups to the private grimoire-backups bucket. A lost node or volume
+# means a restore from the backups.
 # grimoire_restore owns the database and every restored object. The two
 # runtime logins own nothing; grants.sql gives them their row access.
 apiVersion: postgresql.cnpg.io/v1
@@ -11,7 +12,11 @@ metadata:
     argocd.argoproj.io/sync-wave: "0"
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
-  instances: 3
+  instances: 1
+  # One instance: the operator's primary PodDisruptionBudget would block
+  # every node drain, so it is off. A drain stops the database until the
+  # node returns.
+  enablePDB: false
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
   primaryUpdateStrategy: unsupervised
   smartShutdownTimeout: 15

@@ -1,7 +1,8 @@
-# kagent's PostgreSQL: three instances, one per node, with WAL archiving and
-# daily base backups to Garage (projects/factory-cluster/README.md,
-# "Postgres"). Garage runs on the same three nodes, so this survives losing a
-# node or a volume, not losing the cluster.
+# kagent's PostgreSQL: one instance, with WAL archiving and daily base
+# backups to Garage (projects/factory-cluster/README.md, "Postgres"). Data
+# recovery matters, high availability does not: a lost node or volume means
+# a restore from Garage. Garage runs on the same three nodes, so the backups
+# survive losing a node, not losing the cluster.
 #
 # It runs in its own namespace, kagent-pg: the kagent controller can read
 # every Secret in kagent, and the database owner and backup credentials stay out
@@ -27,7 +28,11 @@ spec:
       - name: session-claims
         key: queries
   priorityClassName: factory-platform
-  instances: 3
+  instances: 1
+  # One instance: the operator's primary PodDisruptionBudget would block
+  # every node drain, so it is off. A drain stops the database until the
+  # node returns.
+  enablePDB: false
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
   primaryUpdateStrategy: unsupervised
   # invariant: KAGENT-PG-1

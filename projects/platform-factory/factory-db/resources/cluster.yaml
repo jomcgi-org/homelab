@@ -1,8 +1,8 @@
 # The factory's PostgreSQL: databases for itsaplan, the connector, the
-# reviewer and Hindsight. Three instances, one per node, with WAL archiving and daily
-# base backups to Garage (projects/factory-cluster/
-# README.md, "Postgres"). Garage runs on the same three nodes, so this
-# survives losing a node or a volume, not losing the cluster.
+# reviewer and Hindsight. One instance, with WAL archiving and daily base
+# backups to Garage (projects/factory-cluster/README.md, "Postgres"). A lost
+# node or volume means a restore from Garage. Garage runs on the same three
+# nodes, so the backups survive losing a node, not losing the cluster.
 #
 # It runs in its own namespace, factory-db, so the backup key stays out of
 # the factory namespace; only the connection strings are written there. The
@@ -21,7 +21,11 @@ metadata:
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   priorityClassName: factory-platform
-  instances: 3
+  instances: 1
+  # One instance: the operator's primary PodDisruptionBudget would block
+  # every node drain, so it is off. A drain stops the database until the
+  # node returns.
+  enablePDB: false
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
   primaryUpdateStrategy: unsupervised
   # A deleted primary waits this long for clients to disconnect before a
