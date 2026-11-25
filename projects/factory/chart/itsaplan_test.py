@@ -174,6 +174,7 @@ def test_rebuilt_web_has_pull_credentials(broker_enabled: bool) -> None:
     if not broker_enabled:
         overrides += [
             "broker.enabled=false",
+            "discord.operator.enabled=false",
             "connector.enabled=false",
             "reviewer.enabled=false",
             "repositories=null",

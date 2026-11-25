@@ -752,7 +752,12 @@ def test_inconsistent_values_fail(override: str, message: str) -> None:
 def test_broker_is_required() -> None:
     with pytest.raises(RuntimeError, match=r"needs broker\.enabled|needs broker"):
         _render(
-            ["broker.enabled=false", "repositories=null", "connector.bindings=null"]
+            [
+                "broker.enabled=false",
+                "discord.operator.enabled=false",
+                "repositories=null",
+                "connector.bindings=null",
+            ]
         )
 
 
