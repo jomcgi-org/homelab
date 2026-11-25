@@ -44,9 +44,9 @@ while (($#)); do
 	shift
 done
 
-repo="$(git rev-parse --show-toplevel)"
-out="${out:-$repo/projects/jomcgi-site/preview/out}"
-[[ "$out" == /* ]] || out="$PWD/$out"
+# Canonical paths, so ".." or a symlink cannot hide the repository.
+repo="$(realpath -- "$(git rev-parse --show-toplevel)")"
+out="$(realpath -m -- "${out:-$repo/projects/jomcgi-site/preview/out}")"
 out="${out%/}"
 [[ -n "$out" ]] || die "--out cannot be /" 2
 cd "$repo"
