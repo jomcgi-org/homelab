@@ -52,7 +52,6 @@ try {
       throw new Error(`Domain withdrawal returned ${removal.status}`);
   }
 } catch (error) {
-  if (matched)
-    console.error(`withdraw: domain ID shape ${shape(current)}`);
+  if (matched) console.error(`withdraw: domain ID shape ${shape(current)}`);
   throw error;
 }
