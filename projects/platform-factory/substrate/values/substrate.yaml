@@ -84,6 +84,14 @@ credentialProvider:
       secretSelector:
         matchLabels:
           substrate.ate.dev/injectable: "true"
+    # The scheduled planner's Agent (projects/factory/chart, planner): the
+    # Anthropic model relay is the broker's, so it needs no injected key; the
+    # entry grants the atespace its read-only git token only.
+    - atespace: factory-r-homelab-planner
+      allowedNamespaces: [factory-r-homelab-planner]
+      secretSelector:
+        matchLabels:
+          substrate.ate.dev/injectable: "true"
     # The Discord bot's Agent (projects/factory/chart, discord.agent): its
     # dedicated OpenRouter key only.
     - atespace: factory-discord-agent

@@ -996,8 +996,9 @@ reuse state, even after a prolonged persistence failure.
 
 The connector sends fixed-field notifications to the in-cluster Discord bridge. See [activation and caller credentials](deploy/notify.md).
 
-**Scheduled planner identity (HOME-40), staged off.** `planner.enabled` is
-false by default. When set, the chart renders:
+**Scheduled planner identity (HOME-40).** `planner.enabled` is false in the
+chart's defaults and true in the deploy values (2026-11-25, on Claude Opus 5.5).
+When set, the chart renders:
 
 - an itsaplan `cron` schedule `planner-<job>` per `connector.plannerSchedules`
   entry that sets `cron` and `prompt`. The bootstrap Job writes it on the
@@ -1035,10 +1036,11 @@ core schedules need no Pro. A schedule below the workspace's
 To turn it on: add the namespace to `kagent.rbac.namespaces` and to Substrate's
 `credentialProvider.namespacePolicies`, set `planner.enabled`, and give each
 job a `cron` and `prompt`. A Claude planner also needs its model in the
-broker's `claude.modelAllowlist` for each planner actor. That allowlist takes
-only exact `session-<ID>` actors, and each run starts a fresh session, so
-the relay denies a Claude planner run until the broker can allow the
-planner's atespace.
+broker's `claude.modelAllowlist`. Each run starts a fresh session, so the entry
+is the wildcard `actor/<planner atespace>/session-*` (#8690). The deploy values
+list `claude-opus-5-5` and `claude-fable-5-2` for the planner atespace, and
+run a `smoke` job that fires once (cron `0 14 26 11 *`) with ceiling backlog.
+HOME-40 closes when that run passes; the smoke entry is then removed.
 
 ### Factory front page
 
