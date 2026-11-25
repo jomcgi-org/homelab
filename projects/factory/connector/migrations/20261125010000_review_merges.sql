@@ -3,4 +3,4 @@ ALTER TABLE repo_binding ADD COLUMN review_merges_since timestamptz NOT NULL DEF
 
 ALTER TABLE outbox DROP CONSTRAINT outbox_kind_check;
 ALTER TABLE outbox ADD CONSTRAINT outbox_kind_check
-    CHECK (kind IN ('result', 'comment', 'issue_done', 'deferred_start', 'activation', 'issue_reviewing', 'review_followup'));
+    CHECK (kind IN ('result', 'comment', 'issue_done', 'deferred_start', 'activation', 'issue_reviewing', 'retain', 'review_followup'));
