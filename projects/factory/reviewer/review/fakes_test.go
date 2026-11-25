@@ -146,7 +146,7 @@ type fakeGitHub struct {
 func newFakeGitHub(t *testing.T) (*fakeGitHub, *httptest.Server) {
 	f := &fakeGitHub{
 		t: t, prs: map[int]*fakePR{}, statuses: map[string][]map[string]any{}, baseHead: "base-1",
-		baseFiles: map[string]string{}, queued: map[int]string{}, queueHead: map[int]string{}, cited: map[int]map[string]any{},
+		baseFiles: map[string]string{}, headFiles: map[string]string{}, queued: map[int]string{}, queueHead: map[int]string{}, cited: map[int]map[string]any{},
 		fail: map[string]int{}, failGQL: map[string]bool{},
 		now: time.Now,
 	}
@@ -312,6 +312,13 @@ func (f *fakeGitHub) graphqlCalls(kind string) int {
 		}
 	}
 	return n
+}
+
+// readRef reports whether the reviewer read ref, as contentRefs records it.
+func (f *fakeGitHub) readRef(ref string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Contains(f.contentRefs, ref)
 }
 
 func (f *fakeGitHub) countCalls(prefix string) int {
