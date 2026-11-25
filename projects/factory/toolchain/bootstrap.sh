@@ -20,7 +20,8 @@ TOOLS_TMPDIR="/var/tmp/homelab-sandbox-$(id -u)"
 mkdir -p -m 0700 "$TOOLS_TMPDIR"
 export TMPDIR="$TOOLS_TMPDIR"
 fingerprint="$(cat "$SCRIPT_DIR/bootstrap.sh" "$SCRIPT_DIR/install.py" \
-	"$REPO_ROOT/bazel/tools/tools.lock.json" "$REPO_ROOT/package.json" | sha256sum)"
+	"$REPO_ROOT/bazel/tools/tools.lock.json" "$REPO_ROOT/package.json" \
+	"$REPO_ROOT/projects/jomcgi-site/web/package.json" | sha256sum)"
 TOOLS_ROOT="$TOOLS_BASE/${fingerprint%% *}"
 
 smoke() {
@@ -30,6 +31,7 @@ smoke() {
 	done
 	"$root/bin/helm" version --short >/dev/null || return 1
 	"$root/bin/crane" version >/dev/null || return 1
+	"$root/bin/astryx" --version >/dev/null || return 1
 	"$root/bin/grep" --version >/dev/null || return 1
 	"$root/bin/python3" -c 'import pytest, yaml' || return 1
 	"$root/bin/pytest" --version >/dev/null || return 1

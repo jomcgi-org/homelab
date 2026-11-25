@@ -8,6 +8,8 @@ mkdir -p "$fixture/repo/projects/factory/toolchain" "$fixture/repo/bazel/tools" 
 cp "$SCRIPT_DIR/bootstrap.sh" "$SCRIPT_DIR/install.py" "$fixture/repo/projects/factory/toolchain/"
 echo '{}' >"$fixture/repo/bazel/tools/tools.lock.json"
 echo '{}' >"$fixture/repo/package.json"
+mkdir -p "$fixture/repo/projects/jomcgi-site/web"
+echo '{}' >"$fixture/repo/projects/jomcgi-site/web/package.json"
 
 cat >"$fixture/bin/cat" <<'MOCK'
 #!/bin/bash
@@ -50,7 +52,7 @@ if [[ "${1:-}" == -m && "${2:-}" == pytest ]]; then
 fi
 [[ "$1" == */install.py ]] || exit 0
 root="$3"
-for tool in pnpm prettier ruff shfmt gofumpt buildifier crane shellcheck helm; do
+for tool in pnpm prettier astryx ruff shfmt gofumpt buildifier crane shellcheck helm; do
 	printf '#!/bin/bash\nexit 0\n' >"$root/bin/$tool"
 	chmod 0755 "$root/bin/$tool"
 done

@@ -107,6 +107,10 @@ def test_runtime_packages_follow_repository_pins_without_install_scripts(tmp_pat
         ]
     }
     (repo / "bazel/tools/tools.lock.json").write_text(json.dumps(locks))
+    (repo / "projects/jomcgi-site/web").mkdir(parents=True)
+    (repo / "projects/jomcgi-site/web/package.json").write_text(
+        json.dumps({"dependencies": {"@astryxdesign/core": "0.7.17-canary.gabc"}})
+    )
     (repo / "package.json").write_text(
         json.dumps(
             {
@@ -128,12 +132,17 @@ def test_runtime_packages_follow_repository_pins_without_install_scripts(tmp_pat
     pip, npm = [call.args[0] for call in run.call_args_list]
     assert "ruff==0.15.5" in pip
     assert "--only-binary=:all:" in pip and "--no-deps" in pip
-    assert npm[-4:] == [
+    assert npm[-6:] == [
         "pnpm@10.34.5",
         "prettier@3.9.6",
         "prettier-plugin-svelte@4.1.1",
         "svelte@5.56.9",
+        "@astryxdesign/cli@0.7.17-canary.gabc",
+        "@astryxdesign/core@0.7.17-canary.gabc",
     ]
+    # The CLI and Core share one version, taken from the site's pin.
+    astryx = (root / "bin/astryx").read_text()
+    assert "@astryxdesign/cli/clients/cli/bin/astryx.mjs" in astryx
     assert "--ignore-scripts" in npm
     assert "--userconfig=/dev/null" in npm
     assert f"--globalconfig={root / 'npm-global.conf'}" in npm
