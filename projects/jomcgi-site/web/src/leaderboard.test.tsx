@@ -140,7 +140,7 @@ it("copies the hub introduction, captions and source link verbatim", () => {
   );
   for (const caption of captions) expect(rendered).toContain(caption);
   const sourceLink = hub.match(
-    /<footer class="caption method">[\s\S]*?<a href="([^"]+)"/,
+    /<footer class="caption method">[\s\S]*?<a\s+href="([^"]+)"/,
   )![1]!;
   expect(host.querySelector(".method a")?.getAttribute("href")).toBe(
     sourceLink,
