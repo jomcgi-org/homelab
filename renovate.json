@@ -406,9 +406,7 @@
     "managerFilePatterns": ["/^projects/[^/]+/deploy/[^/]+\\.ya?ml$/"]
   },
   "pip_requirements": {
-    "managerFilePatterns": [
-      "/^bazel/requirements/overrides\\.txt$/"
-    ]
+    "managerFilePatterns": ["/^bazel/requirements/overrides\\.txt$/"]
   },
   "lockFileMaintenance": {
     "enabled": true

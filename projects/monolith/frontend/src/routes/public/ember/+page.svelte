@@ -407,7 +407,8 @@ serving                            → plain HTTP, straight into the VM</pre>
       12 roadmap milestones shipped</span
     >
     <span class="foot-links">
-      <a href="https://github.com/jomcgi/homelab/tree/hub-final/projects/embervm"
+      <a
+        href="https://github.com/jomcgi/homelab/tree/hub-final/projects/embervm"
         >github.com/jomcgi/homelab</a
       >
       <a href="/">jomcgi.dev</a>

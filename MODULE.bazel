@@ -583,7 +583,6 @@ apko.translate_lock(
     name = "monolith_frontend_lock",
     lock = "//projects/monolith/frontend:apko.lock.json",
 )
-
 apko.translate_lock(
     name = "stars_grid_apko_lock",
     lock = "//projects/monolith:stars/grid_gen/apko.lock.json",
