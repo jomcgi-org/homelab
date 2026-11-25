@@ -64,7 +64,7 @@ kagent:
   # Agents and the controller's watch: kagent's own namespace plus each
   # repository binding's.
   rbac:
-    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-r-homelab-planner, factory-discord-agent]
+    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-r-homelab-planner, factory-discord-agent, factory-discord-operator]
   # The controller's metrics for Prometheus
   # (projects/platform-factory/prometheus): HTTPS on 8443, admitting a token
   # whose subject may GET /metrics.
@@ -405,6 +405,13 @@ discord:
   import:
     enabled: true
     runId: "1"
+  # Joe's operator session (HOME-314 step 1): a persistent session per thread
+  # under #factory in the homelab server, for Joe's messages only. His user ID
+  # is the `operator-user-id` field of the bot's 1Password item.
+  operator:
+    enabled: true
+    guild: "1501965852042330302"
+    channels: ["1575140752776757368"]
 
 semgrepSync:
   enabled: false
