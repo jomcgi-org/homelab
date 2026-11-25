@@ -77,8 +77,9 @@ def _helm(*sets: str, planner: bool = True, schedules: bool = True) -> list[dict
         "--set",
         f"planner.enabled={str(planner).lower()}",
     ]
-    if planner:
-        args += ["--set-json", f"kagent.rbac.namespaces={json.dumps(_NAMESPACES)}"]
+    # Off, the controller does not watch the planner namespace either.
+    namespaces = _NAMESPACES if planner else [n for n in _NAMESPACES if n != _NS]
+    args += ["--set-json", f"kagent.rbac.namespaces={json.dumps(namespaces)}"]
     if schedules:
         args += ["--set-json", f"connector.plannerSchedules={json.dumps(_SCHEDULES)}"]
     for override in sets:
