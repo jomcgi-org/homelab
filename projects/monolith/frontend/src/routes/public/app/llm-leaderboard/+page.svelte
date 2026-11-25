@@ -413,7 +413,8 @@
     </section>
 
     <footer class="caption method">
-      <a href="https://github.com/jomcgi/homelab/tree/hub-final/projects/model-bench"
+      <a
+        href="https://github.com/jomcgi/homelab/tree/hub-final/projects/model-bench"
         >projects/model-bench</a
       >
     </footer>
