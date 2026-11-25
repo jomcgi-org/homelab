@@ -215,6 +215,10 @@ type Engine struct {
 	swept time.Time
 	// quotaRead is when the tick last read the broker's quota.
 	quotaRead time.Time
+	// Manual feedback follows a bounded rotating batch of maintainer PRs.
+	manualGoal       *ManualGoalFeedback
+	manualGoalPoll   time.Time
+	manualGoalCursor map[string]int
 }
 
 // New builds an engine. A nil gh leaves delivery (PRs, review and merge) off.
@@ -454,6 +458,7 @@ func (e *Engine) Tick(ctx context.Context) (result error) {
 		{"cancellations", e.stepCancellations},
 		{"delivery", e.stepDelivery},
 		{"merged_reviews", e.pollMergedReviews},
+		{"manual_goal_feedback", e.stepManualGoalFeedback},
 		{"delivery_reverts", e.checkDeliveryReverts},
 		{"activation recovery", e.st.RecoverActivation},
 		{"human_gates", e.stepHumanGates},
@@ -2961,6 +2966,38 @@ func (e *Engine) refused(ctx context.Context, it *store.OutboxItem, err error) b
 	return true
 }
 
+func (e *Engine) sendComment(ctx context.Context, it *store.OutboxItem, p commentPayload) error {
+	if p.Once {
+		if it.SendStarted {
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID,
+				"an earlier send's outcome is unknown; not resent, so the comment posts at most once")
+		}
+		if err := e.st.OutboxSendStarted(ctx, it.ID); err != nil {
+			return err
+		}
+		if err := e.guard(ctx); err != nil {
+			return err
+		}
+	}
+	err := e.its.Comment(ctx, p.IssueID, p.Body)
+	switch {
+	case err == nil:
+		return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
+	case e.refused(ctx, it, err):
+		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
+	case p.Once && notCreated(err):
+		// Retry under the usual bounds, including the credential-refusal
+		// policy above; nothing was posted, so a resend is safe.
+		if cerr := e.st.OutboxSendCleared(ctx, it.ID); cerr != nil {
+			return cerr
+		}
+	case p.Once:
+		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID,
+			clip("send outcome unknown; not resent: "+err.Error(), maxErrorText))
+	}
+	return err
+}
+
 func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 	switch it.Kind {
 	case "retain":
@@ -3002,35 +3039,9 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 			}
 			return nil
 		}
-		if p.Once {
-			if it.SendStarted {
-				return e.st.OutboxAbandon(ctx, e.st.DB, it.ID,
-					"an earlier send's outcome is unknown; not resent, so the comment posts at most once")
-			}
-			if err := e.st.OutboxSendStarted(ctx, it.ID); err != nil {
-				return err
-			}
-			if err := e.guard(ctx); err != nil {
-				return err
-			}
-		}
-		err := e.its.Comment(ctx, p.IssueID, p.Body)
-		switch {
-		case err == nil:
-			return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
-		case e.refused(ctx, it, err):
-			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
-		case p.Once && notCreated(err):
-			// Retry under the usual bounds, including the credential-refusal
-			// policy above; nothing was posted, so a resend is safe.
-			if cerr := e.st.OutboxSendCleared(ctx, it.ID); cerr != nil {
-				return cerr
-			}
-		case p.Once:
-			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID,
-				clip("send outcome unknown; not resent: "+err.Error(), maxErrorText))
-		}
-		return err
+		return e.sendComment(ctx, it, p)
+	case manualGoalOutboxKind:
+		return e.deliverManualGoalFeedback(ctx, it)
 	case store.OutboxResult:
 		var res itsaplan.Result
 		if err := json.Unmarshal(it.Payload, &res); err != nil {

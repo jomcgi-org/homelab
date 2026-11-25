@@ -250,6 +250,19 @@ completed column (HOME-55). A canceled blocker or a cycle keeps the hold and
 gets a comment; complete the blocker or change the link. Never predict a new issue's
 key: other sessions create issues concurrently, so read it from the response.
 
+Joe can request private goal feedback for a maintainer PR by posting an
+original comment on the HOME ticket named by the review. Use the full head
+SHA on a single line.
+
+```text
+Request goal feedback for jomcgi-org/homelab#8538@<full head SHA>
+```
+
+The connector checks the authenticated maintainer, current head, independent
+review and ticket before it replies with the bounded private assessment. It
+checks them again before posting. Each request can receive one reply. A new
+head or another assessment requires a new request.
+
 To schedule factory work for later, put the issue in Backlog, set its start
 date, add the project label `deferred`, and leave its delegate empty. The
 bootstrap creates this label in each bound project. On the first poll on
