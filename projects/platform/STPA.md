@@ -81,7 +81,7 @@ _No physical control structure modeled._
 
 | ID | View | Hazard (unsafe state) | → Losses | Maturity | Status | Issue |
 |----|----|----|----|----|----|----|
-| `unvalidated-release` | logical | A merge or deployment refers to inputs other than those validated. | L.release-integrity | built | enforced-prod | HOME-89 |
+| `unvalidated-release` | logical | A merge or deployment refers to inputs other than those validated. | L.release-integrity | built | enforced-dev | HOME-89 |
 
 ### Unsafe control actions
 
@@ -93,8 +93,8 @@ _No physical control structure modeled._
 | `queue.merge.provided` | logical | `queue.merge` | provided | Enqueue after the reviewed head moves would change the candidate. The connector supplies expectedHeadOid and the ruleset requires pr-checks and factory review. | high | unvalidated-release | enforced-prod | HOME-89 | projects/factory/connector/github/client.go:695 |
 | `renovate.request-automerge.provided` | logical | `renovate.request-automerge` | provided | Requesting auto-merge for a protected path or major update would remove the manual decision. Renovate restricts eligible update classes and overrides eligibility for protected paths. | high | unvalidated-release | enforced-prod | HOME-14, HOME-61 | renovate.json:216-234 |
 | `reviewer.attest.provided` | logical | `reviewer.attest` | provided | A pass for another PR revision could authorize changed code. The reviewer matches the reviewed head to the queued PR head. | high | unvalidated-release | enforced-prod | HOME-89 | projects/factory/reviewer/review/engine.go:3486 |
-| `runner.publish.provided` | logical | `runner.publish` | provided | Publishing during PR validation would promote candidate artifacts. The runner selects publication on main and build verification on PR and queue runs. | high | unvalidated-release | enforced-prod | HOME-89 | buildbuddy.yaml:217 |
-| `runner.write-back.provided` | logical | `runner.write-back` | provided | Advancing a pin before publication would direct GitOps to an unconfirmed release. The runner passes publication records to write-back after publishing. | high | unvalidated-release | enforced-prod | HOME-89 | buildbuddy.yaml:225 |
+| `runner.publish.provided` | logical | `runner.publish` | provided | Publishing during PR validation would promote candidate artifacts. The runner selects publication on main and build verification on PR and queue runs. PR runs also receive the GHCR token, and the main-only gate is a routing guard inside a PR-controlled script (bazel/ARCHITECTURE.md:120). | high | unvalidated-release | enforced-dev | HOME-89 | buildbuddy.yaml:217 |
+| `runner.write-back.provided` | logical | `runner.write-back` | provided | Advancing a pin before publication would direct GitOps to an unconfirmed release. The runner passes publication records to write-back after publishing. PR runs also receive the GHCR token, and the main-only gate is a routing guard inside a PR-controlled script (bazel/ARCHITECTURE.md:120). | high | unvalidated-release | enforced-dev | HOME-89 | buildbuddy.yaml:225 |
 
 ### Unsafe feedback
 
