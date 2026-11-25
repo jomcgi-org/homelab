@@ -16,7 +16,10 @@ filegroup(
         "assets/*",
         "conformance/*",
     ]),
-    visibility = ["//projects/platform-factory/substrate/resources:__pkg__"],
+    visibility = [
+        "//projects/platform-factory/image-audit:__pkg__",
+        "//projects/platform-factory/substrate/resources:__pkg__",
+    ],
 )
 
 py_test(

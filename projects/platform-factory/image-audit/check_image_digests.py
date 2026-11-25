@@ -23,7 +23,7 @@ def images(node):
             } and isinstance(value, list):
                 for container in value:
                     yield container.get("image", "")
-            elif key == "imageName" and isinstance(value, str):
+            elif key in {"imageName", "workerImage"} and isinstance(value, str):
                 yield value
             else:
                 yield from images(value)
