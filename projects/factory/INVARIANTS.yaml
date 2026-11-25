@@ -294,3 +294,9 @@ invariants:
   - projects/factory/connector/migrations/20261125000000_home756_recuts.sql
   test: //projects/factory/connector/dispatch:dispatch_test
   state: unproven
+- id: HOME-296-1
+  statement: With agent path enforcement enabled, the Discord bridge may only POST to Bosun's A2A path and the SessionService DeleteSession method on the kagent controller.
+  mechanism:
+  - projects/factory/chart/templates/discord.yaml
+  test: //projects/factory/chart:chart_test
+  state: live
