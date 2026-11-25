@@ -276,12 +276,6 @@ export const groups: ProjectGroup[] = [
         path: "projects/scotland-connector",
       },
       {
-        name: "ships",
-        what: "Vessels around the coast from live AIS data.",
-        status: "moving",
-        path: "projects/ships",
-      },
-      {
         name: "trips",
         what: "Trips day by day, with photos.",
         status: "moving",

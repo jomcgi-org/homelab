@@ -22,7 +22,6 @@ APPLICATIONS = [
     "hikes",
     "jomcgi-site",
     "scotland-connector",
-    "ships",
     "stars-forecast",
     "trips",
 ]

@@ -29,7 +29,6 @@ py_test(
         "//projects/platform-factory/prometheus-adapter:resources/network-policy.yaml",
         "//projects/platform-factory/prometheus/resources:network-policy.yaml",
         "//projects/platform-factory/substrate/resources:network-policy.yaml",
-        "//projects/ships/chart",
         "@multitool//tools/helm",
     ],
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},

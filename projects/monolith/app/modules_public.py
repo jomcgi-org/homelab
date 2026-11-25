@@ -21,7 +21,6 @@ import hikes.module
 import home.module
 import knowledge.module
 import observability.module
-import ships.module
 import stars.module
 import trips.module
 import worldcup.module
@@ -29,7 +28,6 @@ from framework import Module
 
 PUBLIC_MODULES: tuple[Module, ...] = (
     factory.public_module.MODULE,
-    ships.module.MODULE,
     stars.module.MODULE,
     trips.module.MODULE,
     hikes.module.MODULE,

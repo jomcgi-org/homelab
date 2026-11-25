@@ -74,7 +74,6 @@ projects/monolith/ARCHITECTURE.md: missing component row for sandbox
 projects/monolith/ARCHITECTURE.md: missing component row for scheduler
 projects/monolith/ARCHITECTURE.md: missing component row for scripts
 projects/monolith/ARCHITECTURE.md: missing component row for shared
-projects/monolith/ARCHITECTURE.md: missing component row for ships
 projects/monolith/ARCHITECTURE.md: missing component row for shotter
 projects/monolith/ARCHITECTURE.md: missing component row for stars
 projects/monolith/ARCHITECTURE.md: missing component row for swarm
@@ -164,6 +163,3 @@ projects/scotland-connector/ARCHITECTURE.md: table_columns: ['Untrusted input', 
 projects/scotland-connector/READINESS.md: outside allowed_names
 projects/scotland-connector/README.md: missing required file
 projects/scotland-connector/plugin/skills/scotland-trips/SKILL.md: outside allowed_names
-projects/ships/ARCHITECTURE.md: heading: Direction
-projects/ships/ARCHITECTURE.md: opening_fence: mermaid
-projects/ships/README.md: missing required file

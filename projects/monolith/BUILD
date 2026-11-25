@@ -20,7 +20,6 @@
 # gazelle:exclude scheduler
 # gazelle:exclude goosecracker
 # gazelle:exclude shared
-# gazelle:exclude ships
 # gazelle:exclude hikes
 # gazelle:exclude moving
 # gazelle:exclude stars
@@ -127,7 +126,6 @@ _BACKEND_SRCS = glob(
         "shotter/**/*.py",
         "scheduler/**/*.py",
         "shared/**/*.py",
-        "ships/**/*.py",
         "hikes/**/*.py",
         "moving/**/*.py",
         "stars/**/*.py",
@@ -951,44 +949,6 @@ py_library(
     ],
 )
 
-py_library(
-    name = "pkg_ships",
-    srcs = glob(
-        [
-            "ships/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_scheduler",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-        "@pip//websockets",
-    ],
-)
 
 py_library(
     name = "pkg_worldcup",
@@ -1692,7 +1652,6 @@ py_library(
             "shotter/**/*.py",
             "scheduler/**/*.py",
             "shared/**/*.py",
-            "ships/**/*.py",
             "hikes/**/*.py",
             "moving/**/*.py",
             "stars/**/*.py",
@@ -1907,7 +1866,7 @@ py3_image(
 # PROVEN absent from app.main_public's runtime closure by
 # app/main_public_imports_test.py, so excluding their FILES cannot break the
 # public binary. Everything else (knowledge read API/store/models/public
-# routers, home read router/config/models, ships/stars/hikes/dr_jobs/shared)
+# routers, home read router/config/models, stars/hikes/dr_jobs/shared)
 # stays in full. Direct pip deps cover this pruned source closure; retained
 # dependencies still supply their own transitive wheels.
 _PUBLIC_PRUNE_EXCLUDE = [
@@ -2041,7 +2000,6 @@ _AGENTS_PRUNE_EXCLUDE = [
     "grimoire_chat/**",
     "hikes/**",
     "home/**",
-    "ships/**",
     "stars/**",
     "swarm/**",
     "worldcup/**",
@@ -2161,7 +2119,6 @@ py_library(
             "observability/**/*.py",
             "home/**/*.py",
             "shared/**/*.py",
-            "ships/**/*.py",
             "hikes/**/*.py",
             "stars/**/*.py",
             "dr_jobs/**/*.py",
@@ -2231,7 +2188,6 @@ py_venv_binary(
             "observability/**/*.py",
             "home/**/*.py",
             "shared/**/*.py",
-            "ships/**/*.py",
             "hikes/**/*.py",
             "stars/**/*.py",
             "dr_jobs/**/*.py",
@@ -2382,7 +2338,6 @@ _IMPORT_BOUNDARY_DOMAINS = [
     "knowledge",
     "moving",
     "scheduler",
-    "ships",
     "stars",
     "trips",
     "worldcup",
@@ -7436,17 +7391,6 @@ bdd_test(
     ],
 )
 
-py_test(
-    name = "ships_models_test",
-    srcs = ["ships/models_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_ships",
-        "//projects/monolith/shared/testing/sqlite",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
 
 py_test(
     name = "moving_models_test",
@@ -8343,75 +8287,11 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
-py_test(
-    name = "ships_heat_test",
-    srcs = ["ships/heat_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_ships",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
 
-py_test(
-    name = "ships_ais_test",
-    srcs = ["ships/ais_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_ships",
-        "@pip//pytest",
-    ],
-)
 
-py_test(
-    name = "ships_store_test",
-    srcs = ["ships/store_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_ships",
-        "//projects/monolith/shared/testing/sqlite",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
 
-py_test(
-    name = "ships_ingest_test",
-    srcs = ["ships/ingest_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_ships",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//websockets",
-    ],
-)
 
-py_test(
-    name = "ships_router_test",
-    srcs = ["ships/router_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_core",
-        ":pkg_ships",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
 
-py_test(
-    name = "ships_retention_test",
-    srcs = ["ships/retention_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_ships",
-        "@pip//pytest",
-    ],
-)
 
 py_test(
     name = "knowledge_gap_model_test",

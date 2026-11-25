@@ -26,7 +26,6 @@ import pytest
 DOMAINS = frozenset(
     {
         "auth",
-        "ships",
         "stars",
         "chat",
         "chat_public",

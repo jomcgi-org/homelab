@@ -2,7 +2,7 @@
 
 The monolith is the FastAPI + SvelteKit application suite behind most of this
 homelab. It combines a personal knowledge graph, a Discord chat agent, the
-EmberVM-backed software factory, and small apps (including Grimoire, hikes, trips, stars, and ships) over a shared Postgres data plane. Separate
+EmberVM-backed software factory, and small apps (including Grimoire, hikes, trips and stars) over a shared Postgres data plane. Separate
 private, public, and agent compositions ship only the routes and code each
 audience needs; [jomcgi.dev](https://jomcgi.dev) is the public surface.
 
@@ -88,7 +88,7 @@ becomes corrective training data. Current state:
 | `core/`                                                                                    | Engine and session setup (`core/db.py`), clock, env, identity                              |
 | `scheduler/`                                                                               | Retained job rows and Argo run-now submission; schedules live in the chart's CronWorkflows |
 | `shared/`                                                                                  | Cross-domain clients (inference, embedding, notify, SSE) and test helpers                  |
-| `grimoire/`, `hikes/`, `ships/`, `stars/`, `trips/`, `worldcup/` | Individual apps, each with its own routes and models                       |
+| `grimoire/`, `hikes/`, `stars/`, `trips/`, `worldcup/` | Individual apps, each with its own routes and models                       |
 | `campsites/`, `dr_jobs/` | Retained backend APIs, data models and jobs; frontend pages retired |
 | `e2e/`                                                                                     | End-to-end tests spanning the frontend and backend together                                |
 

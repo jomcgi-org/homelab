@@ -369,7 +369,7 @@ export const projects: EngineeringProject[] = [
         v: "Vessels render as a GPU GeoJSON symbol layer with directional icons by heading. A separate WebGL layer maps distinct-vessel traffic density per ~500m cell.",
       },
     ],
-    // The site has no Ships page until HOME-411.
+    // Ships is removed (HOME-256), so its write-up links no page.
     links: [],
   },
   {

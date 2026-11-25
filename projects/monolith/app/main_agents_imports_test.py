@@ -119,7 +119,6 @@ FORBIDDEN_MODULES = [
     "grimoire_chat",
     "hikes",
     "home",
-    "ships",
     "stars",
     "swarm",
     "worldcup",

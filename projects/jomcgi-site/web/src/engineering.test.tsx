@@ -117,8 +117,8 @@ describe("engineering page", () => {
       prerender("engineering.html"),
       "text/html",
     );
-    // HOME-261: the hub pages for these are retired. The site has no Ships
-    // page until HOME-411.
+    // HOME-261: the hub pages for these are retired. Ships is removed
+    // (HOME-256).
     for (const label of [
       "Browse the notes",
       "Live trips",

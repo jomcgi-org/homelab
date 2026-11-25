@@ -16,7 +16,6 @@ MIRRORS = [
     "factory-public-factory-public-mirror",
     "factory-public-stars-forecast-mirror",
     "factory-public-hikes-mirror",
-    "factory-public-ships-mirror",
 ]
 
 
@@ -109,12 +108,6 @@ def test_public_consumer():
             "factory-public",
             "factory-public-hikes-mirror-s3",
             "hikes",
-            "read",
-        ),
-        (
-            "factory-public",
-            "factory-public-ships-mirror-s3",
-            "ships",
             "read",
         ),
     }
@@ -282,7 +275,6 @@ def test_mirror_publishes_only_health_json_from_the_health_bucket():
     # The sources own these prefixes; the root sync keeps them.
     assert "  --exclude '/stars-forecast/**' \\\n" in script
     assert "  --exclude '/hikes/**' \\\n" in script
-    assert "  --exclude '/ships/**' \\\n" in script
     health = (
         'run cat "SRC0:factory-health/health.json" > "$scratch/health.json"\n'
         '  if ! unchanged "R2:$R2_BUCKET/health.json" "$scratch/health.json"; then\n'
@@ -311,7 +303,6 @@ def test_sources_mirror_writer_buckets_under_their_prefixes():
     schedules = {
         "stars-forecast": "*/10 * * * *",
         "hikes": "3-59/10 * * * *",
-        "ships": "6-59/10 * * * *",
     }
     for prefix, schedule in schedules.items():
         name = f"factory-public-{prefix}-mirror"
@@ -406,7 +397,7 @@ def test_cloudflare_exporter_checks_the_health_token_only():
 
 
 def payload(root, name, value):
-    """Write a payload the way the Ships publisher does: its digest in its key."""
+    """Write a payload with its digest in its key, as a source writer does."""
     body = json.dumps(value).encode()
     key = f"{name}-{hashlib.sha256(body).hexdigest()}.json"
     path = root / key
@@ -442,11 +433,11 @@ def resolve(prefix):
     return keys
 
 
-def test_ships_mirror_survives_an_interrupted_copy(tmp_path):
-    job = render()["CronJob", "factory-public-ships-mirror"]
+def test_source_mirror_survives_an_interrupted_copy(tmp_path):
+    job = render()["CronJob", "factory-public-hikes-mirror"]
     container = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
     garage, r2 = tmp_path / "garage", tmp_path / "r2"
-    bucket, prefix = garage / "ships", r2 / "factory-public" / "ships"
+    bucket, prefix = garage / "hikes", r2 / "factory-public" / "hikes"
     bucket.mkdir(parents=True)
     prefix.mkdir(parents=True)
     # The library's directory-backed rclone stand-in (fake_rclone.py).
@@ -487,7 +478,7 @@ def test_ships_mirror_survives_an_interrupted_copy(tmp_path):
             attempt = Path(tempfile.mkdtemp(dir=tmp_path)) / "r2"
             shutil.copytree(r2, attempt)
             result, _ = mirror(attempt, budget)
-            assert resolve(attempt / "factory-public" / "ships") in expected, budget
+            assert resolve(attempt / "factory-public" / "hikes") in expected, budget
             if result.returncode == 0:
                 return budget
             assert b"interrupted" in result.stderr, result.stderr
@@ -525,6 +516,6 @@ def test_ships_mirror_survives_an_interrupted_copy(tmp_path):
     assert headers[str(prefix / "latest.json")] == ["Cache-Control: public, max-age=60"]
     _, headers = mirror(tmp_path / "fresh")
     for key in second:
-        assert headers[str(tmp_path / "fresh" / "factory-public" / "ships" / key)] == [
+        assert headers[str(tmp_path / "fresh" / "factory-public" / "hikes" / key)] == [
             "Cache-Control: public, max-age=31536000, immutable"
         ]

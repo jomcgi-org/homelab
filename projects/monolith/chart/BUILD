@@ -8,11 +8,7 @@ filegroup(
         "migrations/*.sql",
         "migrations/atlas.sum",
     ]),
-    visibility = [
-        "//projects/monolith:__subpackages__",
-        # The factory Ships replay runs the hub schema as its parity target.
-        "//projects/ships:__pkg__",
-    ],
+    visibility = ["//projects/monolith:__subpackages__"],
 )
 
 # The factory restore test runs the hub's Grimoire migration dump against a

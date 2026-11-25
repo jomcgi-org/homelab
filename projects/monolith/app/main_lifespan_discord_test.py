@@ -1,4 +1,4 @@
-"""Coverage for the background singletons (Discord bot, scheduler, ships, sweep).
+"""Coverage for the background singletons (Discord bot, scheduler, sweep).
 
 These used to start unconditionally in the lifespan; they now live in
 framework.start_leader_singletons / stop_leader_singletons, invoked only on
@@ -98,8 +98,8 @@ class TestSingletons:
         ):
             await start_leader_singletons(app, ALL_MODULES)
 
-        # Bot, outbox, scheduled tasks, lock sweep, and nine service loops.
-        assert len(created) == 13
+        # Bot, outbox, scheduled tasks, lock sweep, and eight service loops.
+        assert len(created) == 12
 
     @pytest.mark.asyncio
     async def test_start_singletons_starts_service_tasks_without_token(self):
@@ -120,9 +120,9 @@ class TestSingletons:
         ):
             await start_leader_singletons(app, ALL_MODULES)
 
-        # Ships, pending-message sweep, titles, KG feed, permit supervision, guest
+        # Pending-message sweep, titles, KG feed, permit supervision, guest
         # cleanup, retention, cd and quota probes.
-        assert len(created) == 9
+        assert len(created) == 8
 
     @pytest.mark.asyncio
     async def test_stop_singletons_closes_and_cancels(self):

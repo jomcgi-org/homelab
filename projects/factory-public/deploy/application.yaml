@@ -38,9 +38,6 @@ spec:
     - kind: Secret
       name: factory-public-hikes-mirror-s3
       jsonPointers: [/data]
-    - kind: Secret
-      name: factory-public-ships-mirror-s3
-      jsonPointers: [/data]
   syncPolicy:
     managedNamespaceMetadata:
       labels:

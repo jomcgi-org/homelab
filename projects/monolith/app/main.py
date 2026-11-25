@@ -4,7 +4,7 @@ Composed by the FastMonolith framework (ADR services/010): one ``build_app``
 call over the full module registry. Everything this file used to hand-author
 (lifespan, leader election, MCP mount, OTel, static frontend, health) lives in
 ``framework/core.py``; the leader-elected singletons live with their owning
-domains (``chat/leader.py``, ``ships/leader.py``).
+domains (for example ``chat/leader.py``).
 """
 
 from __future__ import annotations

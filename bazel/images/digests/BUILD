@@ -66,7 +66,6 @@ oci_digest_manifest(
         "//projects/platform-factory/substrate/egress-scan/gate/image:image.info": "//projects/platform-factory/substrate/egress-scan/gate/image:image.push",
         "//projects/platform-factory/substrate/egress-scan:image.info": "//projects/platform-factory/substrate/egress-scan:image.push",
         "//projects/scotland-connector/image:image.info": "//projects/scotland-connector/image:image.push",
-        "//projects/ships:image.info": "//projects/ships:image.push",
         "//projects/stars-forecast:image.info": "//projects/stars-forecast:image.push",
         "//projects/trips/image:image.info": "//projects/trips/image:image.push",
     },

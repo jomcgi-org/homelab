@@ -33,7 +33,7 @@ for _ in {1..60}; do
 	kill -0 "$api_pid" "$etcd_pid"
 	sleep 1
 done
-kubectl create namespace ships
+kubectl create namespace hikes
 kubectl create namespace ate-system
 kubectl create namespace argocd
 kubectl create -f projects/platform/onepassword/charts/connect/crds/onepassworditem-crd.yaml

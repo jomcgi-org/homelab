@@ -305,8 +305,7 @@ The retired hub paths (`/api`, `/functions`, `/health`, `/grimoire`,
 every live section.
 No page links a section that is not live, and `hrefFor` throws for one,
 because its old hub URL now answers 404. A disabled data section deploys no
-page (Trips, above). The build ships no Ships page until HOME-411: the
-browser read of the public mirror gets no CORS header. A section's
+page (Trips, above). Ships is removed (HOME-256). A section's
 `entries` in `web/src/sections.ts` build only while it is live.
 
 Rollback: set `edge.serveRoutes: false` in `deploy/application-prod.yaml`.

@@ -31,7 +31,6 @@ import observability.module
 import sandbox.module
 import scheduler.module
 import shotter.module
-import ships.module
 import stars.module
 import trips.module
 import updates.module
@@ -44,7 +43,6 @@ ALL_MODULES: tuple[Module, ...] = (
     chat.module.MODULE,
     knowledge.module.MODULE,
     scheduler.module.MODULE,
-    ships.module.MODULE,
     grimoire.module.MODULE,
     hikes.module.MODULE,
     stars.module.MODULE,

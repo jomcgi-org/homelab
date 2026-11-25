@@ -23,6 +23,6 @@ YAML
 	fi
 	[[ $observed == "$expected" ]]
 }
-check ships vaults/k8s-homelab/items/marine listed
-check ships vaults/k8s-homelab/items/factory-gh-app unlisted
+check hikes vaults/k8s-homelab/items/ghcr-read-permissions listed
+check hikes vaults/k8s-homelab/items/factory-gh-app unlisted
 check ate-system vaults/k8s-homelab/items/ghcr-read-permissions listed

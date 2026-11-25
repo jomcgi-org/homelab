@@ -33,8 +33,8 @@ process.stdout.write(JSON.stringify({ categories: m.categories, intro: m.intro, 
 const asJson = (value: unknown) => JSON.parse(JSON.stringify(value));
 
 // The hub pages these links opened are retired, and jomcgi.dev/* answers
-// them with the 404 page (HOME-261), so the site drops the links. The site
-// has no Ships page until HOME-411, so its diagram names no URL.
+// them with the 404 page (HOME-261), so the site drops the links. Ships is
+// removed (HOME-256), so its diagram names no URL.
 const RETIRED_LINKS = new Set([
   "/app/notes",
   "/app/trips",

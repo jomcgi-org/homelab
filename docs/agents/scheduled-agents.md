@@ -412,14 +412,14 @@ Risks are flaky browsers, shared fixture state and leaking campaign data.
 
 ### 8. Measure public-app performance
 
-Use anonymous, read-only probes of hikes, ships, stars, trips and scotland,
+Use anonymous, read-only probes of hikes, stars, trips and scotland,
 with fixed device/network profiles and cold/warm cache samples. Track
 server-rendered content, data freshness, first meaningful map/content,
 interaction latency and transferred bytes. Compare with the public tier's
 [cache and data boundary](../../projects/monolith/frontend/src/hooks.server.js)
 and [operating checklist](../runbooks/public-tier-checklist.md).
 The [cache implementation](../../projects/monolith/frontend/src/lib/cache-headers.js)
-records stale ships/hikes payloads and trip edits hidden by a 24-hour cache.
+records stale hikes payloads and trip edits hidden by a 24-hour cache.
 
 Proposed initial budgets are p75 LCP at most 2.5 s and a 20% regression
 against a fourteen-day comparable baseline, with three confirming samples.
