@@ -21,7 +21,7 @@ spec:
           factory-explore-deploy:
             image:
               repository: ghcr.io/jomcgi/homelab/projects/factory-explore-site
-              digest: sha256:49de52e20b2301f733d7a11c3ebb6d6097eb216b3576e4a15a6dc0ca9201fe11
+              digest: sha256:b17589252de728f39836ac38175a9980ad4f3ff9a85f02330e496e75c8cb5b56
             command: ["/app/projects/factory-explore-site/withdraw"]
   destination:
     server: https://kubernetes.default.svc
