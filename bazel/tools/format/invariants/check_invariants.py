@@ -222,7 +222,9 @@ def mechanisms_at(revision):
             if isinstance(row, dict) and isinstance(row.get("id"), str):
                 paths = row.get("mechanism")
                 if isinstance(paths, list):
-                    mechanisms[row["id"]] = [p for p in paths if isinstance(p, str)]
+                    mechanisms.setdefault(
+                        row["id"], [p for p in paths if isinstance(p, str)]
+                    )
     return mechanisms
 
 

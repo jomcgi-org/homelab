@@ -259,7 +259,7 @@ def test_marker_goes_with_its_mechanism_path(tmp_path, monkeypatch):
     check_markers({Path("INVARIANTS.yaml"): {"invariants": [ROW]}}, "HEAD^")
 
 
-def test_marker_on_a_listed_path_still_cannot_go(tmp_path, monkeypatch):
+def test_marker_on_an_unlisted_path_still_cannot_go(tmp_path, monkeypatch):
     from check_invariants import check_markers
 
     monkeypatch.chdir(tmp_path)
