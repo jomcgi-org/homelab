@@ -28,8 +28,6 @@ projects/grimoire/ARCHITECTURE.md: heading: Direction
 projects/grimoire/ARCHITECTURE.md: opening_fence: mermaid
 projects/grimoire/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
 projects/grimoire/README.md: missing required file
-projects/jomcgi-site/ARCHITECTURE.md: missing component row for web
-projects/jomcgi-site/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
 projects/loom/README.md: missing required file
 projects/mcp/ARCHITECTURE.md: opening_fence: mermaid
 projects/mcp/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']

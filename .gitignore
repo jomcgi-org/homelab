@@ -19,6 +19,8 @@ MODULE.bazel.lock
 
 node_modules/
 dist/
+# Local jomcgi.dev preview output (projects/jomcgi-site/preview/preview.sh).
+projects/jomcgi-site/preview/out/
 
 *.venv/
 __pycache__
