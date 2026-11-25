@@ -53,12 +53,16 @@ gets no planner binding.
   "tokenReview" (dict "audience" "factory-broker" "adminSubjects" $adminSubjects "connectorSubjects" $connectorSubjects)
   "bindings" $bindings
 }}
+{{- if .Values.connector.enabled }}
+{{- $_ := set $config "taskPinOwnerUrl" (printf "http://%s-task-pin.%s.svc.%s:8086" (include "factory.connectorName" .) $ns .Values.clusterDomain) }}
+{{- end }}
 {{- if $github }}
 {{- $_ := set $config "github" (dict
   "installationIdFile" "/etc/factory-github-app/installation-id"
   "privateKeyFile" "/etc/factory-github-app/private-key") }}
 {{- end }}
 {{- if .Values.reviewer.enabled }}
+{{- $_ := set $config "reviewTaskPinOwnerUrl" (printf "http://%s-task-pin.%s.svc.%s:8086" (include "factory.reviewerName" .) $ns .Values.clusterDomain) }}
 {{- $_ := set $config "reviewBindings" $reviewBindings }}
 {{- $_ := set $config.tokenReview "reviewerSubjects" (list (include "factory.reviewerSubject" .)) }}
 {{- end }}

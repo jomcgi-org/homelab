@@ -215,6 +215,7 @@ func containsFold(list []string, s string) bool {
 // Config holds the reviewer's settings.
 type Config struct {
 	Runs        RunRecorder
+	TaskPins    ReviewerTaskPins
 	Itsaplan    Itsaplan
 	MACSecret   func() (string, error) // The evidence MAC key's input; never log or publish it.
 	Semgrep     *Semgrep
@@ -1801,6 +1802,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 	var (
 		in       *inputs
 		msg      *kagent.Message
+		pinBound string
 		sends    int
 		lastSend time.Time
 		refused  = rec.QuotaRetry > 0
@@ -2045,6 +2047,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			case err == nil:
 				rec = recorded{Attempt: attempt, ID: t.ID, Sent: lastSend, QuotaRetry: rec.QuotaRetry}
 				rec.DecisionComment = in.decisionComment
+				if (msg.ContextID == "" || msg.ContextID == t.ContextID) && e.bindReviewTask(ctx, b, msg.MessageID, t, l) {
+					pinBound = t.ID
+				}
 				if b.ItsaplanProject != "" {
 					rec.Issues = issueDigest(in.issues)
 				}
@@ -2076,6 +2081,12 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			continue
 		}
 		t, err := e.tasks.GetTask(ctx, b.Agent, rec.ID)
+		if err == nil && e.cfg.TaskPins != nil && t != nil && t.ID == rec.ID &&
+			t.ID != pinBound && t.Status.State == kagent.StateWorking {
+			if id := recordedReviewMessage(b, pr, run.ID, rec, t); id != "" && e.bindReviewTask(ctx, b, id, t, l) {
+				pinBound = t.ID
+			}
+		}
 		switch {
 		case err == nil && t.Status.State == kagent.StateFailed &&
 			dispatch.Classify(t.Status.State, dispatch.StatusText(t)) == dispatch.ClassQuota:

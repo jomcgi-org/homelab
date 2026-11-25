@@ -65,6 +65,18 @@ The Claude relay's base URL, on the same Service. Claude Code appends
 http://{{ include "factory.brokerName" . }}.{{ .Values.broker.namespace }}.svc.{{ .Values.clusterDomain }}/anthropic
 {{- end }}
 
+{{- define "factory.taskPinIssuerVolume" -}}
+- name: task-pin-issuer
+  projected:
+    sources:
+      - clusterTrustBundle:
+          signerName: servicedns.podcert.ate.dev/identity
+          labelSelector:
+            matchLabels:
+              podcert.ate.dev/canarying: live
+          path: trust-bundle.pem
+{{- end }}
+
 {{/* The broker's grant Secret and quota ConfigMap names. */}}
 {{- define "factory.brokerGrantSecret" -}}factory-broker-grant-{{ .Values.broker.grant }}{{- end }}
 {{- define "factory.brokerQuotaConfigMap" -}}factory-broker-quota{{- end }}

@@ -28,6 +28,7 @@ go_library(
         "//projects/factory/connector/runbookadmission",
         "//projects/factory/connector/status",
         "//projects/factory/connector/store",
+        "//projects/factory/taskpin",
         "@com_github_lib_pq//:pq",
         "@com_github_prometheus_client_golang//prometheus",
         "@com_github_prometheus_client_golang//prometheus/collectors",

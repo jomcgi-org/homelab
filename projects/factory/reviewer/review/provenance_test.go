@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"sync"
@@ -69,6 +70,88 @@ func (r *recordedRuns) snapshot() []provenance.ReviewerRun {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]provenance.ReviewerRun(nil), r.runs...)
+}
+
+type reviewPins struct {
+	mu      sync.Mutex
+	binding provenance.ReviewerTask
+	main    string
+}
+
+func (p *reviewPins) BindReviewTask(_ context.Context, task provenance.ReviewerTask) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.binding = task
+	return nil
+}
+
+func (p *reviewPins) ReviewTaskMain(_ context.Context, task provenance.ReviewerTask) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	bound := p.binding
+	if bound.MessageID == "" {
+		return "", sql.ErrNoRows
+	}
+	bound.MessageID = ""
+	if bound != task {
+		return "", sql.ErrNoRows
+	}
+	return p.main, nil
+}
+
+func TestReviewPinRequiresExactWorkingTask(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.cfg.Sessions = h.sessions
+	pins := &reviewPins{main: strings.Repeat("c", 40)}
+	h.cfg.TaskPins = pins
+	e, ctx, stop := h.start()
+	defer stop()
+	taskID := runReview(t, h, e, ctx, 7, shaA)
+	eventually(t, "the accepted task recorded", func() bool {
+		return RecordedTask(h.gh.check(shaA).Summary).ID == taskID
+	})
+	task, err := h.k.GetTask(ctx, h.cfg.Bindings[0].Agent, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pin, err := e.ResolveAnalysisMain(ctx, testAgent.Namespace, task.ContextID); err != nil || pin != pins.main {
+		t.Fatalf("working review pin=%q err=%v", pin, err)
+	}
+	if _, err := e.ResolveAnalysisMain(ctx, testAgent.Namespace+"-other", task.ContextID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("wrong namespace could read the pin: %v", err)
+	}
+	h.k.finish(taskID, kagent.StateCompleted, report(t, passing))
+	if _, err := e.ResolveAnalysisMain(ctx, testAgent.Namespace, task.ContextID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("completed task retained the pin: %v", err)
+	}
+
+	const nextMessage = "next-review"
+	next, err := h.k.Send(ctx, testAgent, kagent.Message{
+		MessageID: nextMessage,
+		ContextID: task.ContextID,
+		Parts:     []kagent.Part{{Text: "Review the next head."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ResolveAnalysisMain(ctx, testAgent.Namespace, task.ContextID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("a later unbound task received the earlier pin: %v", err)
+	}
+	binding := &e.cfg.Bindings[0]
+	if e.bindReviewTask(ctx, binding, task.History[0].MessageID, next, e.log) {
+		t.Fatal("a later task could bind the earlier dispatch receipt")
+	}
+	nextMain := strings.Repeat("d", 40)
+	pins.mu.Lock()
+	pins.main = nextMain
+	pins.mu.Unlock()
+	if !e.bindReviewTask(ctx, binding, nextMessage, next, e.log) {
+		t.Fatal("the exact accepted task did not bind its new receipt")
+	}
+	if pin, err := e.ResolveAnalysisMain(ctx, testAgent.Namespace, task.ContextID); err != nil || pin != nextMain {
+		t.Fatalf("later task pin=%q want %q, err=%v", pin, nextMain, err)
+	}
 }
 
 func TestReviewerQuotaRetryRecordsSentMessage(t *testing.T) {

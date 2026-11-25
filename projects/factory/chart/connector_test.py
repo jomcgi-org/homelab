@@ -554,7 +554,6 @@ def test_policy_egress_only_to_its_peers() -> None:
         spec["endpointSelector"]["matchLabels"].items()
         <= _pod(docs)["metadata"]["labels"].items()
     )
-    assert "ingress" not in spec
     peers = [
         (r.get("toEndpoints"), r.get("toFQDNs"), r["toPorts"][0]["ports"][0]["port"])
         for r in spec["egress"]
@@ -565,6 +564,18 @@ def test_policy_egress_only_to_its_peers() -> None:
         }
     ]
     assert peers == [
+        (
+            [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "ate-system",
+                        "app": "ate-idp-server",
+                    }
+                }
+            ],
+            None,
+            "8443",
+        ),
         (
             [
                 {
