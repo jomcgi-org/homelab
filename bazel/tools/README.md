@@ -20,6 +20,5 @@ Shared Bazel build tooling: rules, wrappers, and helper binaries used across the
 | [oci](oci/README.md) | Bazel rules and macros for building and pushing container images: `apko_image`, `go_image`, `py3_image`, and the `OciImageInfo` provider | See linked README |
 | [platforms](platforms/) | Bazel `platform` targets for `linux_aarch64`, `linux_x86_64`, and `darwin_aarch64`, used by image build transitions and cross-compilation | No `.bzl` files |
 | [postgres](postgres/) | Module extension registering `oci_postgres`, which extracts PostgreSQL 16 and pgvector binaries from an OCI image for use as test data dependencies | `//bazel/tools/postgres:extensions.bzl` |
-| [previews](previews/) | Fixture preview capture, comparison and publishing | `docs/runbooks/fixture-previews.md` |
 | [pytest](pytest/) | Thin `py_test` wrapper macro that sets `pytest_main = True` by default across all Python test targets in the repo | `//bazel/tools/pytest:defs.bzl` |
 | [python](python/) | Gazelle Python manifest configuration (`gazelle_python_manifest`, `modules_mapping`) for keeping import-to-package mappings current during BUILD file generation | Gazelle config; no `.bzl` rules |

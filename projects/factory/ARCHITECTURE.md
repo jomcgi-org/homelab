@@ -1330,7 +1330,7 @@ version write-back.
 | Verify the factory App author when adopting a PR. | [#7920](https://github.com/jomcgi-org/homelab/issues/7920) | live |
 | Remove third-party Apps from the merge trust path. | [#7921](https://github.com/jomcgi-org/homelab/issues/7921) | designed |
 | Move CI and the registry into the cluster and scope the chart write-back identity. | [#7922](https://github.com/jomcgi-org/homelab/issues/7922) | designed |
-| Isolate fork PRs and serve fixture-only public previews. | [#7923](https://github.com/jomcgi-org/homelab/issues/7923) | designed |
+| Isolate fork PRs. Agents preview pages locally (HOME-877), so no public preview host is planned. | [#7923](https://github.com/jomcgi-org/homelab/issues/7923) | designed |
 
 ### Discord operator session
 

@@ -54,17 +54,9 @@ The artifact therefore uses a page-local zero-padding sheet without a frame,
 spine or chrome row. The root layout's nav suppression stays unchanged.
 
 `sheet_fixture_preview_build_test` checks the hand-listed input closure in
-Linux CI. The Fixture preview build workflow runs
-`bazel/tools/previews/compare.py`, which calls `suite.py` and imports
-`preview/browser_check.py`. Its `check()` entry point runs the blog checks,
-then builds and checks the sheets in a separate process. The sheet build uses
-a temporary directory outside the checkout, preserving the suite's clean-SHA
-check. The workflow uploads screenshots, traces and
-`head/blog/sheets/result.json` in `fixture-preview-evidence-<sha>`. The report's
-`commit` and `head_sha` identify the checked revision. Link that exact-head
-artifact and its screenshot paths in the delivery PR. The sheet build is
-never copied into the Pages publication artifact, whose iframe-forbidding CSP
-remains unchanged. Generated outputs and screenshots must not be committed.
+Linux CI. HOME-877 retired the fixture-preview workflow that ran
+`preview/browser_check.py` and these sheet checks in CI; run them locally.
+Generated outputs and screenshots must not be committed.
 
 This is repository evidence only. Rollout and real-host acceptance remain
 outstanding on #7148 after a separately authorized merge.

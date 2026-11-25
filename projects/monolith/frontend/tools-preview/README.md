@@ -1,5 +1,8 @@
 # Private tools fixture evidence
 
+> HOME-877 retired the preview workflows that this file names. Run the
+> harness locally; the workflow artifacts below no longer exist.
+
 These are the real review, chat, notes, Qwen and private Grimoire pages under
 the production root/private layouts, persisted scheme setup, local production
 font and the root error boundary's legacy CSS import. Server loaders and

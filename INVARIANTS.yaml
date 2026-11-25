@@ -19,10 +19,9 @@ invariants:
   state: designed
 - id: ROOT-4
   statement: The staged Pages snapshot renders only trusted fixture pages and drops closed PRs on reconciliation.
-  mechanism:
-  - bazel/tools/previews/staged.py
-  test: //bazel/tools/previews:staged_test
-  state: live
+    Retired with the Pages fixture previews (HOME-877).
+  mechanism: []
+  state: retired
 - id: ROOT-5
   statement: PR content warnings scan added lines and PR commit messages and report rule labels without matched values.
   mechanism:

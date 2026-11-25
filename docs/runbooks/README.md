@@ -55,7 +55,6 @@ repository does not install them.
 |---------|------|
 | [daily-digest.md](daily-digest.md) | Outstanding work digest (routine + on demand) |
 | [refresh-structure-docs.md](refresh-structure-docs.md) | Root README structural refresh |
-| [fixture-previews.md](fixture-previews.md) | Preview the public 4090 blog page from a PR commit with fixture data |
 | [apko.md](apko.md) | apko.yaml + `apko_image` (locks via pre-commit / script) |
 
 Bazel and CI debugging live in `docs/agents/ci-triage.md` and the Commands

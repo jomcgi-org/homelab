@@ -1,5 +1,8 @@
 # Trips sheet fixture
 
+> HOME-877 retired the preview workflows that this file names. Run the
+> harness locally; the workflow artifacts below no longer exist.
+
 This fixture mounts the production root layout, public layout, trips index,
 trip summary, day and timeline. The route, metadata and image swatches are
 invented in `test/trips-fixtures.js`. No server load, API, private data or

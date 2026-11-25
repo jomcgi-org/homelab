@@ -16,12 +16,8 @@ Use fresh output paths and Playwright 1.63.0 with Chromium. Exact-head captures
 require a clean worktree. Development captures use `local-unpublished` for both
 the build variable and expected SHA and never count as final evidence.
 
-The existing read-only fixture-preview workflow discovers this registered suite
-through `bazel/tools/previews/suite.py`. It runs the DOM/timeline tests, builds
-the SSR fixture and executes the checker. It retains 48 PNGs and `checks.json`
-under `head/agents/` in the exact-SHA evidence artifact, with a PNG gallery in
-the comparison preview. A base without this harness is explicitly unavailable,
-never represented as a matched before capture. Checks cover 390/1440, light/dark, opening/resume states, resized
+HOME-877 retired the fixture-preview workflow that ran this suite in CI.
+Run the commands above to capture evidence. Checks cover 390/1440, light/dark, opening/resume states, resized
 viewports, reduced motion, script-disabled SSR, a maintenance banner, keyboard
 scheme changes, persistence and component navigation. The receipt records body
 and document geometry, internal diagram overflow and computed paint.
