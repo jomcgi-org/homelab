@@ -1364,6 +1364,7 @@ type fakeSessions struct {
 	errs       map[string]error
 	calls      []string
 	agentErr   error
+	promptErr  error // PromptRevision only
 	agentReads int
 }
 
@@ -1391,6 +1392,12 @@ func (s *fakeSessions) GetSession(_ context.Context, id string) (*kagent.Session
 }
 
 func (s *fakeSessions) PromptRevision(ctx context.Context, a kagent.AgentRef, prompt string) (string, error) {
+	s.mu.Lock()
+	err := s.promptErr
+	s.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
 	return s.AgentRevision(ctx, a)
 }
 

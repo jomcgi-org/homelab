@@ -2077,6 +2077,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 					}
 				} else {
 					// The check binds to the evidence this head was assessed against.
+					rec.DecisionComment = in.decisionComment
 					if b.ItsaplanProject != "" {
 						rec.Issues = issueDigest(in.issues)
 					}
@@ -3231,6 +3232,18 @@ func (e *Engine) trustedComments(ctx context.Context, b *Binding, pr github.Pull
 	return out, dropped, nil
 }
 
+// decisionPrompt is the stamp of each of Joe's decision comments a review
+// task shows, and the highest such comment ID.
+func decisionPrompt(b *Binding, pr github.PullRequest, comments []github.Comment) (stamps []DecisionStamp, highest int64) {
+	for _, c := range joeDecisions(b, pr, comments).Comments {
+		highest = max(highest, c.ID)
+		if c.ID > 0 && c.UpdatedAt != "" {
+			stamps = append(stamps, DecisionStamp{ID: c.ID, Hash: bodyHash(c.Body), UpdatedAt: c.UpdatedAt})
+		}
+	}
+	return stamps, highest
+}
+
 // message builds an attempt's review task, including its quota retry identity.
 // It is built once per dispatch:
 // kagent rejects a message ID sent again with other content. A message that
@@ -3248,14 +3261,8 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		e.ghError(ctx, l, b, "comments", err)
 		return nil, err
 	}
-	in.promptVersions, in.decisionComment = nil, 0
-	for _, c := range joeDecisions(b, pr, comments).Comments {
-		in.decisionComment = max(in.decisionComment, c.ID)
-		if c.ID > 0 && c.UpdatedAt != "" {
-			in.promptVersions = append(in.promptVersions, DecisionStamp{ID: c.ID, Hash: bodyHash(c.Body), UpdatedAt: c.UpdatedAt})
-		}
-	}
-	in.basis = reviewBasis(b, pr, comments, rules)
+	in.promptVersions, in.decisionComment = decisionPrompt(b, pr, comments)
+	in.basis = reviewBasis(b, pr, comments, rules, e.promptRevision(ctx, b, l))
 	cited := e.citedEvidence(ctx, b, pr, l)
 	interdiff, err := e.interdiff(ctx, b, pr, in, l)
 	if err != nil {
