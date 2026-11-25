@@ -1,5 +1,8 @@
 # Synthetic theme preview
 
+> HOME-877 retired the preview workflows that this file names. Run the
+> harness locally; the workflow artifacts below no longer exist.
+
 This fixture renders explicit light and dark technical-drawing boundaries and a
 dark inset inside the light boundary. It has text samples on both surfaces,
 keyboard controls, labelled status glyphs, and five chart series with labels and

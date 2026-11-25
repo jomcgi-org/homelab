@@ -1,5 +1,8 @@
 # Shared controls fixture
 
+> HOME-877 retired the preview workflows that this file names. Run the
+> harness locally; the workflow artifacts below no longer exist.
+
 Synthetic SSR and hydration evidence for #6874. `ControlsFixture.svelte` imports
 all six primitives through `@homelab/design-system/components`. It renders light,
 dark, a dark inset within light followed by a light sibling, and a contract-only

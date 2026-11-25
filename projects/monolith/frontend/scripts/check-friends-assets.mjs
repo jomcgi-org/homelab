@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 
-// Built-browser regression, also run by factory-mobile-preview.yml. Run after the normal production vite build:
+// Built-browser regression. Run after the normal production vite build:
 //   PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs CHROMIUM_PATH=/path/to/chromium \
 //     node projects/monolith/frontend/scripts/check-friends-assets.mjs
 // Requires Helm and Python with PyYAML (HELM_BIN/PYTHON may override their paths).

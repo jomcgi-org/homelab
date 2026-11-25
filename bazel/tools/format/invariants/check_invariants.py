@@ -79,7 +79,7 @@ def validate_rows(document, source, ids, live):
         if not isinstance(row["statement"], str) or not row["statement"].strip():
             raise ValueError(f"{where}: expected a statement")
         state = row["state"]
-        if state not in ("live", "designed", "unproven"):
+        if state not in ("live", "designed", "unproven", "retired"):
             raise ValueError(f"{where}: unknown state {state!r}")
         paths = row["mechanism"]
         if not isinstance(paths, list) or not all(
@@ -90,8 +90,12 @@ def validate_rows(document, source, ids, live):
             for p in paths
         ):
             raise ValueError(f"{where}: mechanism must list repository paths")
-        if bool(paths) != (state != "designed"):
-            raise ValueError(f"{where}: mechanism must be empty exactly when designed")
+        if bool(paths) != (state not in ("designed", "retired")):
+            raise ValueError(
+                f"{where}: mechanism must be empty exactly when designed or retired"
+            )
+        if state == "retired" and "test" in row:
+            raise ValueError(f"{where}: a retired invariant has no test")
         if state == "live" or "test" in row:
             label = row.get("test")
             if not isinstance(label, str) or not LABEL.fullmatch(label):
@@ -146,6 +150,8 @@ def check_markers(documents, base):
     for path, ident in sorted(head):
         if ident not in rows:
             raise ValueError(f"{path}: unknown invariant {ident}")
+        if rows[ident]["state"] == "retired":
+            raise ValueError(f"{path}: marker for retired invariant {ident}")
     for ident, row in rows.items():
         for name in row["mechanism"]:
             required = Path(name)
@@ -172,7 +178,11 @@ def check_markers(documents, base):
         Path(os.fsdecode(old)): Path(os.fsdecode(new))
         for old, new in zip(names[1::3], names[2::3])
     }
+    # A retired invariant's markers go with the code it guarded. The row and
+    # its ID stay, so the ID is never reused.
     for path, ident in sorted(markers_at(base)):
+        if ident in rows and rows[ident]["state"] == "retired":
+            continue
         if (renames.get(path, path), ident) not in head:
             raise ValueError(f"{path}: dropped invariant marker {ident}")
 

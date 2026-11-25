@@ -11,11 +11,13 @@
 #              Name a condition or exception when it changes the guarantee.
 #              Keep this sentence true if the enforcement mechanism changes.
 #   mechanism  Paths to the current enforcement, including implementation details.
-#              Empty while it is designed.
+#              Empty while it is designed or retired.
 #   test       Bazel label of the test that proves it. Required for live.
 #   state      live      the mechanism exists and the test runs in required CI
 #              unproven  the mechanism exists and no test proves it
 #              designed  the mechanism is not built
+#              retired   its subject was removed: no mechanism, test or
+#                        marker; the row keeps the ID from reuse
 #
 # Do not put an open security finding here: this file is public. Use the
 # private record that docs/THREAT-MODEL.md names.

@@ -34,6 +34,12 @@ def test_states():
                         mechanism=["foo"],
                         state="unproven",
                     ),
+                    dict(
+                        id="DEMO-4",
+                        statement="Retired.",
+                        mechanism=[],
+                        state="retired",
+                    ),
                 ]
             }
         }
@@ -161,6 +167,18 @@ def test_cached_bundle_without_yaml(tmp_path):
     required = subprocess.run(command, env=env, capture_output=True, text=True)
     assert required.returncode != 0
     assert "ModuleNotFoundError" in required.stderr
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        dict(id="DEMO-5", statement="R.", mechanism=["foo"], state="retired"),
+        dict(id="DEMO-5", statement="R.", mechanism=[], state="retired", test="//f:t"),
+    ],
+)
+def test_retired_rows_hold_no_mechanism_or_test(row):
+    with pytest.raises(ValueError, match="retired|mechanism must be empty"):
+        validate({"scope": {"invariants": [row]}})
 
 
 @pytest.mark.parametrize(
@@ -310,3 +328,37 @@ def test_symlinked_policy_file_is_rejected(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(ValueError, match="must be a regular file"):
         check(records_only=True)
+
+
+@pytest.mark.parametrize("keep_marker", [False, True])
+def test_retired_marker_may_go_and_must_not_stay(tmp_path, monkeypatch, keep_marker):
+    import subprocess
+
+    from check_invariants import check_markers
+
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "init", "-q"], check=True)
+    mechanism = Path(ROW["mechanism"][0])
+    mechanism.parent.mkdir(parents=True, exist_ok=True)
+    mechanism.write_text("# invariant: " + ROW["id"])
+    git("add", ".")
+    git("commit", "-qm", "live")
+    retired = {
+        "id": ROW["id"],
+        "statement": "Gone.",
+        "mechanism": [],
+        "state": "retired",
+    }
+    docs = {Path("INVARIANTS.yaml"): {"invariants": [retired]}}
+    if not keep_marker:
+        mechanism.unlink()
+        git("add", "-A")
+        git("commit", "-qm", "retired")
+        check_markers(docs, "HEAD^")
+        # A live row still refuses the same deletion.
+        with pytest.raises(ValueError, match="(missing|dropped) invariant marker"):
+            check_markers({Path("INVARIANTS.yaml"): {"invariants": [ROW]}}, "HEAD^")
+    else:
+        git("commit", "-qm", "retired", "--allow-empty")
+        with pytest.raises(ValueError, match="marker for retired invariant"):
+            check_markers(docs, "HEAD^")

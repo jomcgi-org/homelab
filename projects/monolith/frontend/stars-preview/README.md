@@ -1,5 +1,8 @@
 # Stars repository evidence
 
+> HOME-877 retired the preview workflows that this file names. Run the
+> harness locally; the workflow artifacts below no longer exist.
+
 This fixture mounts the production root layout, public layout, page wrapper,
 StarsApp and StarsMap. Forecast/history rows are invented in
 `test/stars/fixtures.js`. The clock is fixed to October 19, 2026 at noon UTC.

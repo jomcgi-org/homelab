@@ -184,28 +184,6 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
-    },
-    {
-      "customType": "regex",
-      "description": "Pinned tools installed in the isolated browser workflow.",
-      "managerFilePatterns": [
-        "/^\\.github/workflows/factory-mobile-preview\\.yml$/"
-      ],
-      "matchStrings": [
-        "npm install --global (?<depName>pnpm)@(?<currentValue>\\d+\\.\\d+\\.\\d+)"
-      ],
-      "datasourceTemplate": "npm"
-    },
-    {
-      "customType": "regex",
-      "description": "Pinned Python browser validation packages in the isolated workflow.",
-      "managerFilePatterns": [
-        "/^\\.github/workflows/factory-mobile-preview\\.yml$/"
-      ],
-      "matchStrings": [
-        "(?<depName>playwright|PyYAML)==(?<currentValue>\\d+\\.\\d+\\.\\d+)"
-      ],
-      "datasourceTemplate": "pypi"
     }
   ],
   "packageRules": [

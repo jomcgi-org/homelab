@@ -1,5 +1,8 @@
 # Private factory fixture QA
 
+> HOME-877 retired the preview workflows that this file names. Run the
+> harness locally; the workflow artifacts below no longer exist.
+
 This harness mounts the production private factory and dashboard pages inside their
 real root and private layouts. It includes the root error node's preloaded
 legacy stylesheet, dashboard tokens and the shared sheet. All data and
