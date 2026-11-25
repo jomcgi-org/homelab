@@ -297,7 +297,6 @@ js_test(
     entry_point = "stars-built.mjs",
 )
 
-
 js_test(
     name = "stars_browser_test",
     size = "medium",
