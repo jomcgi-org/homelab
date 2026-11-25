@@ -216,9 +216,9 @@ func (e *Engine) stepPlanner(ctx context.Context) error {
 				if route == "joe" && a.Kind == "member" && strings.EqualFold(a.Username, b.HumanGateAssignee) {
 					req.AssigneeUserID = a.UserID
 				}
-				if route == "delegate" && a.Kind == "agent" && a.Username == "homelab-codex" {
-					req.DelegateUserID = a.UserID
-				}
+			}
+			if route == "delegate" {
+				req.DelegateUserID = coderDelegate(project.Assignees)
 			}
 			if req.AssigneeUserID == "" && req.DelegateUserID == "" {
 				return errors.New("planner disposition has no recipient")
@@ -500,4 +500,23 @@ func (e *Engine) syncPlannerOutcomes(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// coderDelegate returns the itsaplan agent that takes coder work: task-agent,
+// else the earlier homelab-codex until its issues finish (HOME-879). Only an
+// agent user counts, never a human account with the same name.
+func coderDelegate(assignees []itsaplan.Assignee) string {
+	var fallback string
+	for _, a := range assignees {
+		if a.Kind != "agent" {
+			continue
+		}
+		switch a.Username {
+		case "task-agent":
+			return a.UserID
+		case "homelab-codex":
+			fallback = a.UserID
+		}
+	}
+	return fallback
 }

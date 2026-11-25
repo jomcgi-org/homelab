@@ -243,7 +243,7 @@ after the rollback identity and permission checks pass.
   `POST /issues/<id>/links` (`targetIssueId`, `kind`: `blocks`,
   `blocked_by`, `relates`, `duplicates`).
 
-Setting `delegateUserId` to the coding agent (`homelab-codex`) starts a run
+Setting `delegateUserId` to the coding agent (`task-agent`) starts a run
 with the ticket's current content. Complete the ticket before delegation. The connector holds
 the run, without using an agent slot, until each `blocked_by` issue is in a
 completed column (HOME-55). A canceled blocker or a cycle keeps the hold and
