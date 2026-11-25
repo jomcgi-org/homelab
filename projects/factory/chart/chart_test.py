@@ -606,7 +606,14 @@ def test_claude_token_is_mounted_only_in_broker() -> None:
     assert config["claude"] == {
         "enabled": True,
         "tokenFile": "/etc/factory-claude-cvp/token",
-        "modelAllowlist": {"actor/factory-r-homelab/audit": ["claude-test-model"]},
+        "modelAllowlist": {
+            "actor/factory-r-homelab/audit": ["claude-test-model"],
+            # The deploy values' planner entry (HOME-40).
+            "actor/factory-r-homelab-planner/session-*": [
+                "claude-opus-5-5",
+                "claude-fable-5-2",
+            ],
+        },
     }
     for d in docs:
         if d["kind"] != "Deployment":

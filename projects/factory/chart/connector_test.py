@@ -148,14 +148,11 @@ def test_deploy_values_turn_the_connector_on() -> None:
     docs = _render(enable=False)
     assert _broker_subjects(docs) == [_SUBJECT]
     assert _config(docs) == _config(_render())
-    chart_values = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
+    deploy_values = yaml.safe_load(_DEPLOY_VALUES.read_text())
     schedules = _config(docs)["plannerSchedules"]
-    assert schedules == chart_values["connector"]["plannerSchedules"]
-    assert {job["name"]: job["ceiling"] for job in schedules} == {
-        "delivery-health": "delegate",
-        "trust-drift": "delegate",
-        "documentation-drift": "delegate",
-    }
+    assert schedules == deploy_values["connector"]["plannerSchedules"]
+    # The smoke job (HOME-40) files to Backlog and delegates nothing.
+    assert {job["name"]: job["ceiling"] for job in schedules} == {"smoke": "backlog"}
     _in(docs, "ClusterRoleBinding", None, "kagent-kagent-invocation-auth")
 
 
@@ -237,6 +234,11 @@ def test_disabled_renders_byte_for_byte_without_the_connector() -> None:
             "connector.enabled=false",
             "--set",
             "reviewer.goalReasons.enabled=false",
+            # The planner needs the connector (HOME-40).
+            "--set",
+            "planner.enabled=false",
+            "--set",
+            "broker.claude.enabled=false",
         ]
         assert _helm(_CHART_DIR, off) == _helm(bare, off)
 
