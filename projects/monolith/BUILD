@@ -949,7 +949,6 @@ py_library(
     ],
 )
 
-
 py_library(
     name = "pkg_worldcup",
     srcs = glob(
@@ -7391,7 +7390,6 @@ bdd_test(
     ],
 )
 
-
 py_test(
     name = "moving_models_test",
     srcs = [
@@ -8286,12 +8284,6 @@ py_test(
     imports = ["stars/grid_gen"],
     deps = ["@pip//pytest"],
 )
-
-
-
-
-
-
 
 py_test(
     name = "knowledge_gap_model_test",
