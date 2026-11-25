@@ -31,6 +31,7 @@ flowchart LR
 | itsaplan | Owns requests and run history | `chart/templates/itsaplan.yaml` | Community 1.10.0 | Issues and comments | Database, S3 and OIDC secrets |
 | itsaplan-web | Renders the native issue and Agent runs UI | `itsaplan-web/` | Community 1.10.0 with the factory patch | Authorized issue and run responses | Browser session cookie |
 | connector | Claims runs and reconciles delivery | `connector/` | Built from this repo | Issue text, agent output and PR state | itsaplan agent keys, projected tokens and short-lived author App token |
+| taskpin | Returns the assigned main commit for an active coder or review task | `taskpin/` | Built from this repo | Actor requests | Short-lived actor JWT in transit |
 | kagent | Owns agents and sessions | `chart/Chart.yaml`, `deploy/values.yaml` | Charts 1.0.1, controller fork e3d14ee3dd62 | Tasks and session messages | Controller ServiceAccount |
 | Agent Substrate | Isolates actors and injects credentials at egress | `../platform-factory/substrate/` | Fork charts 1.0.1, source `7ce6f439`; `ateapi`, `atecontroller`, `atelet` and the WorkerPool CRD from the fork at `1e7a877d0` | Workspace traffic | Actor identity and credentials scoped by policy |
 | browser-comparison | Compares CLI and MCP evidence on a loopback fixture | `browser-comparison/` | See package-lock.json | Fixture HTML | None |
@@ -760,6 +761,14 @@ reuse state, even after a prolonged persistence failure.
   `chatgpt-account-id`, streaming SSE back. That the backend accepts the
   Responses request Codex sends in API-key mode is [I] until the first live
   run. Provider credentials exist only in the broker.
+- **Task analysis pins.** The broker routes the verified actor namespace
+  to its dispatcher. The dispatcher returns the main commit recorded for
+  that actor's active task. A later main commit does not change the pin.
+  The coder and reviewer dispatchers own these records. The author broker
+  serves the pin relay and the reviewer's bind and read routes, because it
+  holds the actor relay and the run database. The review broker gets no new
+  route, and the author broker gets no reviewer App material.
+  [Delivery scope](https://factory-plan.jomcgi.dev/factory/issue/HOME-727#comment-9802)
 - **Claude Code relay (HOME-232).** `broker.claude.enabled` defaults to
   false. When enabled, the broker accepts only `POST /anthropic/v1/messages`
   and `POST /anthropic/v1/messages/count_tokens`. It forwards them to

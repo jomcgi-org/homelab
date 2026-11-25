@@ -26,6 +26,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/broker/config"
 	"github.com/jomcgi/homelab/projects/factory/broker/internal/fakes"
 	"github.com/jomcgi/homelab/projects/factory/broker/metrics"
+	"github.com/jomcgi/homelab/projects/factory/taskpin"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/quota"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -97,6 +98,91 @@ func TestClaudeRoutesAreOptionalAndUseOnlyRelayListener(t *testing.T) {
 		{http.MethodPost, "/anthropic/v1/messages", 404, ""},
 		{http.MethodPost, "/anthropic/v1/messages/count_tokens", 404, ""},
 	})
+}
+
+func TestTaskPinThroughBrokerRelay(t *testing.T) {
+	idp := fakes.NewIdP(t)
+	signer := fakes.NewECSigner(t, "task-pin")
+	idp.Publish(signer)
+	cfg := config.Defaults()
+	cfg.Namespace = "factory"
+	cfg.ActorJWT.Issuer = idp.URL
+	cfg.ActorJWT.CAFile = filepath.Join(t.TempDir(), "actor-ca.pem")
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: idp.Certificate().Raw})
+	if err := os.WriteFile(cfg.ActorJWT.CAFile, ca, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	coder := "factory-r-fixture"
+	reviewer := "factory-review-fixture"
+	cfg.Bindings = []config.Binding{{Namespace: coder}}
+	cfg.ReviewBindings = []config.Binding{{Namespace: reviewer}}
+
+	actorToken := func(namespace, audience string) string {
+		return signer.Sign(t, fakes.ActorClaims(idp.URL, audience, namespace, "session-fixture", time.Now()))
+	}
+	coderToken := actorToken(coder, cfg.ActorJWT.Audience)
+	reviewerToken := actorToken(reviewer, cfg.ActorJWT.Audience)
+	var calls atomic.Int32
+	owner := func(token, pin string) string {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			if r.Method != http.MethodGet || r.URL.RequestURI() != taskpin.Path ||
+				r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("Session-Id") != "" {
+				t.Error("owner must receive only the authenticated actor request for the pin route")
+				http.Error(w, "unexpected request", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"main_sha": pin})
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL
+	}
+	coderPin, reviewerPin := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	cfg.TaskPinOwnerURL = owner(coderToken, coderPin)
+	cfg.ReviewTaskPinOwnerURL = owner(reviewerToken, reviewerPin)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	d, err := build(ctx, cfg, fake.NewSimpleClientset(), quota.NewStore(), metrics.New(), slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay := d.relayHandler()
+	for _, tc := range []struct {
+		name, token, pin string
+		status           int
+	}{
+		{"coder", coderToken, coderPin, http.StatusOK},
+		{"reviewer", reviewerToken, reviewerPin, http.StatusOK},
+		{"missing token", "", "", http.StatusUnauthorized},
+		{"wrong audience", actorToken(coder, "other"), "", http.StatusUnauthorized},
+		{"unbound role", actorToken("factory-audit-fixture", cfg.ActorJWT.Audience), "", http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := calls.Load()
+			req := httptest.NewRequest(http.MethodGet, taskpin.Path, nil)
+			req.Header.Set("Session-Id", "caller-chosen")
+			if tc.token != "" {
+				req.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			rec := httptest.NewRecorder()
+			relay.ServeHTTP(rec, req)
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.status, rec.Body.String())
+			}
+			if tc.pin == "" {
+				if calls.Load() != before {
+					t.Fatal("denied request reached an owner")
+				}
+				return
+			}
+			var got struct {
+				MainSHA string `json:"main_sha"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.MainSHA != tc.pin || calls.Load() != before+1 {
+				t.Fatalf("pin = %q, want %q, decode error = %v", got.MainSHA, tc.pin, err)
+			}
+		})
+	}
 }
 
 // Exercise the production config loader, builder, JWT verifier and relay mux
@@ -366,6 +452,9 @@ func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 		{"/runs/reviewer", "connector-token", http.StatusForbidden},
 		{"/runs/reviewer", "actor-token", http.StatusForbidden},
 		{"/runs/reviewer", "reviewer-token", http.StatusMethodNotAllowed},
+		{"/runs/reviewer/task", "actor-token", http.StatusForbidden},
+		{"/runs/reviewer/task-pin", "connector-token", http.StatusForbidden},
+		{"/runs/reviewer/task-pin", "reviewer-token", http.StatusMethodNotAllowed},
 		// Both dispatchers can read quota; unrelated subjects remain refused.
 		{"/codex/quota", "reviewer-token", http.StatusOK},
 		{"/codex/quota", "unknown-token", http.StatusUnauthorized},

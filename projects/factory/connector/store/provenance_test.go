@@ -94,7 +94,7 @@ func TestPreProvenanceClaimRetryLeavesRunReceiptEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	receipt := provenance.New(provenance.Runtime{Model: "model", ReasoningEffort: "high", Arm: "control"}, strings.Repeat("a", 40), "retry", "unclassified")
-	if err := st.RecordProvenance(ctx, w, a, receipt, "", "retry"); err != nil {
+	if err := st.RecordProvenance(ctx, w, a, receipt, "", "retry", strings.Repeat("a", 40)); err != nil {
 		t.Fatal(err)
 	}
 	run, err := st.GetRun(ctx, 1)
