@@ -2846,16 +2846,19 @@ func TestCompletedPassRechecksChangedInvariantBase(t *testing.T) {
 	eventually(t, "completed review", func() bool {
 		return h.gh.check(shaA).Conclusion == ConclusionSuccess && testutil.ToFloat64(h.m.InFlight) == 0
 	})
+	// Main advances to base-2, but the PR's merge base is mb-2: the saved
+	// pass is rechecked against the policy at mb-2 (HOME-389).
 	h.gh.mu.Lock()
 	h.gh.baseHead = "base-2"
 	h.gh.baseFiles["policy/INVARIANTS.yaml"] = "invariants:\n  - mechanism: [projects/old/y.go]"
-	h.gh.compares = map[string]map[string]any{"base-2..." + shaA: {"merge_base_commit": map[string]string{"sha": "base-1"}}}
+	h.gh.headFiles["mb-2:policy/INVARIANTS.yaml"] = "invariants:\n  - mechanism: [projects/factory/x.go]"
+	h.gh.compares = map[string]map[string]any{"base-2..." + shaA: {"status": "ahead", "merge_base_commit": map[string]string{"sha": "mb-2"}}}
 	h.gh.mu.Unlock()
 	e.Tick(ctx)
 	c := h.gh.check(shaA)
 	st, _ := LoadState(c.Text)
-	if c.Conclusion != ConclusionSuccess || st.InvariantBase != "base-1" || st.Gate.Needed() {
-		t.Fatalf("base branch advanced past merge base: %s, state = %+v", c.Conclusion, st)
+	if c.Conclusion != ConclusionSuccess || st.Gate.Needed() || !h.gh.readRef("tree:mb-2") {
+		t.Fatalf("policy not rechecked at the merge base: %s, state = %+v", c.Conclusion, st)
 	}
 	h.gh.mu.Lock()
 	h.gh.baseHead = "base-3"
@@ -2864,7 +2867,7 @@ func TestCompletedPassRechecksChangedInvariantBase(t *testing.T) {
 	c = h.gh.check(shaA)
 	st, _ = LoadState(c.Text)
 	// A new mechanism on base gets normal review, not the human gate (HOME-755).
-	if c.Conclusion != ConclusionSuccess || st.InvariantBase != "base-3" || st.Gate.Needed() {
+	if c.Conclusion != ConclusionSuccess || st.Gate.Needed() || !h.gh.readRef("tree:base-3") {
 		t.Fatalf("reconciled check = %s, state = %+v", c.Conclusion, st)
 	}
 }
@@ -2876,13 +2879,14 @@ func TestInitialReviewReadsInvariantPolicyAtMergeBase(t *testing.T) {
 	addPR7(h)
 	h.gh.mu.Lock()
 	h.gh.baseHead = "base-2"
-	h.gh.compares = map[string]map[string]any{"base-2..." + shaA: {"status": "ahead", "merge_base_commit": map[string]string{"sha": "base-1"}}}
+	h.gh.headFiles["mb-2:policy/INVARIANTS.yaml"] = "invariants:\n  - mechanism: [projects/factory/x.go]"
+	h.gh.compares = map[string]map[string]any{"base-2..." + shaA: {"status": "ahead", "merge_base_commit": map[string]string{"sha": "mb-2"}}}
 	h.gh.mu.Unlock()
 	e, ctx, _ := h.start()
 	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
 	eventually(t, "completed review", func() bool { return h.gh.check(shaA).Status == "completed" })
-	if st, _ := LoadState(h.gh.check(shaA).Text); st.InvariantBase != "base-1" {
-		t.Fatalf("invariant policy read at %q, want the merge base base-1", st.InvariantBase)
+	if st, _ := LoadState(h.gh.check(shaA).Text); st.InvariantBase != "mb-2" || !h.gh.readRef("tree:mb-2") {
+		t.Fatalf("invariant policy read at %q, want the merge base mb-2", st.InvariantBase)
 	}
 }
 
