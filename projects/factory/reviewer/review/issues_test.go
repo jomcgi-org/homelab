@@ -175,7 +175,8 @@ func TestReviewPrioritiesRecoverFromItsaplanAfterRestart(t *testing.T) {
 	_, b, api, linked := issueSetup()
 	b.Name, b.BaseBranch = "homelab", "main"
 	b.EnqueueAuthors = []string{"jomcgi"}
-	api.issue.Priority = "urgent"
+	urgent := "urgent"
+	api.issue.Priority = &urgent
 	linked.Number, linked.BaseRef = 20, "main"
 	unlinked := github.PullRequest{
 		Number: 1, BaseRef: "main", HeadSHA: strings.Repeat("f", 40), Author: "jomcgi",

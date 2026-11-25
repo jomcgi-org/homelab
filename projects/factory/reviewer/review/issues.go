@@ -211,8 +211,8 @@ func (e *Engine) reviewPriorities(ctx context.Context, b *Binding, candidates []
 			complete = false
 			continue
 		}
-		if issue.ArchivedAt == nil && priorityRank(issue.Priority) > 0 {
-			byPR[c.pr.Number] = issue.Priority
+		if issue.ArchivedAt == nil && issue.Priority != nil && priorityRank(*issue.Priority) > 0 {
+			byPR[c.pr.Number] = *issue.Priority
 		}
 		byIssue[key] = byPR[c.pr.Number]
 	}
