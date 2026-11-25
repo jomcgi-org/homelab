@@ -57,6 +57,6 @@ filegroup(
     srcs = glob(
         ["**/*.md"],
         exclude = ["**/node_modules/**"],
-    ),
+    ) + ["//projects/factory-landing/web:repo_docs"],
     visibility = ["//:__pkg__"],
 )

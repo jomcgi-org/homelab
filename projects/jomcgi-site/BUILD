@@ -91,7 +91,7 @@ filegroup(
     srcs = glob(
         ["**/*.md"],
         exclude = ["**/node_modules/**"],
-    ),
+    ) + ["//projects/jomcgi-site/web:repo_docs"],
     visibility = ["//:__pkg__"],
 )
 
