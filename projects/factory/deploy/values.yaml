@@ -408,4 +408,4 @@ semgrepSync:
 # 2026-11-25T10:29Z, tag 2026.11.25.10.26.36-72e28dd3c).
 planner:
   enabled: true
-  harnessImage: ghcr.io/jomcgi/homelab/projects/factory/harness/claude@sha256:ff770f2257b0ec50539e758043833b795d9caed5402d2e1bf4a3a35d15535009
+  harnessImage: ghcr.io/jomcgi/homelab/projects/factory/harness/claude@sha256:ff770f2257b0ec50539e758043833b795d9caed5402d2e1bf4a3a35d15535009 # ratchet-allow: image-digest (the chart's images map pins no harness image, and the render fails without a digest; bump it by PR)
