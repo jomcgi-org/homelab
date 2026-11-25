@@ -692,11 +692,12 @@ itsaplan:
         name: Task agent
         triggerOnAssign: true
         triggerOnMention: true
-      # The earlier delegate, kept until the issues delegated to it finish.
+      # The retired delegate (HOME-898): kept for its run history, with both
+      # triggers off, so an assignment to it starts nothing.
       - username: homelab-codex
         name: Homelab Codex
-        triggerOnAssign: true
-        triggerOnMention: true
+        triggerOnAssign: false
+        triggerOnMention: false
       # The connector's own identity: comments, issue state and run lookups
       # through the runner queue. It is never assigned work.
       - username: factory-coordinator
@@ -777,7 +778,7 @@ connector:
   # Done; each of `agents` claims runs, at most `concurrency` at once.
   coordinator: factory-coordinator
   agents:
-    - username: homelab-codex
+    - username: task-agent
       concurrency: 1
   # Reviewed planner jobs. Each entry sets name, namespace (the first two
   # fingerprint segments), ceiling, minInterval, cooldown, perRun (1–4),
