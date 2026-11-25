@@ -435,10 +435,9 @@ unknown theme values, defaults and import-order independence. These are contract
 checks. The separate theme fixture tests server-render without browser globals
 and hydrate the same markup without replacing nodes, text or attributes.
 Linux CI covers the private and public frontend builds, existing Factory/blog
-fixtures, and the isolated theme targets. The existing Factory mobile preview
-workflow also runs the theme browser checker at 320px and 1440px in both schemes
-with 100% and actual 200% text sizes. It uploads computed contrast and screenshots
-in `theme-preview-evidence-<head sha>`. Browser prerequisites and the standalone
+fixtures, and the isolated theme targets. The theme browser checker runs locally
+at 320px and 1440px in both schemes with 100% and actual 200% text sizes;
+HOME-877 retired the workflow that ran it in CI. Browser prerequisites and the
 check command are in `frontend/theme-preview/README.md`.
 
 ## Rules that already hold
