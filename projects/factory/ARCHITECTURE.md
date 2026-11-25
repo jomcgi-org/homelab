@@ -545,7 +545,7 @@ Bosun answers mentions in the configured Discord servers. The bridge scopes memo
 The connector uses separate identities to claim coding work and coordinate issue updates.
 
 - **Data.** PostgreSQL is the CNPG Cluster `factory-db` in its own namespace
-  (`projects/platform-factory/factory-db`): three instances, WAL and daily
+  (`projects/platform-factory/factory-db`): one instance, WAL and daily
   base backups to Garage bucket `factory-db-backups`. Its roles and databases
   are declared (managed roles, a `Database` object), so it has no superuser
   login; a setup Job writes `DATABASE_URL` Secrets `factory-itsaplan-db` and

@@ -19,6 +19,9 @@ spec:
   priorityClassName: {{ . | quote }}
   {{- end }}
   instances: {{ .Values.cnpg.instances }}
+  {{- if hasKey .Values.cnpg "enablePDB" }}
+  enablePDB: {{ .Values.cnpg.enablePDB }}
+  {{- end }}
   {{- with .Values.cnpg.affinity }}
   affinity:
     {{- toYaml . | nindent 4 }}

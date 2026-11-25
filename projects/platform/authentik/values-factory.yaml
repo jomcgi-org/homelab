@@ -132,7 +132,11 @@ cnpg:
     repository: ghcr.io/cloudnative-pg/postgresql
     tag: "18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185"
   priorityClassName: factory-platform
-  instances: 3
+  # One instance with WAL and daily backups to Garage; data recovery
+  # matters, high availability does not. The primary PodDisruptionBudget
+  # would block every node drain, so it is off.
+  instances: 1
+  enablePDB: false
   annotations:
     # After authentik-pg-wait-for-key (wave -1). Keeping the Cluster also
     # keeps its operator-owned PVCs, as for factory-db.

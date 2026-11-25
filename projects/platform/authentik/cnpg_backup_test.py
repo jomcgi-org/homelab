@@ -38,7 +38,7 @@ def documents(output):
     }
 
 
-def test_factory_ha_and_garage_backups():
+def test_factory_single_instance_and_garage_backups():
     docs = documents(render("factory"))
     cluster = docs["Cluster", "authentik-pg"]
     assert cluster["metadata"]["namespace"] == "authentik"
@@ -47,7 +47,8 @@ def test_factory_ha_and_garage_backups():
         "argocd.argoproj.io/sync-options": "Prune=false,Delete=false",
     }
     spec = cluster["spec"]
-    assert spec["instances"] == 3
+    assert spec["instances"] == 1
+    assert spec["enablePDB"] is False
     assert spec["affinity"] == {
         "enablePodAntiAffinity": True,
         "podAntiAffinityType": "required",
