@@ -485,7 +485,7 @@
               "type": "object",
               "additionalProperties": false,
               "patternProperties": {
-                "^actor/[^/*?\\s]+/[^/*?\\s]+$": {
+                "^actor/[^/*?\\s]+/([^/*?\\s]+|session-\\*)$": {
                   "type": "array",
                   "uniqueItems": true,
                   "items": {
