@@ -64,9 +64,20 @@ def _helm(*sets: str, planner: bool = True, schedules: bool = True) -> list[dict
         "kagent",
         "-f",
         str(_DEPLOY),
+        # The deploy values run a Claude planner; these tests start from the
+        # chart's Codex planner and turn Claude on where they need it.
+        "--set",
+        "agents.planner.harness=codex",
+        "--set",
+        "agents.planner.model=gpt-6-astra",
+        "--set",
+        "planner.harnessImage=",
+        "--set",
+        "broker.claude.enabled=false",
+        "--set",
+        f"planner.enabled={str(planner).lower()}",
     ]
     if planner:
-        args += ["--set", "planner.enabled=true"]
         args += ["--set-json", f"kagent.rbac.namespaces={json.dumps(_NAMESPACES)}"]
     if schedules:
         args += ["--set-json", f"connector.plannerSchedules={json.dumps(_SCHEDULES)}"]

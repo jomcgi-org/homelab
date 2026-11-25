@@ -35,6 +35,17 @@ broker:
   config:
     codex:
       reasoningEffort: xhigh
+  # Claude Code relay (HOME-232) for the scheduled planner only (HOME-40,
+  # Joe 2026-11-25: Opus 5.5 first, Fable 5.2 later if needed). Each planner
+  # run is a fresh session, so the allowlist names the planner atespace's
+  # session actors by wildcard (#8690). Fable stays listed so the model change
+  # is a values-only edit to agents.planner.model.
+  claude:
+    enabled: true
+    modelAllowlist:
+      actor/factory-r-homelab-planner/session-*:
+        - claude-opus-5-5
+        - claude-fable-5-2
 
 kagent:
   # The pinned chart reads these Git values before the replacement chart ships.
@@ -53,7 +64,7 @@ kagent:
   # Agents and the controller's watch: kagent's own namespace plus each
   # repository binding's.
   rbac:
-    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-discord-agent]
+    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-r-homelab-planner, factory-discord-agent]
   # The controller's metrics for Prometheus
   # (projects/platform-factory/prometheus): HTTPS on 8443, admitting a token
   # whose subject may GET /metrics.
@@ -144,6 +155,12 @@ agents:
       minReplicas: 0
       spare: 2
       maxReplicas: 12
+  # The scheduled planner (HOME-40) runs Claude Code through the broker's
+  # Claude relay on Opus 5.5 (Joe, 2026-11-25); Fable 5.2 can replace it by
+  # editing `model` (broker.claude.modelAllowlist lists both).
+  planner:
+    harness: claude
+    model: claude-opus-5-5
   # The reviewer reads and never edits, so it needs no apply_patch. It runs
   # gpt-6.2-sol (Joe, 2026-11-17:
   # https://github.com/jomcgi-org/homelab/pull/8193#issuecomment-6963828989),
@@ -256,6 +273,23 @@ connector:
   # only the URL is public (HOME-119).
   links:
     run: https://factory-plan.jomcgi.dev/factory/HOME/agents/queue/{run}
+  # The planner's smoke run (HOME-40 "Done when"). `cron` fires once a year,
+  # 14:00 UTC on 26 November 2026; remove the entry after the smoke passes.
+  # Its ceiling is backlog, so a proposal becomes a Backlog issue and no
+  # coding agent starts on it. The three reviewed pilots (chart default) have
+  # no cron yet and return here with one at the longer cadence.
+  plannerSchedules:
+    - name: smoke
+      namespace: homelab:smoke
+      ceiling: backlog
+      minInterval: 24h
+      cooldown: 168h
+      perRun: 1
+      cron: "0 14 26 11 *"
+      prompt: smoke
+      issueTitle: Planner smoke finding
+      instructions: >-
+        Verify the cited finding on the current code before any change.
   bindings:
     homelab:
       itsaplanProject: HOME
@@ -367,3 +401,11 @@ discord:
 
 semgrepSync:
   enabled: false
+
+# The scheduled planner (HOME-40): one read-only Agent in
+# factory-r-homelab-planner, started by itsaplan cron runs. Its Claude harness
+# image is the private build from projects/factory/harness/claude (published
+# 2026-11-25T10:29Z, tag 2026.11.25.10.26.36-72e28dd3c).
+planner:
+  enabled: true
+  harnessImage: ghcr.io/jomcgi/homelab/projects/factory/harness/claude@sha256:ff770f2257b0ec50539e758043833b795d9caed5402d2e1bf4a3a35d15535009 # ratchet-allow: image-digest (the chart's images map pins no harness image, and the render fails without a digest; bump it by PR)
