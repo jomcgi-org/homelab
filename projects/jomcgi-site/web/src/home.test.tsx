@@ -3,7 +3,7 @@ import { act } from "react";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HomePage } from "./home-page";
-import { HOME_KEYS, sectionHref } from "./home-data";
+import { ALL_KEYS, HOME_KEYS, sectionHref } from "./home-data";
 import { HOME, hrefFor, SECTIONS } from "./sections";
 import { sitemap } from "./sitemap";
 import { PAGES } from "./pages";
@@ -55,23 +55,19 @@ describe("home port", () => {
     ]);
   });
 
-  it("keeps the original readout text and follows each section's migration state", () => {
+  it("keeps the original readout text and gives a key only to a live section", () => {
     const source = readFileSync(
       new URL("src/routes/public/+page.svelte", hub),
       "utf8",
     );
-    for (const key of HOME_KEYS) {
+    for (const key of ALL_KEYS) {
       // Homelab replaced Docs here and has no readout on the hub page.
       if (key.section !== "Homelab") expect(source).toContain(key.small);
       const section = SECTIONS.find((section) => section.name === key.section)!;
-      expect(sectionHref(key.section)).toBe(hrefFor(section));
-      const before = section.live;
-      try {
-        section.live = !before;
-        expect(sectionHref(key.section)).toBe(hrefFor(section));
-      } finally {
-        section.live = before;
-      }
+      // HOME-261: a section that is not live has no page, so no key.
+      expect(HOME_KEYS.includes(key)).toBe(section.live);
+      if (section.live) expect(sectionHref(key.section)).toBe(hrefFor(section));
+      else expect(() => sectionHref(key.section)).toThrow(/not live/);
     }
     expect(HOME.live).toBe(true);
     expect(hrefFor(HOME)).toBe("/");

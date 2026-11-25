@@ -7,7 +7,7 @@ const menu = () => document.querySelector<HTMLDetailsElement>(".site-menu")!;
 it("folds the long group into a menu that holds every link", () => {
   render(<Shell>page</Shell>);
   expect(menu().querySelector("summary")?.textContent).toBe("Apps");
-  expect(menu().querySelectorAll("a").length).toBeGreaterThan(3);
+  expect(menu().querySelectorAll("a").length).toBeGreaterThanOrEqual(3);
   // The other groups stay as plain links in the row.
   expect(screen.getByRole("link", { name: "Blog" })).toBeTruthy();
 });

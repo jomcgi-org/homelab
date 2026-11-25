@@ -4,8 +4,8 @@ The stage's Argo CD Application verifies each synced release with a `site-check`
 PostSync Job (HOME-181). Its stage argument and sole egress host follow the
 chart's `stage` value. PostSync wave 1 waits for prod's edge route update.
 Dev always runs the check. Prod runs it only with `edge.serveRoutes=true`;
-when routes are off, the hub serves the host and there is no Worker release
-to verify there. The chart refuses prod without `edge.enabled`, so the edge
+when routes are off, the Worker serves no jomcgi.dev path and there is no
+Worker release to verify there. The chart refuses prod without `edge.enabled`, so the edge
 Job always runs in prod. With routes off, it deletes every route of the Worker
 and reads the zone back, or the sync fails. The refresh CronJob's data-only
 redeploys of the same release are not a sync, so they get no check.
@@ -28,20 +28,22 @@ browser against the stage host before a deployment counts as verified.
 ## Verification contract
 
 Tier 1 uses Node `fetch`. Dev checks every HTML page in the bundled release.
-Prod selects pages from the edge Job's `edge/routes.json`: Blog, CV, the
-leaderboard, Scotland and its policy pages, and the drafts note. Exact route exceptions keep query
-variants and `/slop/factory` on the hub.
+Prod selects pages from the edge Job's `edge/routes.json`. Its
+`jomcgi.dev/*` catch-all (HOME-261) gives the Worker every path, so prod
+checks the same pages as dev.
 It checks real response headers, all built assets, internal links and
 JavaScript transfer sizes. Each owned page prefix has a junk path that must
 return HTTP 404 and the release's 404 HTML, including the retired prefixes
-in prod. The probe fills the route wildcard without adding a slash, so
+in prod and the bare junk path under the catch-all. Both stages also require
+that 404 for each retired hub path in `check/scope.mjs` (`/api`,
+`/functions`, `/grimoire`, `/health`, `/notes` and others). The probe fills the route wildcard without adding a slash, so
 legacy descendant redirects do not capture it. Both `/cv*` and `/prefix/*`
 route forms are supported.
 HTML and asset bytes must match the release. Redirects cannot leave the stage
 origin. Each page retains HOME-174's 150 KiB JavaScript budget. The fetch
 dispatcher counts compressed response bytes before Node decodes them.
-Links to hub-owned paths still require HTTP 200. Those pages keep their own
-HTML and headers until their routes move to the Worker.
+Every same-origin link must answer HTTP 200, so no page links a section
+that is not live (`web/src/sections.ts`).
 
 Tier 2 uses Playwright with pinned `chrome-headless-shell` from
 `@sparticuz/chromium`. It runs axe with colour contrast enabled on every page,
@@ -88,8 +90,8 @@ refresh interval of delay beyond the normal schedule.
 
 Each new section in `data/sources.json` must add a freshness entry. A test
 checks that the manifests agree and that the snapshot producer emits the
-configured timestamp. Dev checks all sections. Prod checks them when their
-`/data/` routes move from the hub to the Worker.
+configured timestamp. Dev checks all sections. Prod checks the sections under
+its owned routes; the catch-all owns every `/data/` path.
 
 Missing endpoints, invalid timestamps, stale data and timestamps over one
 minute in the future fail tier 1. Prod checks entries only under its owned

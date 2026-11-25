@@ -30,59 +30,27 @@ const SCOTLAND_AND_SLOP_PATHS = [
 ];
 // HOME-475: these patterns send the hub connector's old URLs to the Worker,
 // and web/public/_redirects answers them with a 308 to the same path on
-// scotland-mcp.jomcgi.dev. The hub copy serves them until prod has the routes.
+// scotland-mcp.jomcgi.dev.
 const LEGACY_CONNECTOR = [
   "jomcgi.dev/scotland/mcp*",
   "jomcgi.dev/scotland/v1*",
 ];
-
-// A Worker route's * can span path separators. Check intersection with the
-// whole protected subtree, including descendants added later.
-function canMatchPrefix(pattern, prefix) {
-  const seen = new Set();
-  function visit(p, s) {
-    const key = `${p}:${s}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    if (s === prefix.length) return true;
-    if (p === pattern.length) return false;
-    if (pattern[p] === "*") return visit(p + 1, s) || visit(p, s + 1);
-    return pattern[p] === prefix[s] && visit(p + 1, s + 1);
-  }
-  return visit(0, 0);
-}
+// HOME-261: the Worker takes every path on the apex host.
+const CATCH_ALL = "jomcgi.dev/*";
 
 test("Scotland and slop own exact static URLs and the legacy connector paths", () => {
   for (const path of SCOTLAND_AND_SLOP_PATHS)
     assert.ok(ROUTES.patterns.includes(`jomcgi.dev${path}`));
   for (const pattern of LEGACY_CONNECTOR)
     assert.ok(ROUTES.patterns.includes(pattern), pattern);
-  for (const pattern of ROUTES.patterns) {
-    const route = pattern.replace(/^https?:\/\//, "");
-    const prefixes = ["jomcgi.dev/slop/factory"];
-    // Only the legacy connector patterns reach the old connector paths.
-    if (!LEGACY_CONNECTOR.includes(pattern))
-      prefixes.push("jomcgi.dev/scotland/mcp", "jomcgi.dev/scotland/v1");
-    for (const prefix of prefixes) {
-      assert.ok(
-        !canMatchPrefix(route, prefix),
-        `${pattern} could intercept ${prefix}`,
-      );
-    }
-  }
 });
 
-test("the boundary check catches broad routes and future connector endpoints", () => {
-  for (const pattern of [
-    "jomcgi.dev/*",
-    "jomcgi.dev/scotland*",
-    "*jomcgi.dev/scotland/*",
-    "jomcgi.dev/scotland/v*/future/endpoint",
-  ]) {
-    assert.ok(canMatchPrefix(pattern, "jomcgi.dev/scotland/v1/"));
-  }
-  assert.ok(canMatchPrefix("jomcgi.dev/slop/*", "jomcgi.dev/slop/factory"));
-  assert.ok(!canMatchPrefix("jomcgi.dev/scotland", "jomcgi.dev/scotland/mcp"));
+test("every route is on the apex host, so other jomcgi.dev hostnames keep their owners", () => {
+  // The catch-all takes only jomcgi.dev itself. scotland-mcp, factory-data,
+  // next and the other hostnames on the zone belong to other services.
+  for (const pattern of ROUTES.patterns)
+    assert.ok(pattern.startsWith("jomcgi.dev/"), pattern);
+  assert.ok(ROUTES.patterns.includes(CATCH_ALL));
 });
 
 const result = (value) => ({
@@ -153,37 +121,59 @@ function routeMatches(pattern, url) {
 }
 const served = (url) => ROUTES.patterns.some((p) => routeMatches(p, url));
 
-test("the exact Scotland and slop exceptions leave queries and descendants on the hub", () => {
+test("the exact Scotland and slop URLs keep exact patterns, and the catch-all serves their queries and descendants", () => {
   for (const path of SCOTLAND_AND_SLOP_PATHS) {
     const url = `jomcgi.dev${path}`;
-    assert.ok(served(url), path);
     assert.ok(ROUTES.exactBecause[url], `${path} needs an exact-match reason`);
+    const withoutCatchAll = ROUTES.patterns.filter((p) => p !== CATCH_ALL);
+    assert.ok(
+      withoutCatchAll.some((p) => routeMatches(p, url)),
+      path,
+    );
     for (const suffix of ["?ref=x", "/future-page", "/future-page?ref=x"]) {
-      assert.ok(!served(`${url}${suffix}`), `${path}${suffix}`);
+      assert.ok(served(`${url}${suffix}`), `${path}${suffix}`);
     }
   }
 });
 
-// Paths that other services or the hub still own on jomcgi.dev.
-const STAYS_ON_THE_HUB = [
-  // The hub home answers query-string root URLs (the "/" route is exact) and
-  // polls this, so Notes retires with the catch-all route (HOME-261).
-  "jomcgi.dev/app/notes/stats",
-  "jomcgi.dev/health",
-  "jomcgi.dev/img/x/thumb/plain/s3://monolith-trips/a.jpg",
-  "jomcgi.dev/functions/og-image",
-  "jomcgi.dev/api/trips/trips",
-  "jomcgi.dev/slop/factory",
-  // Trips stays on the hub until its export commits (HOME-452).
+// Paths the retired hub served (HOME-261). The catch-all sends them to the
+// Worker, which has no file or redirect for them, so it answers its 404 page.
+// check/scope.mjs probes them on the live stages.
+const RETIRED_HUB_PATHS = [
   "jomcgi.dev/trips",
   "jomcgi.dev/trips/2025-trip/day/1",
   "jomcgi.dev/app/trips",
   "jomcgi.dev/data/trips/latest.json",
+  "jomcgi.dev/grimoire",
   "jomcgi.dev/app/grimoire",
+  "jomcgi.dev/notes",
+  "jomcgi.dev/app/notes/stats",
+  "jomcgi.dev/api/anything",
+  "jomcgi.dev/api/trips/trips",
+  "jomcgi.dev/functions/x",
+  "jomcgi.dev/functions/og-image",
+  "jomcgi.dev/health",
+  "jomcgi.dev/img/x/thumb/plain/s3://monolith-trips/a.jpg",
+  "jomcgi.dev/slop/factory",
+  "jomcgi.dev/?ref=x",
 ];
 
-test("no route catches a path the hub or another service still owns", () => {
-  assert.deepEqual(STAYS_ON_THE_HUB.filter(served), []);
+test("the catch-all sends every retired hub path to the Worker", () => {
+  assert.deepEqual(
+    RETIRED_HUB_PATHS.filter((url) => !served(url)),
+    [],
+  );
+  // Without the catch-all, none of them reach the Worker: it is the one
+  // pattern that takes them.
+  const withoutCatchAll = ROUTES.patterns.filter((p) => p !== CATCH_ALL);
+  assert.deepEqual(
+    RETIRED_HUB_PATHS.filter(
+      (url) =>
+        !url.startsWith("jomcgi.dev/notes") &&
+        withoutCatchAll.some((p) => routeMatches(p, url)),
+    ),
+    [],
+  );
 });
 
 test("routed pages are served with and without a query string", () => {
@@ -243,9 +233,8 @@ test("routed pages are served with and without a query string", () => {
 });
 
 test("a pattern without a wildcard says why, since a query string bypasses it", () => {
-  // Exact patterns miss `?query` URLs. Use one only where a wildcard would
-  // catch a path that must stay elsewhere (the root, or /scotland beside its
-  // descendants on the hub), and give the reason in routes.json.
+  // Exact patterns miss `?query` URLs; the catch-all serves those. Give each
+  // exact pattern its reason in routes.json.
   const exact = ROUTES.patterns.filter((p) => !p.endsWith("*"));
   assert.deepEqual(
     exact.filter((p) => !ROUTES.exactBecause?.[p]),
@@ -621,7 +610,7 @@ test("planRoutes ignores routes of other Workers", () => {
   assert.deepEqual(plan, { conflicts: [], create: [], remove: [] });
 });
 
-test("home and machine-readable routes are exact and leave unmigrated paths on the hub", () => {
+test("home and machine-readable routes keep exact patterns beside the catch-all", () => {
   for (const path of [
     "",
     "robots.txt",
@@ -632,18 +621,29 @@ test("home and machine-readable routes are exact and leave unmigrated paths on t
     "apple-touch-icon.png",
   ]) {
     assert.ok(ROUTES.patterns.includes(`jomcgi.dev/${path}`));
-    assert.ok(!ROUTES.patterns.includes(`jomcgi.dev/${path}*`));
+    // For the root, `jomcgi.dev/*` is the catch-all itself.
+    if (path) assert.ok(!ROUTES.patterns.includes(`jomcgi.dev/${path}*`));
     assert.ok(served(`jomcgi.dev/${path}`));
-    assert.ok(!served(`jomcgi.dev/${path}?ref=x`));
+    assert.ok(served(`jomcgi.dev/${path}?ref=x`));
   }
-  for (const path of [
-    "/app/grimoire",
-    "/slop/factory",
-    "/api/home/observability/stats",
-    "/robots.txt/extra",
-  ]) {
-    assert.ok(!served(`jomcgi.dev${path}`), path);
-  }
+  assert.ok(served("jomcgi.dev/robots.txt/extra"));
+});
+
+test("removing only the catch-all deletes only its route", async () => {
+  const zone = fakeZone({
+    routes: ROUTES.patterns.map((pattern) => ({ pattern, script: SCRIPT })),
+    rules: [MONOLITH],
+  });
+  const log = await apply(
+    zone.call,
+    routesFile(ROUTES.patterns.filter((p) => p !== CATCH_ALL)),
+    RULES,
+  );
+  assert.deepEqual(
+    log.filter((line) => line.includes("route")),
+    [`delete route ${CATCH_ALL}`],
+  );
+  assert.equal(zone.state.routes.length, ROUTES.patterns.length - 1);
 });
 
 test("the factory-data rule caches the bucket's JSON by its own Cache-Control", () => {

@@ -27,7 +27,11 @@ import {
   redirectRules,
   serveRelease,
 } from "./release-fixture.mjs";
-import { checkReleasePage, enabledSections } from "./tier1.mjs";
+import {
+  checkNotFoundCache,
+  checkReleasePage,
+  enabledSections,
+} from "./tier1.mjs";
 import {
   makeSummary,
   stampSummary,
@@ -43,21 +47,21 @@ import {
   respond,
   serve,
 } from "./fixture.mjs";
-import { scopeFor } from "./scope.mjs";
+import { RETIRED_PATHS, scopeFor } from "./scope.mjs";
 import { parseHeaders } from "./headers.mjs";
 import { snapshot } from "../data/snapshot.mjs";
 
-test("production audits only Worker routes, including its scoped 404", async (t) => {
+test("production audits every path through the catch-all, including its 404s", async (t) => {
   const scope = scopeFor("prod");
   const dist = mkdtempSync(join(tmpdir(), "site-check-prod-"));
   t.after(() => rmSync(dist, { recursive: true, force: true }));
   mkdirSync(join(dist, "assets"));
   const notFound = html.replace("Readable page", "This page isn't here.");
-  // Since HOME-206 the Worker serves the homepage, so the release pages link
-  // to a path that stays off the Worker (/slop/factory, until HOME-68).
-  const hubPath = "/slop/factory";
-  assert.equal(scope.owns(hubPath), false);
-  const page = html.replace('href="/"', `href="${hubPath}"`);
+  // The release pages link to a page outside this fixture release. Since
+  // HOME-261 the Worker owns it too, and the link must still answer 200.
+  const linked = "/linked";
+  assert.ok(scope.owns(linked));
+  const page = html.replace('href="/"', `href="${linked}"`);
   for (const [name, body] of Object.entries({
     "index.html": page,
     "cv.html": page,
@@ -67,17 +71,16 @@ test("production audits only Worker routes, including its scoped 404", async (t)
   }))
     writeFileSync(join(dist, name), body);
   for (const failure of [null, "page", "404", "freshness", "link"]) {
-    await t.test(failure ?? "hub and Worker coexist", async () => {
+    await t.test(failure ?? "passing release", async () => {
       const requests = [];
       const server = await serve((req, res) => {
         requests.push(req.url);
-        if (req.url === hubPath) {
-          // Hub HTML and headers differ from this release, but linked pages
-          // must still be reachable. No Worker CSP/byte assertions apply.
+        if (req.url === linked) {
+          // A linked page is only checked for reachability.
           res.writeHead(failure === "link" ? 503 : 200, {
             "content-type": "text/html",
           });
-          res.end("<h1>Existing hub page</h1>");
+          res.end("<h1>Linked page</h1>");
         } else if (req.url === "/") {
           respond(res, page);
         } else if (req.url === "/cv") {
@@ -105,7 +108,7 @@ test("production audits only Worker routes, including its scoped 404", async (t)
           respond(res, "", "text/javascript");
         } else {
           res.writeHead(500);
-          res.end("unexpected request outside the Worker routes");
+          res.end("unexpected request");
         }
       });
       const http = client(server.origin);
@@ -117,13 +120,13 @@ test("production audits only Worker routes, including its scoped 404", async (t)
             preview: false,
             get: http.get,
             scope: scopeFor("prod"),
-            freshness: ["/cv/latest.json", `${hubPath}/latest.json`].map(
-              (path) => ({
-                path,
+            freshness: [
+              {
+                path: "/cv/latest.json",
                 timestampField: "generatedAt",
                 maxAgeSeconds: 60,
-              }),
-            ),
+              },
+            ],
           });
         if (failure) {
           await assert.rejects(
@@ -140,13 +143,11 @@ test("production audits only Worker routes, including its scoped 404", async (t)
             (await run()).map(({ path }) => path).sort(),
             ["/", "/cv", ...scope.junkPaths].sort(),
           );
-          assert.ok(requests.includes(hubPath), "hub links are still checked");
+          assert.ok(requests.includes(linked), "links are checked");
           assert.ok(requests.includes("/cv/latest.json"));
-          assert.ok(!requests.includes(`${hubPath}/latest.json`));
-          assert.ok(
-            !requests.includes(JUNK_PATH),
-            "the hub's 404 is not audited",
-          );
+          // The catch-all's own 404 and every retired hub path are audited.
+          for (const path of [JUNK_PATH, ...RETIRED_PATHS])
+            assert.ok(requests.includes(path), path);
         }
       } finally {
         await http.close();
@@ -206,6 +207,7 @@ test("deployed pages, 404, headers, links, assets and the transfer budget fail c
       "csp",
       "robots",
       "cache",
+      "404cache",
       "link",
       "budget",
       "freshness",
@@ -256,7 +258,9 @@ test("deployed pages, 404, headers, links, assets and the transfer budget fail c
               res,
               failure === "404" ? html : notFound,
               "text/html",
-              extra,
+              failure === "404cache"
+                ? { "cache-control": "public, max-age=31536000, immutable" }
+                : extra,
               404,
             );
           }
@@ -285,6 +289,7 @@ test("deployed pages, 404, headers, links, assets and the transfer budget fail c
               csp: /CSP/,
               robots: /preview noindex/,
               cache: /public assets/,
+              "404cache": /immutable 404/,
               link: /internal link/,
               budget: /JS transfer/,
               freshness: /stale data/,
@@ -294,7 +299,7 @@ test("deployed pages, 404, headers, links, assets and the transfer budget fail c
             const pages = await run();
             assert.deepEqual(
               pages.map((p) => p.path).sort(),
-              ["/", JUNK_PATH].sort(),
+              ["/", JUNK_PATH, ...RETIRED_PATHS].sort(),
             );
           }
         } finally {
@@ -476,6 +481,10 @@ test("production wildcard routes include query URLs and retired-page 404s", () =
   for (const retired of ["/app/firecracker", "/artifact", "/ember", "/notes"]) {
     assert.ok(scope.junkPaths.includes(`${retired}${JUNK_PATH.slice(1)}`));
   }
+  // HOME-261: jomcgi.dev/* puts the bare junk path and every retired hub
+  // path on the Worker, so the probe checks that each answers the 404 page.
+  for (const path of [JUNK_PATH, ...RETIRED_PATHS])
+    assert.ok(scope.junkPaths.includes(path), path);
   assert.ok(scope.junkPaths.every(scope.owns));
   const redirects = redirectRules(
     fileURLToPath(new URL("../web/public", import.meta.url)),
@@ -490,32 +499,42 @@ test("production wildcard routes include query URLs and retired-page 404s", () =
   for (const path of scope.junkPaths) {
     assert.equal(matchRedirect(redirects, path), undefined, path);
   }
-  // Each section moves by adding its patterns, so derive the Worker's paths
-  // from edge/routes.json and pin only what must stay off it: the query
-  // variants of exact routes, the bare junk path and data.
+  // The legacy /app/* sections keep their 301s to the new pages.
+  for (const [path, to] of [
+    ["/app/hikes", "/hikes"],
+    ["/app/hikes/walk/uuid", "/hikes"],
+    ["/app/stars/map", "/stars"],
+    ["/app/llm-leaderboard", "/llm-leaderboard"],
+  ]) {
+    assert.ok(scope.owns(path), path);
+    assert.deepEqual(
+      [
+        matchRedirect(redirects, path).status,
+        matchRedirect(redirects, path).to,
+      ],
+      [301, to],
+      path,
+    );
+  }
+  // Each pattern in edge/routes.json serves its paths and their queries.
+  // The exact ones keep their queries through the catch-all.
   const routes = JSON.parse(
     readFileSync(new URL("../edge/routes.json", import.meta.url)),
   );
   for (const pattern of routes.patterns) {
     const path = pattern.slice(routes.zone.length);
-    if (path.endsWith("*")) {
-      const prefix = path.slice(0, -1);
-      assert.ok(scope.owns(prefix), `${pattern} owns ${prefix}`);
-      assert.ok(scope.owns(`${prefix}?ref=test`), `${pattern} keeps queries`);
-    } else {
-      assert.ok(scope.owns(path), `${pattern} owns ${path}`);
-      assert.ok(!scope.owns(`${path}?ref=test`), `${pattern} is exact`);
-    }
+    const prefix = path.endsWith("*") ? path.slice(0, -1) : path;
+    assert.ok(scope.owns(prefix), `${pattern} owns ${prefix}`);
+    assert.ok(scope.owns(`${prefix}?ref=test`), `${pattern} keeps queries`);
   }
   for (const path of [
     "/?ref=test",
     "/scotland?ref=test",
     "/slop?ref=test",
-    JUNK_PATH,
-    // A /data path that no section routes stays on the hub.
+    "/slop/factory",
     "/data/__site-check-unrouted/latest.json",
   ]) {
-    assert.equal(scope.owns(path), false, `${path} still belongs to the hub`);
+    assert.ok(scope.owns(path), `${path} is the Worker's`);
   }
   // HOME-475: the Worker owns the legacy connector paths and answers 308.
   for (const path of ["/scotland/mcp", "/scotland/v1/tools"]) {
@@ -747,4 +766,23 @@ test("the release fixture serves the storyboard manifest and every referenced ob
     assert.equal(object.status, 200, path);
     assert.equal((await object.json()).version, 1);
   }
+});
+
+test("a 404 may carry the asset server's revalidating cache, never a lifetime", () => {
+  // HOME-261: jomcgi.dev/* answers every unknown path with the 404 page.
+  const ok = (value) => new Headers(value ? { "cache-control": value } : {});
+  checkNotFoundCache(ok("public, max-age=0, must-revalidate"), "/x");
+  checkNotFoundCache(ok(null), "/x");
+  assert.throws(
+    () => checkNotFoundCache(ok("public, max-age=60"), "/x"),
+    /404 max-age/,
+  );
+  assert.throws(
+    () => checkNotFoundCache(ok("public, s-maxage=3600"), "/x"),
+    /404 s-maxage/,
+  );
+  assert.throws(
+    () => checkNotFoundCache(ok("public, immutable"), "/x"),
+    /immutable 404/,
+  );
 });

@@ -103,7 +103,6 @@ it("keeps CSP, the client-route rewrite and the live Factory link", () => {
   ).toEqual(["/factory /factory/ 200", "/factory/* /factory/ 200"]);
   expect(SECTIONS.find(({ path }) => path === "/factory")).toMatchObject({
     live: true,
-    legacy: "/slop/factory",
   });
 });
 

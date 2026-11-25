@@ -63,9 +63,11 @@ export function checkHome(dist) {
   const legends = [...source.matchAll(/legend: "([^"]+)"/g)].map(
     (match) => match[1],
   );
+  // Retired sections have no page, so they have no key (HOME-261).
+  const retired = new Set(["notes", "grimoire", "ships", "trips"]);
   assert.deepEqual(
     all(".pad .legend").map((node) => node.textContent),
-    [...legends, ...order.filter((slug) => slug !== "notes")]
+    [...legends, ...order.filter((slug) => !retired.has(slug))]
       // Homelab replaced Docs on this site; the hub page still says docs.
       .map((legend) => (legend === "docs" ? "homelab" : legend)),
   );

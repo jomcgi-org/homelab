@@ -277,6 +277,19 @@ export function client(origin) {
   return { get, close: () => agent.close() };
 }
 
+/**
+ * A 404 must not stay in a cache: a later release can serve a page at that
+ * path. The Workers asset server sends `public, max-age=0, must-revalidate`.
+ */
+export function checkNotFoundCache(headers, path) {
+  const cache = headers.get("cache-control") ?? "";
+  assert.doesNotMatch(cache, /\bimmutable\b/i, `${path}: immutable 404`);
+  for (const [, directive, seconds] of cache.matchAll(
+    /\b(max-age|s-maxage)=(\d+)/gi,
+  ))
+    assert.equal(Number(seconds), 0, `${path}: 404 ${directive}`);
+}
+
 export async function checkLinks(get, links) {
   for (const url of new Set(links.map(String))) {
     const response = await get(url);
@@ -398,6 +411,7 @@ export async function tier1({
     assert.equal(response.status, page.status, `${page.path}: HTTP status`);
     assert.match(response.headers.get("content-type") ?? "", /text\/html/i);
     checkHeaders(response.headers, { preview, path: page.path, rules });
+    if (page.status === 404) checkNotFoundCache(response.headers, page.path);
     checkReleasePage(
       response.body,
       expectedTrips.get(page.path) ?? readFileSync(join(dist, page.file)),

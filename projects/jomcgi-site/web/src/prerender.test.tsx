@@ -23,7 +23,9 @@ describe.each(Object.entries(PAGES))("%s", (entry, Page) => {
     ).toEqual(
       entry === "index.html"
         ? HOME_KEYS.map((key) => sectionHref(key.section))
-        : SECTIONS.filter((section) => section.listed !== false).map(hrefFor),
+        : SECTIONS.filter(
+            (section) => section.live && section.listed !== false,
+          ).map(hrefFor),
     );
   });
 
