@@ -1214,8 +1214,27 @@ def test_discord_agent_uses_only_the_dedicated_key_and_has_no_tools() -> None:
     )
 
 
+def _controller_egress(spec: dict) -> dict:
+    """Return the one egress rule on the kagent controller port (8083)."""
+    rules = [
+        rule
+        for rule in spec["egress"]
+        if any(p["port"] == "8083" for to in rule["toPorts"] for p in to["ports"])
+    ]
+    assert len(rules) == 1, rules
+    return rules[0]
+
+
+def test_discord_bridge_staging_and_session_expiration() -> None:
+    docs = _render(_DISCORD + ["discord.bridge.enforceAgentPath=false"])
+    policy = _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")
+    assert "rules" not in _controller_egress(policy["spec"])["toPorts"][0]
+    config = _one(docs, "ConfigMap", "kagent-controller")["data"]["controller.yaml"]
+    assert yaml.safe_load(config)["sessions"]["idleTtl"] == "604800s"
+
+
 def test_discord_bridge_reaches_only_its_expected_peers() -> None:
-    docs = _render(_DISCORD)
+    docs = _render(_DISCORD + ["discord.bridge.enforceAgentPath=true"])
     ns = "factory-discord"
     deploy = _in(docs, "Deployment", ns, "discord-bridge")
     pod = deploy["spec"]["template"]
@@ -1279,6 +1298,20 @@ def test_discord_bridge_reaches_only_its_expected_peers() -> None:
         for rule in egress["egress"]
     ]
     assert ports == [["8080"], ["443"], ["8888"], ["8082"], ["8083"]]
+    assert _controller_egress(egress)["toPorts"] == [
+        {
+            "ports": [{"port": "8083", "protocol": "TCP"}],
+            "rules": {
+                "http": [
+                    {"method": "POST", "path": "^/agents/factory-discord-agent/bosun$"},
+                    {
+                        "method": "POST",
+                        "path": "^/kagent\\.api\\.v1\\.SessionService/DeleteSession$",
+                    },
+                ]
+            },
+        }
+    ]
     controller = _in(docs, "CiliumNetworkPolicy", "kagent", "kagent-controller")
     admitted = [
         m["matchLabels"] for m in controller["spec"]["ingress"][0]["fromEndpoints"]
