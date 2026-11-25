@@ -158,10 +158,10 @@ try {
         }
         if (reducedMotion === "no-preference")
           await page.waitForSelector(".print.ready");
-        await page.getByRole("link", { name: "ships", exact: true }).focus();
+        await page.getByRole("link", { name: "stars", exact: true }).focus();
         assert.match(
           await page.locator(".glass .small").textContent(),
-          width > 760 ? /Every ship off Scotland/ : /Semgrep/,
+          width > 760 ? /Where the sky will be dark/ : /Semgrep/,
         );
         await accessible(page, `${label}/key-focus`);
         if (width > 760) {
