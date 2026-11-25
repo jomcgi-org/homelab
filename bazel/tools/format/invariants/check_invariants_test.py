@@ -240,6 +240,48 @@ def test_marker_regressions(tmp_path, monkeypatch, replacement, error):
         check_markers(docs, "HEAD^")
 
 
+def test_marker_goes_with_its_mechanism_path(tmp_path, monkeypatch):
+    from check_invariants import check_markers
+
+    monkeypatch.chdir(tmp_path)
+    git("init", "-q")
+    row = ROW | {"mechanism": ["foo/bar", "old/gone"]}
+    Path("INVARIANTS.yaml").write_text(yaml.safe_dump({"invariants": [row]}))
+    for name in row["mechanism"]:
+        Path(name).parent.mkdir(parents=True, exist_ok=True)
+        Path(name).write_text("# invariant: " + ROW["id"])
+    git("add", ".")
+    git("commit", "-qm", "base")
+    Path("old/gone").unlink()
+    Path("INVARIANTS.yaml").write_text(yaml.safe_dump({"invariants": [ROW]}))
+    git("add", "-A")
+    git("commit", "-qm", "remove old/gone")
+    check_markers({Path("INVARIANTS.yaml"): {"invariants": [ROW]}}, "HEAD^")
+
+
+def test_marker_on_a_listed_path_still_cannot_go(tmp_path, monkeypatch):
+    from check_invariants import check_markers
+
+    monkeypatch.chdir(tmp_path)
+    git("init", "-q")
+    row = ROW | {"mechanism": ["foo/bar", "old/gone"]}
+    Path("INVARIANTS.yaml").write_text(yaml.safe_dump({"invariants": [row]}))
+    for name in row["mechanism"]:
+        Path(name).parent.mkdir(parents=True, exist_ok=True)
+        Path(name).write_text("# invariant: " + ROW["id"])
+    Path("test.py").write_text("# invariant: " + ROW["id"])
+    git("add", ".")
+    git("commit", "-qm", "base")
+    # The test file was never a mechanism path, so its marker must stay.
+    Path("old/gone").unlink()
+    Path("test.py").unlink()
+    Path("INVARIANTS.yaml").write_text(yaml.safe_dump({"invariants": [ROW]}))
+    git("add", "-A")
+    git("commit", "-qm", "remove")
+    with pytest.raises(ValueError, match="test.py: dropped invariant marker"):
+        check_markers({Path("INVARIANTS.yaml"): {"invariants": [ROW]}}, "HEAD^")
+
+
 def git(*args):
     import subprocess
 
