@@ -758,6 +758,9 @@ func TestRestartAfterCloseEndsPausedRootOnce(t *testing.T) {
 	h.gh.withLock(func() { h.gh.prs[7].Closed = true })
 	update := fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, h.gh.check(shaA).ID)
 	h.gh.failWith(update, http.StatusBadGateway)
+	var clockMu sync.Mutex
+	now := time.Now()
+	h.cfg.Now = func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }
 	e, ctx, stop = h.start()
 	writes := h.gh.countCalls(update)
 	e.Tick(ctx) // Newest page.
@@ -768,7 +771,14 @@ func TestRestartAfterCloseEndsPausedRootOnce(t *testing.T) {
 	if h.gh.countCalls(update) != writes+1 || h.gh.check(shaA).Status != "in_progress" || len(reviewSpans(exporter)) != 0 {
 		t.Fatal("refused cancellation retired the review")
 	}
+	e.Tick(ctx) // Backs off after the refusal.
+	if h.gh.countCalls(update) != writes+1 {
+		t.Fatal("retried a refused cancellation before the backoff")
+	}
 	h.gh.failWith(update, 0)
+	clockMu.Lock()
+	now = now.Add(closedScanBackoff)
+	clockMu.Unlock()
 	e.Tick(ctx)
 	e.Tick(ctx)
 	stop()
@@ -777,5 +787,55 @@ func TestRestartAfterCloseEndsPausedRootOnce(t *testing.T) {
 	if c.Status != "completed" || c.Conclusion != ConclusionCancelled || len(spans) != 1 ||
 		spans[0]["id"] != recorded.SpanID().String() || spans[0]["root"] != "true" || spans[0]["pr.head_sha"] != shaA || spans[0]["review.verdict"] != ConclusionCancelled {
 		t.Fatalf("check %s %s, review spans %v", c.Status, c.Conclusion, spans)
+	}
+}
+
+func TestClosedScanReadsOnlyActiveHeadsAndBacksOff(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.cfg.Quota = &fakeQuota{}
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
+	waitForQuotaCheck(t, h)
+	stop()
+	reads := func(sha string) int {
+		return h.gh.countCalls("GET /repos/" + testRepo + "/commits/" + sha + "/check-runs")
+	}
+	var inactive []string
+	for n := range 3 {
+		sha := fmt.Sprintf("%040x", n+1)
+		inactive = append(inactive, sha)
+		h.gh.push(7, sha)
+	}
+	h.gh.withLock(func() { h.gh.prs[7].Closed = true })
+	before := map[string]int{shaA: reads(shaA)}
+	for _, sha := range inactive {
+		before[sha] = reads(sha)
+	}
+	h.gh.failWith("GET /repos/"+testRepo+"/commits/"+shaA+"/check-runs", http.StatusUnprocessableEntity)
+	var clockMu sync.Mutex
+	now := time.Now()
+	h.cfg.Now = func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }
+	e, ctx, stop = h.start()
+	defer stop()
+	for range 3 {
+		e.Tick(ctx)
+	}
+	for _, sha := range inactive {
+		if n := reads(sha) - before[sha]; n != 0 {
+			t.Fatalf("read %d check listings for inactive head %s", n, sha)
+		}
+	}
+	if n := reads(shaA) - before[shaA]; n != 1 {
+		t.Fatalf("failing active head read %d times in one backoff window, want 1", n)
+	}
+	h.gh.failWith("GET /repos/"+testRepo+"/commits/"+shaA+"/check-runs", 0)
+	clockMu.Lock()
+	now = now.Add(closedScanBackoff)
+	clockMu.Unlock()
+	e.Tick(ctx)
+	if c := h.gh.check(shaA); c.Status != "completed" || c.Conclusion != ConclusionCancelled {
+		t.Fatalf("check %s %s after the backoff", c.Status, c.Conclusion)
 	}
 }

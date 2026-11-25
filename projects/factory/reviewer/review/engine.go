@@ -103,6 +103,7 @@ type Binding struct {
 	startupBefore          *time.Time
 	closedScanDone         bool
 	closedScanSince        time.Time
+	closedScanAfter        time.Time
 	closedPages            map[int]string
 	closedFinished         map[int]bool
 	Name                   string
@@ -384,6 +385,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 		b := &cfg.Bindings[i]
 		b.startupBefore = nil
 		b.closedScanDone = false
+		b.closedScanAfter = time.Time{}
 		b.closedPages = make(map[int]string)
 		b.closedFinished = make(map[int]bool)
 		b.closedScanSince = cfg.Now().Add(-24 * time.Hour)
@@ -505,7 +507,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	e.supersede(b, prs, complete)
 	e.endSuperseded(ctx, b, prs, complete)
 	e.recoverRoots(ctx, b, prs, complete)
-	if !b.closedScanDone {
+	if !b.closedScanDone && !e.cfg.Now().Before(b.closedScanAfter) {
 		b.closedScanDone = e.endClosedReviews(ctx, b)
 	}
 	e.noteHeads(b, prs, complete)
@@ -2206,15 +2208,21 @@ func (e *Engine) recoverRoots(ctx context.Context, b *Binding, prs []github.Pull
 	}
 }
 
+// closedScanBackoff spaces closed-PR scans after a refused read or write,
+// so a head that keeps failing costs one pass per interval, not per poll.
+const closedScanBackoff = 5 * time.Minute
+
 // endClosedReviews reconciles recent closures once per process. Keep the
-// window fixed across retries so a refused write cannot age out.
+// window fixed across retries so a refused write cannot age out. Only heads
+// with an in-progress check of the App need a REST read.
 func (e *Engine) endClosedReviews(ctx context.Context, b *Binding) bool {
 	prs, _, err := e.gh.PullRequestsUpdatedSince(ctx, b.repo(), b.closedScanSince)
 	if err != nil {
 		e.ghError(ctx, e.log, b, "recent_closed_pulls", err)
+		b.closedScanAfter = e.cfg.Now().Add(closedScanBackoff)
 		return false
 	}
-	done := true
+	done, failed := true, false
 	seen := map[int]bool{}
 	for _, pr := range slices.Backward(prs) {
 		if b.closedFinished[pr.Number] || seen[pr.Number] {
@@ -2228,16 +2236,17 @@ func (e *Engine) endClosedReviews(ctx context.Context, b *Binding) bool {
 		hist, err := e.gh.PullRequestHeadsPage(ctx, b.repo(), pr.Number, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID}, cursor, maxPreviousLookups)
 		if err != nil {
 			e.ghError(ctx, e.prLog(b, pr.PullRequest), b, "pull_request_heads", err)
-			done = false
+			done, failed = false, true
 			continue
 		}
 		seenHeads := map[string]bool{}
-		if cursor == "" {
-			hist.Heads = append(hist.Heads, github.Head{SHA: pr.HeadSHA})
+		// The final head is read unless the timeline reports its state.
+		if cursor == "" && !slices.ContainsFunc(hist.Heads, func(h github.Head) bool { return h.SHA == pr.HeadSHA }) {
+			hist.Heads = append(hist.Heads, github.Head{SHA: pr.HeadSHA, Active: true})
 		}
 		pageOK := true
 		for _, head := range slices.Backward(hist.Heads) {
-			if seenHeads[head.SHA] {
+			if !head.Active || seenHeads[head.SHA] {
 				continue
 			}
 			seenHeads[head.SHA] = true
@@ -2262,7 +2271,12 @@ func (e *Engine) endClosedReviews(ctx context.Context, b *Binding) bool {
 		done = false
 		if pageOK {
 			b.closedPages[pr.Number] = hist.StartCursor
+		} else {
+			failed = true
 		}
+	}
+	if failed {
+		b.closedScanAfter = e.cfg.Now().Add(closedScanBackoff)
 	}
 	return done
 }
