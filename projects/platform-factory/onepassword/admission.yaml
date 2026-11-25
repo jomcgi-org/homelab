@@ -17,7 +17,6 @@ data:
     vaults/k8s-homelab/items/factory-cloudflare-api-token
   factory: |-
     vaults/k8s-homelab/items/factory-gh-app
-    vaults/k8s-homelab/items/factory-review-gh-app
     vaults/k8s-homelab/items/factory-storyboard-readers
     vaults/k8s-homelab/items/ghcr-read-permissions
   factory-discord: |-
@@ -35,6 +34,9 @@ data:
   factory-public: |-
     vaults/k8s-homelab/items/factory-health-cloudflare
     vaults/k8s-homelab/items/factory-r2-public-mirror
+  factory-review-broker: |-
+    vaults/k8s-homelab/items/factory-review-gh-app
+    vaults/k8s-homelab/items/ghcr-read-permissions
   grimoire: |-
     vaults/k8s-homelab/items/grimoire-migration-r2
   hikes: |-
