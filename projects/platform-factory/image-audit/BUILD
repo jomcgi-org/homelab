@@ -36,6 +36,7 @@ py_test(
         "//projects/platform-factory/otel-collector:application.yaml",
         "//projects/platform-factory/prometheus/resources:audit_manifests",
         "//projects/platform-factory/renovate:application.yaml",
+        "//projects/platform-factory/substrate/gvisor-fork:kustomize_inputs",
         "//projects/platform-factory/substrate/resources:audit_manifests",
         "//projects/platform-factory/t3/resources:audit_manifests",
         "//projects/platform/argocd:chart",
