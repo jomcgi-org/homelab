@@ -150,7 +150,11 @@ def test_deploy_values_turn_the_connector_on() -> None:
     assert _config(docs) == _config(_render())
     deploy_values = yaml.safe_load(_DEPLOY_VALUES.read_text())
     schedules = _config(docs)["plannerSchedules"]
-    assert schedules == deploy_values["connector"]["plannerSchedules"]
+    # With the planner off the connector config leaves out cron and prompt.
+    assert schedules == [
+        {k: v for k, v in job.items() if k not in ("cron", "prompt")}
+        for job in deploy_values["connector"]["plannerSchedules"]
+    ]
     # The smoke job (HOME-40) files to Backlog and delegates nothing.
     assert {job["name"]: job["ceiling"] for job in schedules} == {"smoke": "backlog"}
     _in(docs, "ClusterRoleBinding", None, "kagent-kagent-invocation-auth")
