@@ -379,19 +379,17 @@ def test_preview_uploader_has_a_stable_pod_name_and_no_ingress():
     assert secrets == {
         "CLOUDFLARE_API_TOKEN": "jomcgi-site-cloudflare",
         "CLOUDFLARE_ACCOUNT_ID": "jomcgi-site-cloudflare",
-        "GITHUB_APP_ID": "jomcgi-site-preview-github-app",
-        "GITHUB_APP_INSTALLATION_ID": "jomcgi-site-preview-github-app",
-        "GITHUB_APP_PRIVATE_KEY": "jomcgi-site-preview-github-app",
         "ACCESS_CLIENT_ID": "jomcgi-site-preview-access",
         "ACCESS_CLIENT_SECRET": "jomcgi-site-preview-access",
     }
+    # The service token is the only new credential; GitHub is read anonymously.
     assert {
-        rendered[f"OnePasswordItem/{name}"]["spec"]["itemPath"]
-        for name in ("jomcgi-site-preview-github-app", "jomcgi-site-preview-access")
-    } == {
-        "vaults/k8s-homelab/items/jomcgi-site-preview-github-app",
-        "vaults/k8s-homelab/items/jomcgi-site-preview-access",
-    }
+        n for n in rendered if n.startswith("OnePasswordItem/jomcgi-site-preview")
+    } == {"OnePasswordItem/jomcgi-site-preview-access"}
+    assert (
+        rendered["OnePasswordItem/jomcgi-site-preview-access"]["spec"]["itemPath"]
+        == "vaults/k8s-homelab/items/jomcgi-site-preview-access"
+    )
     policy = rendered["CiliumNetworkPolicy/jomcgi-site-preview"]["spec"]
     assert policy["enableDefaultDeny"] == {"ingress": True, "egress": True}
     assert "ingress" not in policy

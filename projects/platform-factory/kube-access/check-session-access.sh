@@ -54,7 +54,6 @@ for verb in get create; do
 	"${session[@]}" -n jomcgi-site-dev "$verb" pods/jomcgi-site-preview-0 --subresource=portforward --quiet
 done
 expect_denied -n jomcgi-site-dev get secrets/jomcgi-site-cloudflare
-expect_denied -n jomcgi-site-dev get secrets/jomcgi-site-preview-github-app
 expect_denied -n jomcgi-site-dev create pods/other --subresource=portforward
 expect_denied -n factory list secrets
 expect_denied -n factory watch secrets

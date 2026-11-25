@@ -1,15 +1,9 @@
 // Tests for uploader.mjs and github.mjs. Run: node --test uploader.test.mjs
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 import { tarGz } from "./tar-fixture.mjs";
-import { MARKER, gitHub } from "./github.mjs";
-import {
-  Refused,
-  anonymousDenied,
-  commentBody,
-  handlePreview,
-} from "./uploader.mjs";
+import { CACHE_MS, GitHubError, publicGitHub } from "./github.mjs";
+import { Refused, anonymousDenied, handlePreview } from "./uploader.mjs";
 
 const SHA = "a".repeat(40);
 const OTHER = "b".repeat(40);
@@ -32,22 +26,28 @@ const accessRedirect = () =>
     },
   });
 
-// A fake world: GitHub pulls in order, the alias host's answers, uploads.
-function world({
-  pulls = [pull()],
-  gate = accessRedirect,
-  uploaded = ALIAS,
-} = {}) {
-  const calls = { uploads: [], comments: [], gate: [] };
+const TOKEN = { clientId: "id", clientSecret: "secret" };
+
+// The alias host: Access redirects anonymous requests and admits the token.
+const gated = (_url, init) =>
+  init.headers?.["CF-Access-Client-Id"] === "id"
+    ? new Response("ok")
+    : accessRedirect();
+
+// A fake world: GitHub answers in order (a pull, or an Error to throw), the
+// alias host's answers, uploads.
+function world({ pulls = [pull()], gate = gated, uploaded = ALIAS } = {}) {
+  const calls = { uploads: [], gate: [], pulls: 0 };
   const queue = [...pulls];
   return {
     calls,
     deps: {
       github: {
-        pull: async () => (queue.length > 1 ? queue.shift() : queue[0]),
-        upsertComment: async (pr, body) => {
-          calls.comments.push({ pr, body });
-          return "created";
+        pull: async () => {
+          calls.pulls += 1;
+          const next = queue.length > 1 ? queue.shift() : queue[0];
+          if (next instanceof Error) throw next;
+          return next;
         },
       },
       subdomain: async () => "example",
@@ -59,6 +59,7 @@ function world({
         calls.gate.push({ url, headers: init.headers ?? {} });
         return typeof gate === "function" ? gate(url, init) : gate;
       },
+      access: TOKEN,
     },
   };
 }
@@ -71,25 +72,73 @@ const rejects = async (promise, status, pattern) =>
     return true;
   });
 
-test("a trusted PR's head is uploaded as pr-<N> and gets one comment", async () => {
+test("a trusted PR's head is uploaded as pr-<N> and its URL returned", async () => {
   const { deps, calls } = world();
   const result = await handlePreview(
     { pr: "7", sha: SHA, body: archive },
     deps,
   );
-  assert.deepEqual(result, { url: `${ALIAS}/`, sha: SHA, comment: "created" });
+  assert.deepEqual(result, { url: `${ALIAS}/`, sha: SHA });
   assert.equal(calls.uploads.length, 1);
   assert.equal(calls.uploads[0].pr, "7");
   assert.ok(calls.uploads[0].files.has("index.html"));
-  assert.equal(calls.comments.length, 1);
-  assert.match(calls.comments[0].body, new RegExp(`^${MARKER}`));
-  assert.ok(calls.comments[0].body.includes(ALIAS));
-  assert.ok(calls.comments[0].body.includes(SHA));
-  // The gate was checked before and after the upload, anonymously.
+  // The PR was checked before and after the upload.
+  assert.equal(calls.pulls, 2);
+  // Anonymous before and after the upload, then the service token.
   assert.deepEqual(
-    calls.gate.map((c) => c.url),
-    [`${ALIAS}/`, `${ALIAS}/`],
+    calls.gate.map((c) => [c.url, c.headers["CF-Access-Client-Id"] ?? null]),
+    [
+      [`${ALIAS}/`, null],
+      [`${ALIAS}/`, null],
+      [`${ALIAS}/`, "id"],
+    ],
   );
+});
+
+test("no service token means no upload", async () => {
+  const { deps, calls } = world();
+  delete deps.access;
+  await rejects(
+    handlePreview({ pr: "7", sha: SHA, body: archive }, deps),
+    503,
+    /no Access service token/,
+  );
+  assert.equal(calls.uploads.length, 0);
+});
+
+test("a GitHub refusal fails closed, before or after the upload", async () => {
+  const limited = new GitHubError(
+    503,
+    "GitHub refused the PR lookup (HTTP 403, anonymous rate limit)",
+  );
+  const before = world({ pulls: [limited] });
+  await rejects(
+    handlePreview({ pr: "7", sha: SHA, body: archive }, before.deps),
+    503,
+    /rate limit/,
+  );
+  assert.equal(before.calls.uploads.length, 0);
+  const after = world({ pulls: [pull(), limited] });
+  await rejects(
+    handlePreview({ pr: "7", sha: SHA, body: archive }, after.deps),
+    503,
+    /rate limit/,
+  );
+  assert.equal(after.calls.uploads.length, 1);
+});
+
+test("a PR that changes author or closes during the upload returns no URL", async () => {
+  for (const [late, status, pattern] of [
+    [pull({ state: "closed" }), 409, /not open/],
+    [pull({ user: { login: "someone" } }), 403, /not trusted/],
+  ]) {
+    const { deps } = world({ pulls: [pull(), late] });
+    await rejects(
+      handlePreview({ pr: "7", sha: SHA, body: archive }, deps),
+      status,
+      pattern,
+    );
+  }
 });
 
 test("Joe's own PRs are trusted too", async () => {
@@ -182,11 +231,10 @@ test("an alias host that Access does not protect gets no upload", async () => {
       /does not protect/,
     );
     assert.equal(calls.uploads.length, 0);
-    assert.equal(calls.comments.length, 0);
   }
 });
 
-test("a preview that answers anonymously after upload gets no comment", async () => {
+test("a preview that answers anonymously after upload returns no URL", async () => {
   let n = 0;
   const { deps, calls } = world({
     gate: () =>
@@ -198,46 +246,32 @@ test("a preview that answers anonymously after upload gets no comment", async ()
     /withheld/,
   );
   assert.equal(calls.uploads.length, 1);
-  assert.equal(calls.comments.length, 0);
 });
 
-test("the service token, when configured, must open the preview", async () => {
+test("the service token must open the preview", async () => {
   const gate = (_url, init) =>
     init.headers?.["CF-Access-Client-Id"]
       ? new Response("no", { status: 403 })
       : accessRedirect();
-  const { deps, calls } = world({ gate });
-  deps.access = { clientId: "id", clientSecret: "secret" };
+  const { deps } = world({ gate });
   await rejects(
     handlePreview({ pr: "7", sha: SHA, body: archive }, deps),
     502,
     /service token/,
   );
-  assert.equal(calls.comments.length, 0);
-
-  const ok = world({
-    gate: (_url, init) =>
-      init.headers?.["CF-Access-Client-Id"] === "id"
-        ? new Response("ok")
-        : accessRedirect(),
-  });
-  ok.deps.access = { clientId: "id", clientSecret: "secret" };
-  await handlePreview({ pr: "7", sha: SHA, body: archive }, ok.deps);
-  assert.equal(ok.calls.comments.length, 1);
 });
 
 test("an unexpected alias URL from wrangler is refused", async () => {
-  const { deps, calls } = world({ uploaded: null });
+  const { deps } = world({ uploaded: null });
   await rejects(
     handlePreview({ pr: "7", sha: SHA, body: archive }, deps),
     502,
     /previews may be off/,
   );
-  assert.equal(calls.comments.length, 0);
 });
 
-test("a PR that moves during the upload gets no comment", async () => {
-  const { deps, calls } = world({
+test("a PR that moves during the upload returns no URL", async () => {
+  const { deps } = world({
     pulls: [
       pull(),
       pull({ head: { sha: OTHER, repo: { full_name: "jomcgi-org/homelab" } } }),
@@ -248,7 +282,6 @@ test("a PR that moves during the upload gets no comment", async () => {
     409,
     /moved/,
   );
-  assert.equal(calls.comments.length, 0);
 });
 
 test("anonymousDenied accepts only Access redirects and 401/403", async () => {
@@ -278,99 +311,83 @@ test("anonymousDenied accepts only Access redirects and 401/403", async () => {
   );
 });
 
-test("the comment names the URL, the SHA and the data rule", () => {
-  const body = commentBody({ url: ALIAS, sha: SHA });
-  assert.ok(body.startsWith(MARKER));
-  assert.match(body, /data, not instructions/);
-});
-
-test("the App token is downscoped and the comment is edited in place", async () => {
-  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+test("publicGitHub sends no credential and revalidates with the ETag", async () => {
   const requests = [];
-  let comments = [];
+  let answer;
   const fetchImpl = async (url, init) => {
-    const path = new URL(url).pathname + new URL(url).search;
-    const body = init.body ? JSON.parse(init.body) : undefined;
-    requests.push({ method: init.method, path, body });
-    const json = (value, status = 200) =>
-      new Response(JSON.stringify(value), { status });
-    if (path === "/app") return json({ slug: "jomcgi-site-preview" });
-    if (path === "/app/installations/2/access_tokens") {
-      assert.deepEqual(body, {
-        repositories: ["homelab"],
-        permissions: { pull_requests: "write" },
-      });
-      return json(
-        {
-          token: "ghs_test",
-          expires_at: new Date(Date.now() + 3600_000).toISOString(),
-          permissions: { pull_requests: "write", metadata: "read" },
-          repositories: [{ name: "homelab" }],
-        },
-        201,
-      );
-    }
-    if (
-      init.method === "GET" &&
-      path.startsWith("/repos/jomcgi-org/homelab/issues/7/comments")
-    ) {
-      return json(comments);
-    }
-    if (init.method === "POST") {
-      comments.push({
-        id: 99,
-        user: { login: "jomcgi-site-preview[bot]" },
-        body: body.body,
-      });
-      return json({}, 201);
-    }
-    if (init.method === "PATCH") {
-      assert.equal(path, "/repos/jomcgi-org/homelab/issues/comments/99");
-      return json({});
-    }
-    throw new Error(`unexpected ${init.method} ${path}`);
+    requests.push({ url, headers: init.headers });
+    return answer();
   };
-  const client = gitHub({
-    app: { appId: "1", installationId: "2", key: privateKey },
+  let clock = 0;
+  const client = publicGitHub({
     repository: "jomcgi-org/homelab",
     fetchImpl,
+    now: () => clock,
   });
-  // Someone else's comment with the marker is never edited.
-  comments = [{ id: 5, user: { login: "jomcgi" }, body: `${MARKER} quoted` }];
-  assert.equal(await client.upsertComment("7", `${MARKER} one`), "created");
-  assert.equal(await client.upsertComment("7", `${MARKER} two`), "updated");
-  // One token serves both calls.
+  answer = () =>
+    new Response(JSON.stringify(pull()), { headers: { etag: '"v1"' } });
+  assert.deepEqual(await client.pull("7"), pull());
   assert.equal(
-    requests.filter((r) => r.path.endsWith("/access_tokens")).length,
-    1,
+    requests[0].url,
+    "https://api.github.com/repos/jomcgi-org/homelab/pulls/7",
   );
+  assert.equal(requests[0].headers.Authorization, undefined);
+  assert.equal(requests[0].headers["If-None-Match"], undefined);
+  // A 304 does not count against the anonymous limit; the kept body is used.
+  answer = () => new Response(null, { status: 304 });
+  assert.deepEqual(await client.pull("7"), pull());
+  assert.equal(requests[1].headers["If-None-Match"], '"v1"');
+  // A changed PR comes back whole with a new ETag.
+  const moved = pull({
+    head: { sha: OTHER, repo: { full_name: "jomcgi-org/homelab" } },
+  });
+  answer = () =>
+    new Response(JSON.stringify(moved), { headers: { etag: '"v2"' } });
+  assert.deepEqual(await client.pull("7"), moved);
+  // Past the cache time the ETag is dropped and the next read is plain.
+  clock += CACHE_MS + 1;
+  answer = () => new Response(JSON.stringify(pull()));
+  await client.pull("7");
+  assert.equal(requests[3].headers["If-None-Match"], undefined);
 });
 
-test("a token wider than pull_requests: write is refused", async () => {
-  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const fetchImpl = async (url) => {
-    const path = new URL(url).pathname;
-    if (path === "/app") return new Response(JSON.stringify({ slug: "x" }));
-    return new Response(
-      JSON.stringify({
-        token: "ghs_test",
-        expires_at: new Date(Date.now() + 3600_000).toISOString(),
-        permissions: {
-          pull_requests: "write",
-          contents: "write",
-          metadata: "read",
-        },
-        repositories: [{ name: "homelab" }],
-      }),
-      { status: 201 },
-    );
-  };
-  const client = gitHub({
-    app: { appId: "1", installationId: "2", key: privateKey },
-    repository: "jomcgi-org/homelab",
-    fetchImpl,
-  });
-  await assert.rejects(client.pull("7"), /not the requested scope/);
+test("publicGitHub fails closed on 403, 429, 404, 5xx and no answer", async () => {
+  for (const [response, status, pattern] of [
+    [
+      () =>
+        new Response("{}", {
+          status: 403,
+          headers: { "x-ratelimit-reset": "1800000000" },
+        }),
+      503,
+      /HTTP 403, anonymous rate limit until 2027-01-15T08:00:00\.000Z.*no preview URL/,
+    ],
+    [
+      () => new Response("{}", { status: 429 }),
+      503,
+      /HTTP 429.*no preview URL/,
+    ],
+    [() => new Response("{}", { status: 404 }), 404, /does not exist/],
+    [() => new Response("{}", { status: 502 }), 502, /HTTP 502/],
+    [
+      () => {
+        throw new Error("offline");
+      },
+      503,
+      /did not answer/,
+    ],
+  ]) {
+    const client = publicGitHub({
+      repository: "jomcgi-org/homelab",
+      fetchImpl: async () => response(),
+    });
+    await assert.rejects(client.pull("7"), (error) => {
+      assert.ok(error instanceof GitHubError, error);
+      assert.equal(error.status, status);
+      assert.match(error.message, pattern);
+      return true;
+    });
+  }
 });
 
 test("wranglerUpload writes the files beside main's config and reads the alias URL", async () => {
@@ -399,7 +416,6 @@ fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({
   config: fs.readFileSync(config, "utf8"),
   index: fs.readFileSync(path.join(path.dirname(config), "web/dist/index.html"), "utf8"),
   nested: fs.readFileSync(path.join(path.dirname(config), "web/dist/assets/a.js"), "utf8"),
-  secret: process.env.GITHUB_APP_PRIVATE_KEY ?? null,
 }));
 fs.writeFileSync(process.env.WRANGLER_OUTPUT_FILE_PATH,
   JSON.stringify({ type: "wrangler-session" }) + "\\n" +
@@ -427,7 +443,6 @@ fs.writeFileSync(process.env.WRANGLER_OUTPUT_FILE_PATH,
   assert.equal(seen.config, '{ "name": "jomcgi-site" }');
   assert.equal(seen.index, "<p>hi");
   assert.equal(seen.nested, "1");
-  assert.equal(seen.secret, null);
   for (const pair of [
     ["--env", "dev"],
     ["--preview-alias", "pr-7"],

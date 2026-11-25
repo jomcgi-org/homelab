@@ -490,7 +490,6 @@ def test_session_permissions():
         ("create", "pods/portforward", "other", "jomcgi-site-dev", False),
         ("get", "secrets", "jomcgi-site-preview-access", "jomcgi-site-dev", True),
         ("get", "secrets", "jomcgi-site-cloudflare", "jomcgi-site-dev", False),
-        ("get", "secrets", "jomcgi-site-preview-github-app", "jomcgi-site-dev", False),
         ("list", "secrets", None, "jomcgi-site-dev", False),
         ("get", "pods/log", "example", "default", True),
         ("get", "pods/ephemeralcontainers", "example", "default", True),

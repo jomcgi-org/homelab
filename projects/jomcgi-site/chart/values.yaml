@@ -151,14 +151,12 @@ edge:
 # PR previews (README "PR previews"): the uploader that sessions reach with
 # `kubectl port-forward pod/jomcgi-site-preview-0`. It uploads a PR's built
 # site as preview alias pr-<N> of Worker jomcgi-site-dev. Dev stage only.
-# Off until the 1Password items below exist (README "PR previews", "Inputs").
+# Off until the 1Password item below exists (README "PR previews", "Inputs").
 preview:
   enabled: false
-  # 1Password items synced into this namespace.
+  # 1Password items synced into this namespace. The uploader reads GitHub's
+  # public API with no credential; preview.sh writes the PR comment.
   secrets:
-    # GitHub App with only Pull requests: write, installed on the repository:
-    # fields app-id, installation-id and private-key.
-    jomcgi-site-preview-github-app: vaults/k8s-homelab/items/jomcgi-site-preview-github-app
     # The factory agents' Cloudflare Access service token: fields client-id
     # and client-secret. Sessions may read this Secret to open previews.
     jomcgi-site-preview-access: vaults/k8s-homelab/items/jomcgi-site-preview-access
@@ -181,21 +179,6 @@ preview:
           secretKeyRef:
             name: jomcgi-site-cloudflare
             key: account-id
-      - name: GITHUB_APP_ID
-        valueFrom:
-          secretKeyRef:
-            name: jomcgi-site-preview-github-app
-            key: app-id
-      - name: GITHUB_APP_INSTALLATION_ID
-        valueFrom:
-          secretKeyRef:
-            name: jomcgi-site-preview-github-app
-            key: installation-id
-      - name: GITHUB_APP_PRIVATE_KEY
-        valueFrom:
-          secretKeyRef:
-            name: jomcgi-site-preview-github-app
-            key: private-key
       - name: ACCESS_CLIENT_ID
         valueFrom:
           secretKeyRef:

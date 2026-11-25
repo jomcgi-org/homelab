@@ -4,6 +4,7 @@
 # checkout. Hand-maintained.
 # gazelle:ignore
 load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_image_layer", "js_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 js_binary(
     name = "preview",
@@ -40,4 +41,16 @@ js_test(
         "uploader.mjs",
     ],
     entry_point = "uploader.test.mjs",
+)
+
+# preview.sh with fake gh, kubectl, pnpm and curl: one comment, its own
+# comment edited, refusals and unexpected URLs never posted.
+sh_test(
+    name = "preview_test",
+    srcs = ["preview_test.sh"],
+    data = [
+        "preview.sh",
+        "@nodejs_linux_amd64//:node_bin",
+    ],
+    env = {"NODE_BIN": "$(rootpath @nodejs_linux_amd64//:node_bin)"},
 )

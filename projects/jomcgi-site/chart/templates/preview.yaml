@@ -62,7 +62,7 @@ spec:
           rules:
             dns:
               - matchPattern: "*"
-    # PR reads and the preview comment.
+    # Anonymous PR reads (public API, no credential).
     - toFQDNs:
         - matchName: api.github.com
       toPorts:

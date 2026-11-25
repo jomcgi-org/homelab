@@ -373,17 +373,20 @@ does not verify the dev deployment.
 A PR by `jomcgi` or `jomcgi-factory[bot]` can get a preview of the whole
 site, with the invented factory fixtures. The agent builds in its own
 checkout; the uploader in namespace `jomcgi-site-dev` holds the Cloudflare
-token and the GitHub App key.
+token and the Access service token. Nobody holds a GitHub credential for
+previews: the uploader reads GitHub's public API, and `preview.sh` writes
+the PR comment with the session's own `gh` account.
 
 ```mermaid
 flowchart LR
   S["preview.sh in the PR checkout"] -->|"build + fixtures, tar.gz"| F["kubectl port-forward<br/>pod/jomcgi-site-preview-0"]
   F --> U[uploader]
-  U -->|"PR open, not a fork, trusted author, SHA = head"| G[GitHub App]
+  U -->|"PR open, not a fork, trusted author, SHA = head<br/>(before and after)"| G[GitHub public API]
   U -->|"static files only"| V[archive check]
-  U -->|"anonymous request denied?"| A[Cloudflare Access]
+  U -->|"anonymous denied, service token admitted?"| A[Cloudflare Access]
   U -->|"wrangler versions upload --preview-alias pr-N"| W[Worker jomcgi-site-dev]
-  U -->|"one comment: URL + SHA"| P[PR]
+  U -->|"URL + SHA"| S
+  S -->|"gh: one comment, edited in place"| P[PR]
 ```
 
 ### For agents
@@ -394,8 +397,10 @@ flowchart LR
    `projects/jomcgi-site/preview/preview.sh`. It uses
    `~/.kube/factory-sessions.yaml` (`PREVIEW_KUBECONFIG` overrides it).
 3. It prints `https://pr-<N>-jomcgi-site-dev.<subdomain>.workers.dev/` and
-   the SHA it built. The PR comment from the preview App shows the same
-   two values. Run it again after each push; the comment changes in place.
+   the SHA it built, then writes one PR comment with both from your `gh`
+   account. The comment starts with `<!-- jomcgi-site-preview -->`; a later
+   run edits your earlier comment. The script posts only a URL for that PR
+   and SHA that the uploader returned. Run it again after each push.
 4. Cloudflare Access protects the URL. Send the factory service token from
    Secret `jomcgi-site-dev/jomcgi-site-preview-access` as headers
    `CF-Access-Client-Id` (field `client-id`) and `CF-Access-Client-Secret`
@@ -419,7 +424,11 @@ The uploader refuses a request at the first check that fails, before it
 uploads anything:
 
 - The PR is open, its head repository is this repository, its author is
-  `jomcgi` or `jomcgi-factory[bot]`, and the given SHA is its head.
+  `jomcgi` or `jomcgi-factory[bot]`, and the given SHA is its head. The
+  uploader reads the PR from GitHub's anonymous API, limited to 60 requests
+  an hour per address. It keeps each PR's ETag for ten minutes and sends
+  `If-None-Match`, so an unchanged PR costs no quota. A 403 or 429, or no
+  answer, refuses the request with the reason and no URL.
 - The archive (gzip tar, at most 64 MiB) holds regular files and directories
   only. It refuses `_worker.js`, `_routes.json`, `functions/`, hidden paths,
   links, file types the build does not emit, more than 2,000 files, a file
@@ -432,8 +441,8 @@ uploads anything:
 - The upload uses the `wrangler.jsonc` in the uploader's image, which CI
   builds from main, with `--env dev`. A version upload does not change the
   deployment that serves `next.jomcgi.dev`.
-- The SHA must still be the PR head when the upload ends; then the comment
-  is written.
+- The PR check passes again when the upload ends; then the uploader returns
+  the URL and SHA.
 
 The trust boundary is the session: the uploader cannot prove that the files
 came from that SHA. Only the session identities in
@@ -445,18 +454,13 @@ port-forward, and the pod listens on loopback with no ingress.
 `chart/values.yaml` keeps `preview.enabled: false` until these exist. A PR
 then sets `preview.enabled: true` in `deploy/application.yaml`.
 
-- **GitHub App** with only Pull requests: read and write, installed on this
-  repository. 1Password item
-  `vaults/k8s-homelab/items/jomcgi-site-preview-github-app`, fields `app-id`,
-  `installation-id` and `private-key`. Each token it mints names this
-  repository and `pull_requests: write` only; a wider token is refused.
 - **Cloudflare Access** in the dashboard: Workers & Pages, "Protect all
-  Workers", "Previews only". Policy: allow Joe's email, the
-  `factory-operators` group if the Authentik IdP is connected, and a
-  Service Auth rule for a new service token. The policy must not bypass the
-  home network's address, or the uploader's anonymous check fails. Store the
-  token in item `vaults/k8s-homelab/items/jomcgi-site-preview-access`,
-  fields `client-id` and `client-secret`.
+  Workers", "Previews only". Policy: allow Joe's email, and a Service Auth
+  rule for a new service token. The policy must not bypass the home
+  network's address, or the uploader's anonymous check fails.
+- **Service token item:** 1Password item
+  `vaults/k8s-homelab/items/jomcgi-site-preview-access`, fields `client-id`
+  and `client-secret`.
 - **Cloudflare token:** `jomcgi-site-cloudflare` already deploys
   jomcgi-site-dev, which includes Workers Scripts: Edit, so it can upload
   versions. Cloudflare cannot limit that permission to one Worker.

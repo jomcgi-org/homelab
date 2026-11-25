@@ -4,14 +4,14 @@
 // the factory session identities (platform-factory/kube-access).
 //
 //   POST /previews?pr=<N>&sha=<40 hex>   body: gzip tar of web/dist
-//   -> 200 {"url", "sha", "comment"} or 4xx/5xx {"error"}
+//   -> 200 {"url", "sha"} or 4xx/5xx {"error"}; preview.sh writes the comment
 //
-// Env: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, GITHUB_APP_ID,
-// GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY, and optional
-// ACCESS_CLIENT_ID and ACCESS_CLIENT_SECRET (the factory service token). WRANGLER_BIN,
+// Env: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, ACCESS_CLIENT_ID and
+// ACCESS_CLIENT_SECRET (the factory service token). It reads GitHub without
+// a credential. WRANGLER_BIN,
 // WRANGLER_CONFIG, PORT and WORK_ROOT have image defaults.
 import { createServer } from "node:http";
-import { readApp, gitHub } from "./github.mjs";
+import { publicGitHub } from "./github.mjs";
 import { LIMITS } from "./archive.mjs";
 import {
   Refused,
@@ -30,18 +30,12 @@ const cloudflare = {
   token: need("CLOUDFLARE_API_TOKEN"),
   account: need("CLOUDFLARE_ACCOUNT_ID"),
 };
-const access =
-  process.env.ACCESS_CLIENT_ID && process.env.ACCESS_CLIENT_SECRET
-    ? {
-        clientId: process.env.ACCESS_CLIENT_ID,
-        clientSecret: process.env.ACCESS_CLIENT_SECRET,
-      }
-    : undefined;
+const access = {
+  clientId: need("ACCESS_CLIENT_ID"),
+  clientSecret: need("ACCESS_CLIENT_SECRET"),
+};
 const deps = {
-  github: gitHub({
-    app: readApp(process.env),
-    repository: "jomcgi-org/homelab",
-  }),
+  github: publicGitHub({ repository: "jomcgi-org/homelab" }),
   subdomain: () => workersSubdomain(cloudflare),
   upload: wranglerUpload({
     wrangler:
@@ -49,12 +43,11 @@ const deps = {
     // main's config: the image is built from main, never from the PR.
     configSource: process.env.WRANGLER_CONFIG ?? "/app/site/wrangler.jsonc",
     workRoot: process.env.WORK_ROOT ?? "/tmp",
-    // The rules_js launcher needs the image environment; the App key and
-    // the service token are not wrangler's business.
+    // The rules_js launcher needs the image environment; the service token
+    // is not wrangler's business.
     env: Object.fromEntries(
       Object.entries(process.env).filter(
-        ([name]) =>
-          !name.startsWith("ACCESS_CLIENT_") && !name.startsWith("GITHUB_APP_"),
+        ([name]) => !name.startsWith("ACCESS_CLIENT_"),
       ),
     ),
   }),
@@ -103,9 +96,7 @@ createServer(async (request, response) => {
       { pr, sha, body: await readBody(request) },
       deps,
     );
-    console.log(
-      `preview PR #${pr} ${sha}: ${result.url} (comment ${result.comment})`,
-    );
+    console.log(`preview PR #${pr} ${sha}: ${result.url}`);
     reply(response, 200, result);
   } catch (error) {
     const status = error instanceof Refused ? error.status : 500;
