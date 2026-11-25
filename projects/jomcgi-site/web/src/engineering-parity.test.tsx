@@ -33,8 +33,16 @@ process.stdout.write(JSON.stringify({ categories: m.categories, intro: m.intro, 
 const asJson = (value: unknown) => JSON.parse(JSON.stringify(value));
 
 // The hub pages these links opened are retired, and jomcgi.dev/* answers
-// them with the 404 page (HOME-261), so the site drops the links.
-const RETIRED_LINKS = new Set(["/app/notes", "/app/trips"]);
+// them with the 404 page (HOME-261), so the site drops the links. The site
+// has no Ships page until HOME-411, so its diagram names no URL.
+const RETIRED_LINKS = new Set([
+  "/app/notes",
+  "/app/trips",
+  "https://jomcgi.dev/app/ships",
+]);
+const RETIRED_LABELS: Record<string, string> = {
+  "jomcgi.dev/app/ships": "Map page",
+};
 
 it("copies every hub content export unchanged, except links to retired hub pages", () => {
   const hub = hubExports();
@@ -45,7 +53,7 @@ it("copies every hub content export unchanged, except links to retired hub pages
   expect(asJson({ categories, intro, marqueeItems, projects })).toEqual(hub);
 });
 
-it("ports every hub diagram's boxes, groups and arrow labels into the pre-render", () => {
+it("ports every hub diagram's boxes, groups and arrow labels into the pre-render, except retired URLs", () => {
   const html = new DOMParser().parseFromString(
     render("engineering.html"),
     "text/html",
@@ -60,7 +68,9 @@ it("ports every hub diagram's boxes, groups and arrow labels into the pre-render
     const boxes = [
       ...original.matchAll(/<DBox\b([^>]+)>([\s\S]*?)<\/DBox\s*>/g),
     ].map(([, attrs, label]) => ({
-      label: label!.replace(/\s+/g, " ").trim(),
+      label: ((text) => RETIRED_LABELS[text] ?? text)(
+        label!.replace(/\s+/g, " ").trim(),
+      ),
       sub: attrs!.match(/sub="([^"]+)"/)?.[1] ?? "",
       external: attrs!.includes('role="external"'),
     }));

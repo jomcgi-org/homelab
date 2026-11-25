@@ -20,7 +20,7 @@ export default function Ships() {
       <DBox role="external">Cloudflare CDN</DBox>
       <DArrow />
       <DBox role="output" sub="MapLibre">
-        jomcgi.dev/app/ships
+        Map page
       </DBox>
     </Diagram>
   );

@@ -485,6 +485,8 @@ test("production wildcard routes include query URLs and retired-page 404s", () =
   // path on the Worker, so the probe checks that each answers the 404 page.
   for (const path of [JUNK_PATH, ...RETIRED_PATHS])
     assert.ok(scope.junkPaths.includes(path), path);
+  // The release ships no Ships page until HOME-411.
+  assert.ok(scope.junkPaths.includes("/app/ships"));
   assert.ok(scope.junkPaths.every(scope.owns));
   const redirects = redirectRules(
     fileURLToPath(new URL("../web/public", import.meta.url)),

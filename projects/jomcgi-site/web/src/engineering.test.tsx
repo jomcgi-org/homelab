@@ -117,13 +117,19 @@ describe("engineering page", () => {
       prerender("engineering.html"),
       "text/html",
     );
-    // HOME-261: the hub pages for these are retired.
-    for (const label of ["Browse the notes", "Live trips"])
+    // HOME-261: the hub pages for these are retired. The site has no Ships
+    // page until HOME-411.
+    for (const label of [
+      "Browse the notes",
+      "Live trips",
+      "Live at jomcgi.dev/app/ships ↗",
+    ])
       expect(within(preview.body).queryByRole("link", { name: label })).toBe(
         null,
       );
+    expect(preview.querySelector('a[href*="/app/ships"]')).toBeNull();
     for (const [label, destination] of [
-      ["Live at jomcgi.dev/app/ships ↗", "https://jomcgi.dev/app/ships"],
+      ["Live at jomcgi.dev/app/stars ↗", "https://jomcgi.dev/app/stars"],
     ]) {
       const link = within(preview.body).getByRole("link", { name: label });
       expect(

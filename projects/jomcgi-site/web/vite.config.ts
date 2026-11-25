@@ -4,6 +4,7 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { blogContent, manifest } from "./blog-content.mjs";
 import { factoryFixtures } from "./factory-fixtures";
+import { built } from "./src/sections";
 
 // Every page is its own HTML entry, so each route ships only its own chunks.
 // Hashed files go under /assets/, which public/_headers caches forever.
@@ -11,6 +12,13 @@ import { factoryFixtures } from "./factory-fixtures";
 // Under Bazel the sources are symlinks into the sandbox. Absolute entries from
 // the working directory keep Rollup's page names inside the build root.
 const page = (file: string) => resolve(process.cwd(), file);
+// A section that is not live has no input, so none of its code ships.
+const pages = (inputs: Record<string, string>) =>
+  Object.fromEntries(
+    Object.entries(inputs)
+      .filter(([, file]) => built(file))
+      .map(([name, file]) => [name, page(file)]),
+  );
 
 export default defineConfig({
   define: homeDefines,
@@ -38,34 +46,31 @@ export default defineConfig({
     assetsInlineLimit: 0,
     modulePreload: { polyfill: false },
     rollupOptions: {
-      input: {
-        index: page("index.html"),
-        factory: page("factory/index.html"),
-        "404": page("404.html"),
-        cv: page("cv.html"),
-        scotland: page("scotland.html"),
-        "scotland-privacy": page("scotland/privacy.html"),
-        "scotland-terms": page("scotland/terms.html"),
-        "scotland-support": page("scotland/support.html"),
-        slop: page("slop.html"),
-        blog: page("blog.html"),
+      input: pages({
+        index: "index.html",
+        factory: "factory/index.html",
+        "404": "404.html",
+        cv: "cv.html",
+        scotland: "scotland.html",
+        "scotland-privacy": "scotland/privacy.html",
+        "scotland-terms": "scotland/terms.html",
+        "scotland-support": "scotland/support.html",
+        slop: "slop.html",
+        blog: "blog.html",
         ...Object.fromEntries(
-          manifest.map(({ slug }) => [
-            `blog/${slug}`,
-            page(`blog/${slug}.html`),
-          ]),
+          manifest.map(({ slug }) => [`blog/${slug}`, `blog/${slug}.html`]),
         ),
-        "llm-leaderboard": page("llm-leaderboard.html"),
-        homelab: page("homelab.html"),
-        trips: page("trips.html"),
-        trip: page("trip.html"),
-        "trip-day": page("trip-day.html"),
-        "trip-timeline": page("trip-timeline.html"),
-        engineering: page("engineering.html"),
-        ships: page("app/ships.html"),
-        hikes: page("hikes.html"),
-        stars: page("stars.html"),
-      },
+        "llm-leaderboard": "llm-leaderboard.html",
+        homelab: "homelab.html",
+        trips: "trips.html",
+        trip: "trip.html",
+        "trip-day": "trip-day.html",
+        "trip-timeline": "trip-timeline.html",
+        engineering: "engineering.html",
+        ships: "app/ships.html",
+        hikes: "hikes.html",
+        stars: "stars.html",
+      }),
       onwarn(warning, warn) {
         if (warning.code !== "MODULE_LEVEL_DIRECTIVE") warn(warning);
       },
