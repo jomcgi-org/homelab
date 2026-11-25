@@ -52,7 +52,8 @@ setup() {
 	local name="$1" current="$2" computed="$3" published="$4" digests_match="$5"
 	local version_status="${6:-0}" escalated="${7-0.4.0}" escalation_status="${8:-0}" escalated_published="${9:-no}"
 	local ws="$TMP/$name" stubs="$TMP/$name-stubs"
-	mkdir -p "$ws/projects/demo/chart" "$stubs/bazel_tools/tools/bash/runfiles"
+	local chart_dir="${FIXTURE_CHART_DIR:-projects/demo/chart}"
+	mkdir -p "$ws/$chart_dir" "$stubs/bazel_tools/tools/bash/runfiles"
 
 	# The template sources this and calls rlocation on each substitution. The
 	# identity function is correct here precisely because we substitute absolute
@@ -61,7 +62,7 @@ setup() {
 		rlocation() { echo "$1"; }
 	RUNFILES
 
-	printf 'apiVersion: v2\nname: demo\nversion: %s\n' "$current" >"$ws/projects/demo/chart/Chart.yaml"
+	printf 'apiVersion: v2\nname: demo\nversion: %s\n' "$current" >"$ws/$chart_dir/Chart.yaml"
 	git -C "$ws" init --quiet --initial-branch=main
 	git -C "$ws" config user.email "t@e.com"
 	git -C "$ws" config user.name "t"
@@ -70,23 +71,24 @@ setup() {
 
 	# Keep source values distinct from the build-time digest-pinned package.
 	mkdir -p "$stubs/archive/demo"
-	cp "$ws/projects/demo/chart/Chart.yaml" "$stubs/archive/demo/Chart.yaml"
+	cp "$ws/$chart_dir/Chart.yaml" "$stubs/archive/demo/Chart.yaml"
 	printf 'annotations:\n  example.org/existing: keep\n  homelab.jomcgi.dev/source-commit: stale\n' >>"$stubs/archive/demo/Chart.yaml"
 	cat >"$stubs/archive/demo/values.yaml" <<-'VALUES'
 		replicas: 2
 		image:
 		  repository: ghcr.io/example/demo
-		  digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+		  digest: DIGEST
 		sidecar:
 		  image: ghcr.io/example/helper@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 	VALUES
+	sed -i "s|DIGEST|${FIXTURE_DIGEST:-sha256:$(printf 'a%.0s' {1..64})}|" "$stubs/archive/demo/values.yaml"
 	tar -czf "$stubs/chart.tgz" -C "$stubs/archive" demo
 	# Write fixture configuration as shell-quoted assignments, including empty
 	# escalation output. Each stub loads this independently of the caller env.
 	printf '%s=%q\n' current "$current" computed "$computed" published "$published" \
 		digests_match "$digests_match" version_status "$version_status" \
 		escalated "$escalated" escalation_status "$escalation_status" \
-		escalated_published "$escalated_published" >"$stubs/config"
+		escalated_published "$escalated_published" chart_dir "$chart_dir" >"$stubs/config"
 	cat >"$stubs/common.sh" <<-'COMMON'
 		set -euo pipefail
 		stubs=$(cd "$(dirname "$0")" && pwd)
@@ -101,7 +103,7 @@ setup() {
 	cat >"$stubs/chart-version.sh" <<-'VERSION'
 		#!/usr/bin/env bash
 		source "$(dirname "$0")/common.sh"
-		[[ $# == 2 && $1 == projects/demo/chart && $2 == //projects/demo/chart:chart.package ]] || unexpected "version args: $*"
+		[[ $# == 2 && $1 == "$chart_dir" && $2 == "//$chart_dir:chart.package" ]] || unexpected "version args: $*"
 		[[ $PWD == "$BUILD_WORKSPACE_DIRECTORY" ]] || unexpected "version cwd: $PWD"
 		printf '%s %s %s\n' "${CHART_VERSION_ALL_PATHS-unset}" "$1" "$2" >>"$stubs/version.calls"
 		calls=$(wc -l <"$stubs/version.calls")
@@ -120,6 +122,11 @@ setup() {
 		printf '%s\n' "$*" >>"$stubs/helm.calls"
 		case "${1-}" in
 			show)
+				if [[ ${2-} == values ]]; then
+					[[ $# == 3 && $3 == "$stubs/chart.tgz" ]] || unexpected "show values: $*"
+					cat "$stubs/archive/demo/values.yaml"
+					exit 0
+				fi
 				[[ $# == 5 && $2 == chart && $3 == "$repository/demo" && $4 == --version ]] || unexpected "show: $*"
 				printf '%s\n' "$5" >>"$stubs/show.calls"
 				if [[ $5 == "$computed" ]]; then
@@ -175,7 +182,7 @@ setup() {
 		-e "s|{{CHART_TGZ}}|$stubs/chart.tgz|" \
 		-e "s|{{REPOSITORY}}|oci://example.test/charts|" \
 		-e "s|{{CHART_VERSION_SH}}|$stubs/chart-version.sh|" \
-		-e "s|{{CHART_DIR}}|projects/demo/chart|" \
+		-e "s|{{CHART_DIR}}|$chart_dir|" \
 		-e "s|{{CHECK_MISSED_BUMP}}|$stubs/check-missed-bump.sh|" \
 		"$TPL" >"$stubs/push.sh"
 	chmod +x "$stubs/push.sh"
@@ -348,7 +355,23 @@ for name in escalationfail empty unchanged collision; do
 	expect "$name does not repackage" no "$([[ -e "$TMP/$name-stubs/package.calls" ]] && echo yes || echo no)" "refusal before artifact changes"
 done
 
-for name in orphan aligned versionfail missingtgz; do no_push "$name"; done
+# 10. The explorer chart also records its packaged image digest for rollback.
+# The build merges the digest over the source `digest: ''`, and yq keeps the
+# quotes, so the packaged value is 'sha256:...'. On 2026-11-24 the strict parse
+# rejected that and stopped every main publish run.
+explorer_digest="sha256:$(printf 'c%.0s' {1..64})"
+ws=$(FIXTURE_CHART_DIR=projects/factory-explore-site/chart FIXTURE_DIGEST="'${explorer_digest}'" \
+	setup explorer 0.3.3 0.3.3 yes yes)
+set +e
+out=$(run_push "$ws" explorer)
+push_rc=$?
+set -e
+expect "explorer quoted digest succeeds" 0 "$push_rc" "$out"
+expect "explorer records the bare image digest" "$explorer_digest" \
+	"$(cat "$ws/.chart-version-records/.factory-explore-site-image" 2>/dev/null || echo '(no record)')" "rollback sidecar"
+expect "explorer records its version" 0.3.3 "$(record_version "$ws")" "publication receipt"
+
+for name in orphan aligned versionfail missingtgz explorer; do no_push "$name"; done
 expect "initial helper failure stops before registry" no \
 	"$([[ -e "$TMP/versionfail-stubs/helm.calls" ]] && echo yes || echo no)" "no registry access"
 expect "missing package stops before registry" no \
@@ -356,7 +379,7 @@ expect "missing package stops before registry" no \
 for name in orphan aligned; do
 	expect "$name reaches digest guard" 1 "$(wc -l <"$TMP/$name-stubs/guard.calls" | tr -d ' ')" "content-verified reuse"
 done
-for name in orphan aligned versionfail missingtgz recovery escalationfail empty unchanged collision; do
+for name in orphan aligned versionfail missingtgz recovery escalationfail empty unchanged collision explorer; do
 	expect "$name uses only expected stub operations" no \
 		"$([[ -e "$TMP/$name-stubs/unexpected" ]] && echo yes || echo no)" "fixture contract"
 done
