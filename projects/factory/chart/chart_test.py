@@ -74,6 +74,8 @@ def _render(
             "--set",
             "discord.bridge.enabled=false",
             "--set",
+            "discord.import.enabled=false",
+            "--set",
             "kagent.rbac.namespaces={kagent,factory-r-homelab}",
             # The scheduled planner and its Claude relay (HOME-40) need the
             # reviewer, which these tests turn off; planner_test.py and
