@@ -1,4 +1,4 @@
-1. `projects/scotland-connector/deploy/application.yaml` pins chart 0.59.1
+1. `projects/scotland-connector/deploy/application.yaml` pins chart 0.77.218
    and loads `projects/scotland-connector/factory/values.yaml` last. That file
    disables `createNamespace`, which guards `chart/templates/namespace.yaml`
    under the same project. The Application requests restricted Pod Security
