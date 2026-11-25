@@ -1,7 +1,9 @@
 # Manual App runs on 2026-11-15 verified authentication, bot authorship and
 # signed commits (#8041). Set `suspend: true` to stop the scheduled writer.
+# Suspended on 2026-11-25: the 4 GiB request fits no node. HOME-878 moves the
+# scan to BuildBuddy.
 workloadKind: CronJob
-suspend: false
+suspend: true
 # Installation tokens last one hour, including init time and Job retries.
 activeDeadlineSeconds: 2700
 
@@ -19,4 +21,4 @@ image:
 
 apkoLockMaintenance:
   activeDeadlineSeconds: 3300
-  suspend: false
+  suspend: true

@@ -5,7 +5,12 @@ Renovate runs on the factory home cluster through the
 It loads `values.yaml` then `values-factory.yaml` and renders a Kubernetes
 CronJob in namespace `renovate`. The factory has no Argo Workflows.
 
-**The CronJob runs daily.** Manual runs on 2026-11-15 verified the App's
+**Both CronJobs are suspended (2026-11-25, HOME-878).** The 4 GiB memory
+request fits no node, so the daily Job stayed Pending and `PodsUnschedulable`
+fired. HOME-878 moves the scan to a scheduled BuildBuddy action. Set both
+`suspend` values to `false` in `values-factory.yaml` to resume the CronJobs.
+
+**The CronJob ran daily until then.** Manual runs on 2026-11-15 verified the App's
 authentication, `jomcgi-factory-renovate[bot]` authorship and verified commits
 (#8075). #8041 then set `suspend: false` in `values-factory.yaml`; setting it
 back to `true` stops the scheduled writer. The factory owns weekly apko lock PRs through the same App. The weekly
