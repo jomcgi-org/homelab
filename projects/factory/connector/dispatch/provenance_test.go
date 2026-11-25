@@ -410,10 +410,12 @@ func TestLegacyRunRetryRecordsOnlyAttemptProvenance(t *testing.T) {
 			}
 			session := v.work(101).SessionID
 			v.kg.sessions[session].PreparedRevision = "current"
-			head := strings.Repeat("b", 40)
+			head, main := strings.Repeat("b", 40), strings.Repeat("a", 40)
 			if workBranch {
+				v.gh.push("main", main, "base")
 				v.gh.push("factory/HL-7", head, "partial fix")
 			} else {
+				main = head
 				v.gh.push("main", head, "current base")
 			}
 			v.kg.finish(first.TaskID, kagent.StateFailed, "test command failed", nil)
@@ -438,7 +440,7 @@ func TestLegacyRunRetryRecordsOnlyAttemptProvenance(t *testing.T) {
 				t.Fatal("replacement did not start a fresh session")
 			}
 			text := sends[1].msg.Parts[0].Text
-			if next.RenderedPrompt != text || next.Provenance != provenance.New(runtime, head, text, "unclassified") {
+			if next.RenderedPrompt != text || next.Provenance != provenance.New(runtime, head, text, "unclassified") || next.AnalysisMainSHA != main {
 				t.Fatalf("incorrect retry receipt: %+v", next)
 			}
 			if run := v.run(1); run.ProvenanceRequired || run.Provenance != (provenance.Record{}) {
