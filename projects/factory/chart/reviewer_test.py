@@ -732,6 +732,8 @@ def test_broker_keeps_apps_subjects_and_secret_writes_separate() -> None:
         v["name"] for v in _pod(docs, "factory-broker")["volumes"]
     }
     pod = _pod(docs, "factory-review-broker", "factory-review-broker")
+    # Like the author broker: a Pending review broker stops the required check.
+    assert pod["priorityClassName"] == "factory-control"
     assert {v["name"] for v in pod["volumes"]} == {"config", "review-github-app"}
     volumes = {v["name"]: v for v in pod["volumes"]}
     assert volumes["review-github-app"]["secret"] == {
