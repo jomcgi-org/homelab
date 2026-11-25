@@ -35,6 +35,8 @@ MANIFEST_SETS = [
     # Platform charts rendered by argocd_app. The plain `manifests` target is
     # the chart's default-values render (the home overlay until #6914 retired
     # it); `manifests_gke` is the hub overlay.
+    "//projects/platform/argo-workflows:manifests/all.yaml",
+    "//projects/platform/argo-workflows:manifests_gke/all.yaml",
     "//projects/platform/argocd:manifests/all.yaml",
     "//projects/platform/argocd:manifests_gke/all.yaml",
     "//projects/platform/authentik:manifests_gke/all.yaml",

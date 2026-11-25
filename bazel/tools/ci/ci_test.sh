@@ -1094,14 +1094,14 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 		esac
 		case "$scenario" in
 		qualifying | chart-only | app-only | multi-project)
-			if ! grep -q '^bazel test\|push_all\|push-changed.sh\|write-back-versions.sh\|check_go_stubs' "$TRACE"; then
+			if ! grep -q '^bazel test\|push_all\|push-changed.sh\|write-back-versions.sh\|gazelle_python_manifest' "$TRACE"; then
 				pass "workflow_${scenario}_no_tests_images_publish"
 			else
 				fail "workflow_$scenario" "fast path leaked expensive work: $(cat "$TRACE")"
 			fi
 			;;
 		*)
-			if grep -q '^bazel test .*gazelle_test' "$TRACE" && grep -q '^bazel test .*fixture:test\|^bazel test //...\|--target_pattern_file=' "$TRACE" && grep -q check_go_stubs "$TRACE"; then
+			if grep -q '^bazel test .*gazelle_test' "$TRACE" && grep -q '^bazel test .*fixture:test\|^bazel test //...\|--target_pattern_file=' "$TRACE" && grep -q gazelle_python_manifest.test "$TRACE"; then
 				pass "workflow_${scenario}_ordinary_gates"
 			else
 				fail "workflow_$scenario" "fallback lost tests or generation acceptance: $(cat "$TRACE")"

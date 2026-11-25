@@ -40,6 +40,7 @@ factory cluster to match. Its root is `projects/factory-cluster/`, which lists t
 
 | Component                                      | Purpose                                                                                                                      |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `argo-workflows`       | Namespace-scoped Argo Workflows engine for off-pod batch job execution, used by the monolith's job scheduler. Its CRDs also validate the renovate chart's CronWorkflows in the admissibility gate. |
 | `renovate`             | Factory daily dependency updates and weekly apko lock maintenance. Both hub schedules are suspended pending factory verification and hub retirement (HOME-88). |
 | `onepassword`          | 1Password Connect and the 1Password Operator, the secret broker every `OnePasswordItem` is reconciled through; hub only.     |
 | `authentik` | Identity provider at `auth.jomcgi.dev`; OAuth2 providers and applications are blueprints. |
