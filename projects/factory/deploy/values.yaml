@@ -346,6 +346,10 @@ discord:
     enabled: true
   bridge:
     enabled: true
+    # On the controller port, POST only to Bosun's A2A path and
+    # SessionService/DeleteSession. Every node redacts Authorization in
+    # Hubble (HOME-296).
+    enforceAgentPath: true
     policy:
       # Every server Bosun is in (Joe, HOME-162 comment 1942). history marks
       # each for the history import (HOME-164). ingest stores every human

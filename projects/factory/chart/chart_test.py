@@ -1336,7 +1336,8 @@ def test_discord_bridge_staging_and_session_expiration() -> None:
 
 
 def test_discord_bridge_reaches_only_its_expected_peers() -> None:
-    docs = _render(_DISCORD + ["discord.bridge.enforceAgentPath=true"])
+    # The deploy values turn the agent path policy on (HOME-296).
+    docs = _render(_DISCORD)
     ns = "factory-discord"
     deploy = _in(docs, "Deployment", ns, "discord-bridge")
     pod = deploy["spec"]["template"]
