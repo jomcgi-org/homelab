@@ -17,7 +17,6 @@ spec:
       releaseName: factory-explore-site
       valuesObject:
         manageHostname: true
-        publishEnabled: true
         workloads:
           factory-explore-deploy:
             image:
