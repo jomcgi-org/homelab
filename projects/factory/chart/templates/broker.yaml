@@ -30,6 +30,10 @@ gets no planner binding.
 */}}
 {{- $atespaces = append $atespaces (include "factory.plannerNamespace" .) }}
 {{- end }}
+{{- /* Joe's operator session (discord.operator) runs Codex through the relay. */}}
+{{- if .Values.discord.operator.enabled }}
+{{- $atespaces = append $atespaces .Values.discord.operator.namespace }}
+{{- end }}
 {{- /* The connector's own ServiceAccount fetches connector tokens. */}}
 {{- $connectorSubjects := $b.connectorSubjects }}
 {{- if .Values.connector.enabled }}

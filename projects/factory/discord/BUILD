@@ -11,6 +11,7 @@ go_library(
         "history.go",
         "ingest.go",
         "notification.go",
+        "operator.go",
         "policy.go",
         "rest.go",
     ],
@@ -31,6 +32,7 @@ go_test(
         "history_test.go",
         "ingest_test.go",
         "notification_test.go",
+        "operator_test.go",
     ],
     embed = [":discord"],
     deps = [

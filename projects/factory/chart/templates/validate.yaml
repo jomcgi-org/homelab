@@ -75,6 +75,33 @@ instead of silently rendering nothing.
 {{- end }}
 {{- end }}
 {{- end }}
+{{- with .Values.discord.operator }}
+{{- if .enabled }}
+{{- if not (and $.Values.discord.bridge.enabled $.Values.broker.enabled) }}
+{{- fail "discord.operator needs discord.bridge and broker: the bridge runs its turns on the broker's Codex relay" }}
+{{- end }}
+{{- if not (has .namespace $watched) }}
+{{- fail (printf "discord.operator: add namespace %s to kagent.rbac.namespaces so the controller watches it" .namespace) }}
+{{- end }}
+{{- if or (hasKey $seen .namespace) (eq .namespace (include "factory.kagentNamespace" $)) (eq .namespace $.Values.broker.namespace) (eq .namespace $.Values.discord.bridge.namespace) (eq .namespace $.Values.discord.agent.namespace) }}
+{{- fail (printf "discord.operator: namespace %s must be the operator Agent's alone" .namespace) }}
+{{- end }}
+{{- if or (ne (toString .resources.cpu) (toString $runtime.cpu)) (ne (toString .resources.memory) (toString $runtime.memory)) }}
+{{- fail (printf "discord.operator: resources must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $runtime.cpu $runtime.memory) }}
+{{- end }}
+{{- if or (not (kindIs "string" .guild)) (not .guild) (not (hasKey $.Values.discord.bridge.policy.guilds .guild)) }}
+{{- fail "discord.operator.guild: quote a server ID from discord.bridge.policy.guilds" }}
+{{- end }}
+{{- if not .channels }}
+{{- fail "discord.operator.channels: name at least one parent channel" }}
+{{- end }}
+{{- range .channels }}
+{{- if or (not (kindIs "string" .)) (not .) }}
+{{- fail "discord.operator.channels: quote each channel ID; Helm reads a bare number as a float and loses digits" }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if and .Values.discord.import.enabled (not .Values.discord.bridge.enabled) }}
 {{- fail "discord.import needs discord.bridge: the Job uses the bridge's policy, token and network policy" }}
 {{- end }}

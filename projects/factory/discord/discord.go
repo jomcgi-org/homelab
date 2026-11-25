@@ -4,7 +4,8 @@
 // runs each turn on a kagent Agent that holds no memory credential.
 //
 // Every message, username and attachment is untrusted data from people other
-// than Joe (HOME-162 contract rule 1). The bridge chooses the server's bank
+// than Joe (HOME-162 contract rule 1). Joe's operator session (operator.go)
+// is the one exception: it takes only his own messages. The bridge chooses the server's bank
 // and the channel's tag from the gateway event, never from message text, and
 // every reply sends allowed_mentions {"parse": []}, so text cannot ping.
 package discord
@@ -50,6 +51,21 @@ type Message struct {
 	// Type is 0 for a message and 19 for a reply; other values are system
 	// messages.
 	Type int `json:"type"`
+	// Reference and Snapshots mark a forwarded message. The bridge never
+	// decodes referenced_message, the preview of a replied-to message.
+	Reference *Reference `json:"message_reference,omitempty"`
+	Snapshots []struct{} `json:"message_snapshots,omitempty"`
+}
+
+// Reference is the subset of a received message_reference the bridge reads.
+// Type 1 is a forward.
+type Reference struct {
+	Type int `json:"type"`
+}
+
+// Forwarded reports whether m forwards another message.
+func (m Message) Forwarded() bool {
+	return len(m.Snapshots) > 0 || (m.Reference != nil && m.Reference.Type == 1)
 }
 
 // MentionsUser reports whether the message tags user id: Discord lists the
