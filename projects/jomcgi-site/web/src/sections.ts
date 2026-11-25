@@ -16,6 +16,8 @@ export interface Section {
   summary: string;
   /** Draft notes stay addressable without appearing in the site index. */
   listed?: boolean;
+  /** HTML entries the build emits only while the section is live. */
+  entries?: readonly string[];
 }
 
 export const HOME: Section = {
@@ -69,7 +71,10 @@ export const SECTIONS: readonly Section[] = [
     name: "Ships",
     group: "Apps",
     path: "/ships",
+    // Not live until its data reaches the page (HOME-411). The browser read
+    // of the public mirror has no CORS header, so the build ships no page.
     live: false,
+    entries: ["app/ships.html"],
     summary: "Vessels moving around the coast.",
   },
   {
@@ -131,6 +136,13 @@ export const SECTIONS: readonly Section[] = [
     summary: "Work history.",
   },
 ];
+
+/** False for an entry of a section that is not live: the build skips it. */
+export function built(entry: string): boolean {
+  return !SECTIONS.some(
+    (section) => !section.live && section.entries?.includes(entry),
+  );
+}
 
 /** Where a link to the section goes. Only a live section has one. */
 export function hrefFor(section: Section): string {

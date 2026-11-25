@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { client, checkLinks, tier1 } from "./tier1.mjs";
 import { checkPage, launchBrowser, tier2 } from "./browser.mjs";
 import { serveRelease, serveFixturePhoto } from "./release-fixture.mjs";
 import { scopeFor } from "./scope.mjs";
 
-// The dev release includes Ships before the edge route moves from the hub.
+// Mirror fixtures for the Ships page. The release has that page only while
+// Ships is live (web/src/sections.ts, HOME-411).
 const shipsSnapshot = "snapshot-" + "a".repeat(64) + ".json";
 const shipsFiles = new Map([
   [
@@ -45,7 +48,9 @@ export async function checkReleaseStage(dist, stage) {
       await tier2(pages, {
         checkMaps: false,
         servePhoto: serveFixturePhoto,
-        serveShipsRequest,
+        serveShipsRequest: existsSync(join(dist, "app/ships.html"))
+          ? serveShipsRequest
+          : undefined,
       }),
     );
   } finally {

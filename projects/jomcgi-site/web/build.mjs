@@ -2,6 +2,7 @@
 // entry. A page reads fully, with its real preview tags, before any script
 // runs; the browser then hydrates the same tree (HOME-178 performance contract).
 // Usage: node build.mjs (from this directory)
+import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,9 +59,15 @@ try {
     `${JSON.stringify(marketplace, null, 2)}\n`,
   );
   const { PAGES } = await server.ssrLoadModule("/src/pages.tsx");
+  const { built } = await server.ssrLoadModule("/src/sections.ts");
   const { sitemap } = await server.ssrLoadModule("/src/sitemap.ts");
-  await writeFile("dist/sitemap.xml", sitemap(Object.keys(PAGES)));
-  for (const entry of Object.keys(PAGES)) {
+  // A page of a section that is not live is not built (HOME-411).
+  const entries = Object.keys(PAGES).filter(built);
+  for (const entry of Object.keys(PAGES))
+    if (!built(entry) && existsSync(join("dist", entry)))
+      throw new Error(`${entry} is not live but was built`);
+  await writeFile("dist/sitemap.xml", sitemap(entries));
+  for (const entry of entries) {
     const file = join("dist", entry);
     const parts = (await readFile(file, "utf8")).split(MARK);
     if (parts.length !== 2) {

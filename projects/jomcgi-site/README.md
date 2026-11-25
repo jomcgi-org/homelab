@@ -300,12 +300,14 @@ The `/assets/*` rule in `_headers` also applies to a 404 under that prefix.
 Site-check requires every probed 404 to carry no cache lifetime.
 
 The retired hub paths (`/api`, `/functions`, `/health`, `/grimoire`,
-`/notes`, `/trips`, `/app/trips`, `/app/grimoire`, `/slop/factory` and the
-other hub apps) get no redirect: the 404 page links every live section.
+`/notes`, `/trips`, `/app/trips`, `/app/ships`, `/app/grimoire`,
+`/slop/factory` and the other hub apps) get no redirect: the 404 page links
+every live section.
 No page links a section that is not live, and `hrefFor` throws for one,
 because its old hub URL now answers 404. A disabled data section deploys no
-page (Trips, above). `/app/ships` serves the staged Ships page (HOME-411),
-which reads the public mirror; Ships stays out of the nav until it is live.
+page (Trips, above). The build ships no Ships page until HOME-411: the
+browser read of the public mirror gets no CORS header. A section's
+`entries` in `web/src/sections.ts` build only while it is live.
 
 Rollback: set `edge.serveRoutes: false` in `deploy/application-prod.yaml`.
 With the hub retired, that takes every jomcgi.dev path down, so to keep the
@@ -313,8 +315,8 @@ site and drop only the catch-all, follow the pin rule in that file: routes
 off, confirm the zone has no `jomcgi-site` routes, lower the pin to a chart
 without `jomcgi.dev/*`, then routes on. Never lower the pin alone.
 
-After the prod promotion, check on `jomcgi.dev`: `/trips`, `/grimoire`,
-`/notes`, `/api/anything` and `/functions/x` answer 404 with the 404 page;
+After the prod promotion, check on `jomcgi.dev`: `/trips`, `/app/ships`,
+`/grimoire`, `/notes`, `/api/anything` and `/functions/x` answer 404 with the 404 page;
 `/app/hikes` and `/app/stars` answer 301; `/scotland/mcp` answers 308 to
 `scotland-mcp.jomcgi.dev`; `/`, `/blog` and `/cv` answer 200 with the
 Web Analytics beacon in the HTML.

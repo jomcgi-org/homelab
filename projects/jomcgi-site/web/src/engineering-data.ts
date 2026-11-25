@@ -369,12 +369,8 @@ export const projects: EngineeringProject[] = [
         v: "Vessels render as a GPU GeoJSON symbol layer with directional icons by heading. A separate WebGL layer maps distinct-vessel traffic density per ~500m cell.",
       },
     ],
-    links: [
-      {
-        label: "Live at jomcgi.dev/app/ships",
-        href: "https://jomcgi.dev/app/ships",
-      },
-    ],
+    // The site has no Ships page until HOME-411.
+    links: [],
   },
   {
     id: "stargazer",

@@ -1,5 +1,6 @@
 // Compiled-page acceptance: pnpm build && pnpm test:browser.
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -8,6 +9,13 @@ import chrome, { inflate } from "@sparticuz/chromium";
 import { chromium } from "playwright";
 import { expect } from "playwright/test";
 const root = resolve(process.argv[2]);
+// The build has no Ships page while Ships is not live (src/sections.ts,
+// HOME-411). build.mjs fails when a live page is missing, so this skip ends
+// when Ships is live.
+if (!existsSync(join(root, "app/ships.html"))) {
+  console.log("SKIP: no /app/ships page, Ships is not live (HOME-411)");
+  process.exit(0);
+}
 const headers = await readFile(join(root, "_headers"), "utf8");
 // Apply the matching CSP from the built headers to each response. A worker
 // inherits the site rule unless its own asset rule replaces it.
