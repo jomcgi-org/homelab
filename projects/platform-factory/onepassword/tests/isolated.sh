@@ -36,7 +36,7 @@ done
 kubectl create namespace ships
 kubectl create namespace ate-system
 kubectl create namespace argocd
-tar xOzf projects/platform/onepassword/charts/connect-2.0.5.tgz connect/crds/onepassworditem-crd.yaml | kubectl create -f -
+kubectl create -f projects/platform/onepassword/charts/connect/crds/onepassworditem-crd.yaml
 kubectl wait --for=condition=Established crd/onepassworditems.onepassword.com
 kubectl apply -f projects/platform-factory/onepassword/admission.yaml
 # Admission registration propagates asynchronously.
