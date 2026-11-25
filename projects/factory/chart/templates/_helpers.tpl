@@ -110,3 +110,23 @@ may expose the listener, so enabling it without them fails the render.
 app.kubernetes.io/name: factory-review-broker
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+The bindings the review broker mints the reviewer App's read-only agent token
+(github-git, contents: read) for, as JSON: each repository's review namespace,
+and the planner's namespace when planner.enabled (HOME-40). Only the review
+broker holds the reviewer App key (HOME-294-1).
+*/}}
+{{- define "factory.reviewBrokerBindings" -}}
+{{- $out := list -}}
+{{- if .Values.reviewer.enabled -}}
+{{- range .Values.repositories -}}
+{{- $out = append $out (dict "name" .name "repository" (printf "%s/%s" .owner .repo) "namespace" (include "factory.reviewerNamespace" (dict "root" $ "binding" .))) -}}
+{{- end -}}
+{{- if .Values.planner.enabled -}}
+{{- $r := include "factory.plannerRepository" . | fromJson -}}
+{{- $out = append $out (dict "name" (printf "planner-%s" $r.name) "repository" (printf "%s/%s" $r.owner $r.repo) "namespace" (include "factory.plannerNamespace" .)) -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end }}

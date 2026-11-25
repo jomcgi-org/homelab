@@ -2,7 +2,7 @@
 
 Everything is off by default. These tests render the deploy values with the
 planner turned on, and check that the chart gives it a read-only, separate
-kagent Agent, a broker binding without new App permissions, one itsaplan cron
+kagent Agent, a review broker binding without new App permissions, one itsaplan cron
 schedule per reviewed job, and exactly the connector config the Go side reads.
 """
 
@@ -91,8 +91,8 @@ def _in(docs: list[dict], kind: str, ns: str | None, name: str) -> dict[str, Any
     return found[0]
 
 
-def _config(docs: list[dict], name: str) -> dict[str, Any]:
-    config_map = _in(docs, "ConfigMap", "factory", name)
+def _config(docs: list[dict], name: str, ns: str = "factory") -> dict[str, Any]:
+    config_map = _in(docs, "ConfigMap", ns, name)
     return yaml.safe_load(config_map["data"]["config.yaml"])
 
 
@@ -116,6 +116,8 @@ def test_off_by_default_renders_no_planner_runtime(off: list[dict]) -> None:
     broker = _config(off, "factory-broker")
     assert all(b["namespace"] != _NS for b in broker["reviewBindings"])
     assert _NS not in broker["actorJwt"]["allowedAtespaces"]
+    review = _config(off, "factory-review-broker", "factory-review-broker")
+    assert all(b["namespace"] != _NS for b in review["reviewBindings"])
 
 
 def test_off_keeps_cron_and_prompt_out_of_the_connector_config(
@@ -192,11 +194,15 @@ def test_planner_cannot_push(on: list[dict]) -> None:
     assert len(egress["spec"]["destinations"]) == 1
 
 
-def test_broker_binds_the_planner_to_the_reviewer_apps_read_token(
+def test_review_broker_binds_the_planner_to_the_reviewer_apps_read_token(
     on: list[dict], off: list[dict]
 ) -> None:
-    broker, base = _config(on, "factory-broker"), _config(off, "factory-broker")
-    added = [b for b in broker["reviewBindings"] if b["namespace"] == _NS]
+    # HOME-294-1: only the review broker holds the reviewer App key, so it
+    # mints the planner's github-git. The author broker only relays the
+    # planner's model calls.
+    review = _config(on, "factory-review-broker", "factory-review-broker")
+    review_base = _config(off, "factory-review-broker", "factory-review-broker")
+    added = [b for b in review["reviewBindings"] if b["namespace"] == _NS]
     assert added == [
         {
             "name": "planner-homelab",
@@ -204,15 +210,50 @@ def test_broker_binds_the_planner_to_the_reviewer_apps_read_token(
             "repository": "jomcgi-org/homelab",
         }
     ]
+    assert [b for b in review["reviewBindings"] if b["namespace"] != _NS] == (
+        review_base["reviewBindings"]
+    )
+    # No App permission map or subject changes: the planner uses the
+    # existing agent token and calls no broker endpoint.
+    assert review["githubReview"] == review_base["githubReview"]
+    assert review["tokenReview"] == review_base["tokenReview"]
+    broker, base = _config(on, "factory-broker"), _config(off, "factory-broker")
+    assert broker["reviewBindings"] == base["reviewBindings"]
+    assert all(b["namespace"] != _NS for b in broker["reviewBindings"])
     assert _NS in broker["actorJwt"]["allowedAtespaces"]
-    # No App permission map changes: the planner uses the existing agent token.
     assert broker["bindings"] == base["bindings"]
-    assert broker["githubReview"] == base["githubReview"]
     assert broker["github"] == base["github"]
     assert broker["tokenReview"] == base["tokenReview"]
+    assert "githubReview" not in broker
     role = _in(on, "Role", _NS, "factory-broker")
     verbs = {tuple(rule["verbs"]) for rule in role["rules"]}
     assert verbs == {("create",), ("get", "update")}
+    rb = _in(on, "RoleBinding", _NS, "factory-broker")
+    assert rb["subjects"] == [
+        {
+            "kind": "ServiceAccount",
+            "name": "factory-review-broker",
+            "namespace": "factory-review-broker",
+        }
+    ]
+    # The review broker may write github-git in the planner namespace; the
+    # policy names its namespaces, and the planner's only when enabled.
+    policy = _in(on, "ValidatingAdmissionPolicy", None, "factory-broker-secrets")
+    (validation,) = policy["spec"]["validations"]
+    assert f"'{_NS}'" in validation["expression"]
+    policy = _in(off, "ValidatingAdmissionPolicy", None, "factory-broker-secrets")
+    (validation,) = policy["spec"]["validations"]
+    assert f"'{_NS}'" not in validation["expression"]
+    # The review broker admits only the reviewer: no planner network path.
+    ingress = _in(
+        on, "CiliumNetworkPolicy", "factory-review-broker", "factory-review-broker"
+    )
+    assert (
+        ingress["spec"]["ingress"]
+        == _in(
+            off, "CiliumNetworkPolicy", "factory-review-broker", "factory-review-broker"
+        )["spec"]["ingress"]
+    )
 
 
 def test_connector_config_carries_the_planner_contract(on: list[dict]) -> None:
@@ -318,9 +359,11 @@ def test_claude_planner_stays_read_only(claude: list[dict]) -> None:
     assert [d["origin"] for d in egress["spec"]["destinations"]] == [
         "https://github.com"
     ]
-    broker = _config(claude, "factory-broker")
-    planner = [b for b in broker["reviewBindings"] if b["namespace"] == _NS]
+    review = _config(claude, "factory-review-broker", "factory-review-broker")
+    planner = [b for b in review["reviewBindings"] if b["namespace"] == _NS]
     assert [b["name"] for b in planner] == ["planner-homelab"]
+    broker = _config(claude, "factory-broker")
+    assert all(b["namespace"] != _NS for b in broker["reviewBindings"])
     assert _NS in broker["actorJwt"]["allowedAtespaces"]
     # The coding and review bindings stay on Codex.
     for d in claude:
@@ -354,6 +397,7 @@ def test_codex_planner_render_is_unchanged(on: list[dict]) -> None:
         (["connector.enabled=false"], "connector.enabled"),
         (["planner.repository=nope"], "names no repository"),
         (["planner.namespace=factory-r-homelab-review"], "must be separate"),
+        (["planner.namespace=factory-review-broker"], "must be separate"),
         (["planner.namespace=factory-r-other"], "kagent.rbac.namespaces"),
         (["planner.runTimeout=soon"], "Does not match pattern"),
         (["agents.planner.autoscaling.enabled=true"], "autoscaling is not supported"),

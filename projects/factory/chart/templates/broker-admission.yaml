@@ -6,10 +6,16 @@ RBAC cannot narrow the broker's Secret `create` in binding namespaces by name,
 so a create could otherwise mint any Secret there, a ServiceAccount token
 included. This policy confines every Secret write by the broker's
 ServiceAccount to the two it owns: its grant in its own namespace, and an
-Opaque `github-git` in a binding namespace.
+Opaque `github-git` in a binding namespace. The review broker writes only
+`github-git` in its review and planner namespaces.
 */}}
 {{- $b := .Values.broker }}
 {{- $sa := printf "system:serviceaccount:%s:%s" $b.namespace (include "factory.brokerName" .) }}
+{{- $reviewSA := "system:serviceaccount:factory-review-broker:factory-review-broker" }}
+{{- $reviewNamespaces := list }}
+{{- range include "factory.reviewBrokerBindings" . | fromJsonArray }}
+{{- $reviewNamespaces = append $reviewNamespaces (printf "'%s'" .namespace) }}
+{{- end }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -26,12 +32,14 @@ spec:
         resources: [secrets]
   matchConditions:
     - name: broker
-      expression: request.userInfo.username in [{{ $sa | squote }}, 'system:serviceaccount:factory-review-broker:factory-review-broker']
+      expression: request.userInfo.username in [{{ $sa | squote }}, {{ $reviewSA | squote }}]
   validations:
     - expression: >-
         (request.userInfo.username == {{ $sa | squote }} && request.namespace == {{ $b.namespace | squote }} &&
           object.metadata.name == {{ include "factory.brokerGrantSecret" . | squote }}) ||
         (request.namespace != {{ $b.namespace | squote }} &&
+          (request.userInfo.username == {{ $sa | squote }} ||
+            request.namespace in [{{ join ", " $reviewNamespaces }}]) &&
           object.metadata.name == 'github-git' &&
           has(object.type) && object.type == 'Opaque')
       message: The factory broker may write only its grant Secret and Opaque github-git Secrets in binding namespaces.

@@ -766,6 +766,10 @@ def test_broker_keeps_apps_subjects_and_secret_writes_separate() -> None:
             "namespace": "factory-review-broker",
         }
     ]
+    # Admission confines the review broker's Secret writes to its namespaces.
+    policy = _in(docs, "ValidatingAdmissionPolicy", None, "factory-broker-secrets")
+    (validation,) = policy["spec"]["validations"]
+    assert f"request.namespace in ['{_REVIEW_NS}']" in validation["expression"]
     # Review can run independently of author delivery.
     independent = _config(
         _render(["broker.githubApp.enabled=false", "connector.enabled=false"]),
