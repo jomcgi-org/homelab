@@ -23,11 +23,12 @@ and metrics. This pod holds the provider and author App credentials.
 {{- end }}
 {{- end }}
 {{- if and .Values.planner.enabled .Values.reviewer.enabled }}
-{{- /* The planner's namespace gets the reviewer App's read-only agent token (contents: read); no App permission changes. */}}
-{{- $planRepo := include "factory.plannerRepository" . | fromJson }}
-{{- $planNs := include "factory.plannerNamespace" . }}
-{{- $reviewBindings = append $reviewBindings (dict "name" (printf "planner-%s" $planRepo.name) "repository" (printf "%s/%s" $planRepo.owner $planRepo.repo) "namespace" $planNs) }}
-{{- $atespaces = append $atespaces $planNs }}
+{{- /*
+The planner's model calls use this broker's relay. Its read-only github-git
+comes from the review broker (factory.reviewBrokerBindings), so this broker
+gets no planner binding.
+*/}}
+{{- $atespaces = append $atespaces (include "factory.plannerNamespace" .) }}
 {{- end }}
 {{- /* The connector's own ServiceAccount fetches connector tokens. */}}
 {{- $connectorSubjects := $b.connectorSubjects }}
@@ -287,8 +288,9 @@ subjects:
   - kind: ServiceAccount
     name: {{ $name }}
     namespace: {{ $ns }}
-{{- range concat $bindings $reviewBindings }}
-{{- $review := has . $reviewBindings }}
+{{- $reviewBrokerBindings := include "factory.reviewBrokerBindings" . | fromJsonArray }}
+{{- range concat $bindings $reviewBrokerBindings }}
+{{- $review := has . $reviewBrokerBindings }}
 ---
 # The binding's git token Secret. RBAC cannot narrow create by name; the
 # broker only updates a github-git it labelled itself.

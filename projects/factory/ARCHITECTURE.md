@@ -721,7 +721,7 @@ records how they relate and routes results and feedback between them.
 
 ## Credential broker
 
-The reviewer calls `/github/reviewer-*` on the `factory-review-broker` Service in its own eponymous namespace with a separately projected audience. Its Deployment alone mounts the reviewer App key and writes the review bindings’ git tokens. Each broker checks the App ID from its mounted Secret against its configured identity before minting. Prometheus scrapes both brokers for mint outcomes. Quota and run accounting stay on the author broker.
+The reviewer calls `/github/reviewer-*` on the `factory-review-broker` Service in its own eponymous namespace with a separately projected audience. Its Deployment alone mounts the reviewer App key and writes the git tokens of the review bindings and, when `planner.enabled`, the planner binding. Admission lets it write only `github-git` in those namespaces. Each broker checks the App ID from its mounted Secret against its configured identity before minting. Prometheus scrapes both brokers for mint outcomes. Quota and run accounting stay on the author broker.
 
 `projects/factory/broker`, one replica with `Recreate`. It reuses the Codex
 OAuth code in `projects/shared/go/tokenbroker`, with the grant Secret prefix
@@ -956,7 +956,7 @@ reuse state, even after a prolonged persistence failure.
   enqueue: the first live attempt was refused with `FORBIDDEN` (2026-11-14),
   so the reviewer enqueues nothing ("Merge authority"). With `reviewer.enabled`, the chart mounts the separate App from
   `reviewer.githubApp.itemPath`, derives `reviewBindings` from the review
-  namespaces, and admits only `factory-reviewer` in `reviewerSubjects`.
+  namespaces and, when `planner.enabled`, the planner namespace, and admits only `factory-reviewer` in `reviewerSubjects`.
   The config refuses loading both App keys into one process, a writable
   agent token, any reviewer write besides checks and merge queues, a
   comment token writing anything but issues, and a
@@ -1023,12 +1023,14 @@ flowchart LR
   B[bootstrap Job] -->|cron schedule planner-job| I[itsaplan]
   I -->|run, trigger schedule| C[connector]
   C -->|fixed prompt from main, fresh session| P[planner Agent]
-  R[broker: reviewer App contents read] -->|github-git| P
+  R[review broker: reviewer App contents read] -->|github-git| P
 ```
 
 **Why.** The planner's token comes from the reviewer App's existing agent
-permission (`contents: read`), through a broker review binding for the planner
-namespace, so no App permission changes. The itsaplan `homelab-planner` agent
+permission (`contents: read`), through a review broker binding for the planner
+namespace, so no App permission changes. The author broker has no planner
+binding and only relays the planner's model calls. The planner calls no broker
+endpoint, so the review broker admits only the reviewer. The itsaplan `homelab-planner` agent
 is `readOnly` (work items read) with no triggers; a cron schedule needs
 neither, because `runnerScope: team` lets the admin schedule it
 (`isTriggerableBy`). The `/projects/<key>/agent-schedules` routes exist on the

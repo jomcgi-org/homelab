@@ -2,7 +2,7 @@
 {{- /*
 The scheduled planner's kagent Agent (HOME-40): one read-only session per
 admitted run, on the Codex or Claude Code harness (agents.planner.harness), in
-its own namespace and atespace. The broker mints its github-git
+its own namespace and atespace. The review broker mints its github-git
 token from the reviewer App's agent permissions (contents: read), so the
 planner can clone and read the repository and cannot push. It has no memory or
 MCP server, no itsaplan key and no coding binding's session.

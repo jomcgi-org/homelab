@@ -3,7 +3,7 @@
 {{- fail "planner.enabled needs broker.enabled" }}
 {{- end }}
 {{- if not .Values.reviewer.enabled }}
-{{- fail "planner.enabled needs reviewer.enabled: the planner's read-only token comes from the reviewer App's agent permissions" }}
+{{- fail "planner.enabled needs reviewer.enabled: the review broker mints the planner's read-only token from the reviewer App's agent permissions" }}
 {{- end }}
 {{- if not .Values.itsaplan.enabled }}
 {{- fail "planner.enabled needs itsaplan.enabled: its bootstrap writes the planner key and cron schedules" }}
@@ -15,12 +15,12 @@
 {{- if or (gt (len $ns) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $ns)) }}
 {{- fail (printf "planner.namespace %s must be a DNS label of at most 63 characters" $ns) }}
 {{- end }}
-{{- $taken := list .Values.broker.namespace (include "factory.kagentNamespace" .) .Values.discord.agent.namespace .Values.discord.bridge.namespace }}
+{{- $taken := list .Values.broker.namespace "factory-review-broker" (include "factory.kagentNamespace" .) .Values.discord.agent.namespace .Values.discord.bridge.namespace }}
 {{- range .Values.repositories }}
 {{- $taken = concat $taken (list .namespace (include "factory.reviewerNamespace" (dict "root" $ "binding" .))) }}
 {{- end }}
 {{- if has $ns $taken }}
-{{- fail (printf "planner.namespace %s must be separate from every coding binding, review binding, control and Discord namespace" $ns) }}
+{{- fail (printf "planner.namespace %s must be separate from every coding binding, review binding, broker, control and Discord namespace" $ns) }}
 {{- end }}
 {{- if not (has $ns .Values.kagent.rbac.namespaces) }}
 {{- fail (printf "planner: add namespace %s to kagent.rbac.namespaces so the controller watches it" $ns) }}

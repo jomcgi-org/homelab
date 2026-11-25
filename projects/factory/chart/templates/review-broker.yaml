@@ -3,11 +3,8 @@
 {{- $b := .Values.broker }}
 {{- $ns := "factory-review-broker" }}
 {{- $name := "factory-review-broker" }}
-{{- $reviewBindings := list }}
-{{- range .Values.repositories }}
-{{- $reviewNs := include "factory.reviewerNamespace" (dict "root" $ "binding" .) }}
-{{- $reviewBindings = append $reviewBindings (dict "name" .name "repository" (printf "%s/%s" .owner .repo) "namespace" $reviewNs) }}
-{{- end }}
+{{- /* The reviewer's namespaces and, when enabled, the planner's (HOME-40). */}}
+{{- $reviewBindings := include "factory.reviewBrokerBindings" . | fromJsonArray }}
 {{- $config := dict "namespace" $ns "adminListenAddr" (printf ":%d" (int $b.adminPort)) "tokenReview" (dict "audience" "factory-review-broker") }}
 {{- $_ := set $config "githubReview" (dict
   "installationIdFile" "/etc/factory-review-github-app/installation-id"
