@@ -93,7 +93,7 @@ def test_factory_renders_scheduled_jobs_and_app_credential():
     cron = next(doc for doc in docs if doc["kind"] == "CronJob")
     assert cron["apiVersion"] == "batch/v1"
     spec = cron["spec"]
-    assert spec["suspend"] is False
+    assert spec["suspend"] is True  # HOME-878
     assert spec["schedule"] == "0 4 * * *"
     assert spec["timeZone"] == "America/Vancouver"
     assert spec["concurrencyPolicy"] == "Forbid"
@@ -221,7 +221,7 @@ def test_factory_weekly_apko_uses_the_app_and_requires_review():
     spec = weekly["spec"]
     assert spec["schedule"] == "0 1 * * 1"
     assert spec["timeZone"] == "America/Vancouver"
-    assert spec["suspend"] is False
+    assert spec["suspend"] is True  # HOME-878
     assert spec["concurrencyPolicy"] == "Forbid"
     job = spec["jobTemplate"]["spec"]
     assert 0 < job["activeDeadlineSeconds"] < 3600
