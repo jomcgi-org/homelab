@@ -88,6 +88,12 @@ def _helm(
         "agents.codex.autoscaling.enabled=false",
         "--set",
         "agents.reviewer.autoscaling.enabled=false",
+        # The deploy values run the scheduled planner and its Claude relay
+        # (HOME-40); planner_test.py covers them.
+        "--set",
+        "planner.enabled=false",
+        "--set",
+        "broker.claude.enabled=false",
     ]
     if enable:
         args += [

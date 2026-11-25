@@ -86,6 +86,12 @@ def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
         "--values",
         str(_DEPLOY_VALUES),
         *_ENABLE,
+        # The deploy values run the scheduled planner and its Claude relay
+        # (HOME-40); planner_test.py covers them.
+        "--set",
+        "planner.enabled=false",
+        "--set",
+        "broker.claude.enabled=false",
     ]
     for override in overrides or []:
         argv += ["--set", override]

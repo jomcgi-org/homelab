@@ -87,8 +87,6 @@ def _render(
         "planner.enabled=false",
         "--set",
         "broker.claude.enabled=false",
-        "--set",
-        "broker.claude.modelAllowlist=null",
     ]
     if trial:
         args += ["--values", str(_CHART_DIR / "files/coder-trial-values.yaml")]
