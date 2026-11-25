@@ -361,6 +361,19 @@ for name in orphan aligned versionfail missingtgz recovery escalationfail empty 
 		"$([[ -e "$TMP/$name-stubs/unexpected" ]] && echo yes || echo no)" "fixture contract"
 done
 
+# 7. THE QUOTED DIGEST. The packager merges the build-time digest into the
+# source values with yq, which keeps the source's quote style, so a chart whose
+# source says `digest: ''` packages as `digest: 'sha256:...'`. The explorer
+# site's first publish died on that: its check rejected the quoted value, the
+# multirun exited 1, and no chart version was written back for any chart.
+eval "$(sed -n '/^chart_image_digest() {/,/^}/p' "$TPL")"
+want_digest="sha256:$(printf 'a%.0s' $(seq 64))"
+for style in "'" '"' ''; do
+	got=$(printf 'manageHostname: false\nimage:\n  repository: ghcr.io/x/y\n  digest: %s%s%s\n  tag: t\nother:\n  digest: sha256:no\n' "$style" "$want_digest" "$style" | chart_image_digest)
+	expect "image digest is read with quote style [$style]" "$want_digest" "$got" "yq keeps the source quote style"
+done
+expect "an empty digest stays empty" "" "$(printf "image:\n  digest: ''\n" | chart_image_digest)" "unset digest is still rejected"
+
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"
 	exit 1

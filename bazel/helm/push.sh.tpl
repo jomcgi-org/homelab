@@ -38,17 +38,26 @@ REPOSITORY="{{REPOSITORY}}"
 CHART_VERSION_SH="{{CHART_VERSION_SH}}"
 CHART_DIR="{{CHART_DIR}}"
 
+# Print the top-level image.digest from the values on stdin, without quotes.
+# The packager merges the build-time digest into the source values with yq,
+# which keeps the source's quote style: `digest: ''` becomes
+# `digest: 'sha256:...'`. Strip single and double quotes (\047 is ') or the
+# check below rejects a valid digest and no chart version is ever written back.
+chart_image_digest() {
+  awk '
+    /^image:/ { image=1; next }
+    /^[^[:space:]]/ { image=0 }
+    image && /^  digest:/ { gsub(/["\047]/, "", $2); print $2 }
+  '
+}
+
 # Capture the built rollback image alongside the chart receipt. The hidden
 # sidecar is consumed by write-back, outside the list of chart receipts.
 record_chart() {
   local record_dir="${WORKSPACE}/.chart-version-records" digest
   mkdir -p "$record_dir"
   if [[ "$CHART_DIR" == "projects/factory-explore-site/chart" ]]; then
-    digest=$("$HELM" show values "$CHART_TGZ" | awk '
-      /^image:/ { image=1; next }
-      /^[^[:space:]]/ { image=0 }
-      image && /^  digest:/ { print $2 }
-    ')
+    digest=$("$HELM" show values "$CHART_TGZ" | chart_image_digest)
     if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
       echo "Invalid factory-explore-site image digest in packaged chart" >&2
       return 1
