@@ -78,6 +78,8 @@ def _helm(
         "discord.agent.enabled=false",
         "--set",
         "discord.bridge.enabled=false",
+        "--set",
+        "discord.import.enabled=false",
         # Goal reasons need the connector, which many renders turn off; the
         # tests that cover them opt in with an override.
         "--set",
