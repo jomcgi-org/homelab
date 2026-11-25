@@ -177,7 +177,10 @@ def test_cached_bundle_without_yaml(tmp_path):
     ],
 )
 def test_retired_rows_hold_no_mechanism_or_test(row):
-    with pytest.raises(ValueError, match="retired|mechanism must be empty"):
+    with pytest.raises(
+        ValueError,
+        match="exactly when designed or retired|a retired invariant has no test",
+    ):
         validate({"scope": {"invariants": [row]}})
 
 

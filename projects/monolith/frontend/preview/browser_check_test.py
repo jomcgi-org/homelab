@@ -57,7 +57,7 @@ class SheetChainTests(unittest.TestCase):
                 patch.object(browser_check, "check_blog") as blog,
                 patch.object(browser_check.subprocess, "run", side_effect=run),
             ):
-                # suite.py calls this imported function; __main__ never runs.
+                # Callers import this function; __main__ never runs.
                 browser_check.check(root, output)
             self.assertEqual(len(calls), 2)
             self.assertFalse(Path(calls[0][-1]).parent.exists())

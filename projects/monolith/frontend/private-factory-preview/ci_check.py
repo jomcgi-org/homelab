@@ -1,4 +1,4 @@
-"""Invoked by the existing secret-free Factory mobile preview entry point."""
+"""Secret-free private Factory browser check, run locally (HOME-877 retired its workflow)."""
 
 import argparse
 import os

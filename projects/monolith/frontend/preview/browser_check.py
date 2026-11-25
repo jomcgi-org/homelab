@@ -249,11 +249,10 @@ def check_blog(root, output):
 
 def check(root, output):
     check_blog(root, output)
-    # compare.py loads this entry point through suite.py. Keep sheet evidence
-    # under head/blog/sheets in the exact-head CI upload, while the temporary
-    # build stays outside both the checkout and the Pages publication artifact.
-    # The subprocess keeps the sheet's opaque iframe contexts independent of
-    # the shared suite's service-worker instrumentation.
+    # Sheet evidence goes under the output directory, and the temporary build
+    # stays outside the checkout. The subprocess keeps the sheet's opaque
+    # iframe contexts independent of the shared suite's service-worker
+    # instrumentation.
     frontend = Path(__file__).resolve().parent.parent
     with tempfile.TemporaryDirectory(prefix="sheet-fixture-") as temporary:
         artifact = Path(temporary) / "build"
