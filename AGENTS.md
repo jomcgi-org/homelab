@@ -5,8 +5,8 @@ improving the factory itself. Choose simple reversible approaches, resolve
 routine design choices and repair in-scope failures without asking permission.
 
 The factory home cluster (`projects/factory-cluster/`) runs the factory and
-its platform. The GKE hub (`homelab-hub`) runs the older workloads, which move
-to the factory home cluster (HOME-128). Services live under
+its platform. The GKE hub (`homelab-hub`) is scaled to zero and retired
+(HOME-262); its data stays in snapshots. Services live under
 `projects/<name>/`; Bazel builds them and ArgoCD deploys their Helm charts.
 
 ## Merge authority
@@ -42,9 +42,10 @@ Escalate only conflicting goals, a human-owned constraint exception, unapproved
 destructive work, or an explicit human-owned decision/hold. Name the decision
 and the rule requiring it. Joe works mostly from mobile: offer two to four
 choices, the recommended choice first, not an open question. Keep independent
-work moving. If Joe may be away, the delivery owner sends one
-`monolith-monolith-agent-notify` message when available. Factory workers
-report to their dispatcher.
+work moving. If Joe may be away, the delivery owner states the open decision
+in its final message; the hub notify tool is retired
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-262#comment-12127)).
+Factory workers report to their dispatcher.
 
 ## Factory roles
 
