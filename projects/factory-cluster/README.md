@@ -15,36 +15,36 @@ Before bootstrap, provide the following inputs.
    Account: Cloudflare Tunnel:Edit; Zone `jomcgi.dev`: DNS:Edit and Zone:Read.
 3. **DHCP reservations** for node-1 (192.168.4.80), node-2 (192.168.4.81) and node-3 (192.168.4.76).
 
-## GKE hub migration
+## GKE hub (retired)
 
-HOME-128 inventories
-all six Applications in the [hub application list](../gke-apps/kustomization.yaml).
-The rows put the lower-risk cutovers first and list the data, credentials,
-routes and factory prerequisites for each workload. Each row links the
-issue that owns the move or retirement. Finish the earlier prerequisites
-before switching a dependent workload.
+Joe retired the GKE hub `homelab-hub` on 2026-11-25
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-262#comment-12127)).
+Every workload is scaled to zero and both node pools hold zero nodes. History
+is a Postgres snapshot restore, not a live copy. The hub's Authentik, MCP
+gateway, agent tools, embeddings, reminders, changelogs, NHS digests and
+Trips are dropped. `jomcgi.dev/*` belongs to the site Worker, so a retired
+path returns the site's 404 page
+([HOME-261](https://factory-plan.jomcgi.dev/factory/issue/HOME-261)).
 
-| Hub Application | Source state | Secrets and access | Public or gated routes | Factory destination and move order |
-| --- | --- | --- | --- | --- |
-| [scotland-connector](../gke-apps/scotland-connector/) | R2 forecasts and walk snapshots in `stars`. No local state. | `r2-s3-public-read`. | Public `jomcgi.dev/scotland` MCP and API paths redirect to `scotland-mcp.jomcgi.dev`. | **Move (complete).** Factory connector and site redirects are live. Keep the hub Deployment at zero. Switch the factory connector's remaining data reads with [HOME-521](https://factory-plan.jomcgi.dev/factory/issue/HOME-521) and HOME-522. |
-| [monolith-public](../gke-apps/monolith-public/) | Shared `monolith-pg` and its GCS backups. Public datasets and Grimoire objects in R2. | `public-reader-db`, `public-writer-db`, `r2-s3-public-read`, `cloudflare-turnstile`, `meta-spark` and `trips-imgproxy-signing`. | Public legacy `jomcgi.dev` paths and signed illustration routes. | **Drop after replacement.** Under [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178), switch each public page and reader to the static Worker and R2. Keep the old tier until gated Grimoire illustrations have a replacement and the HOME-261 catch-all and redirects pass. |
-| [inference](../gke-apps/inference/) | No database or PVC. The model comes from a GHCR image volume. | `ghcr-read-permissions`. | None. The embedding Service is cluster-only. | **Move.** Under [HOME-740](https://factory-plan.jomcgi.dev/factory/issue/HOME-740), allocate factory node capacity and deploy the same model. Test query and bulk embedding from each remaining consumer. Keep the hub EmberVM Spot pool available until its consumers have switched or retired. |
-| [monolith](../gke-apps/monolith/) | Shared `monolith-pg` PVCs, GCS backups and app R2 buckets. Grimoire and Trips have database rows and separate private objects. | Postgres application and `monolith-pg-backup-gcs` credentials, R2 keys, Authentik clients and workload items in the [base values](../monolith/deploy/values.yaml) and [hub overrides](../monolith/deploy/values-gke.yaml). | Gated `private.jomcgi.dev` and friends paths. | **Move by app.** Provision scoped factory logins, databases and private object stores. Rehearse the [Grimoire](https://factory-plan.jomcgi.dev/factory/issue/HOME-517) and [Trips](https://factory-plan.jomcgi.dev/factory/issue/HOME-554) restores. Verify authenticated routes, then switch one writer and schedule at a time. Retain the source database and objects for rollback. |
-| [monolith-agents](../gke-apps/monolith-agents/) | Shared `monolith-pg` and knowledge data. No separate database. | `agents-writer-db`, `r2-s3-credentials` and Authentik bearer credentials. | None. The tools Service is cluster-only. | **Move remaining tool consumers.** Under [HOME-741](https://factory-plan.jomcgi.dev/factory/issue/HOME-741), map each tool to a factory backend and verify the caller's authorization there. Switch callers before stopping the hub profile. |
-| [context-forge-gateway](../gke-apps/context-forge-gateway/) | Separate `context-forge-pg` PVCs and GCS backups. Stores registrations and tool access mappings. | `context-forge`, `preview-oidc`, the `context-forge-pg-app` role Secret and `context-forge-pg-backup-gcs` on the hub. | `mcp.jomcgi.dev/mcp` uses Authentik OAuth. The scoped route on `friends.jomcgi.dev` exposes MCP discovery and `/servers/` for the empty `friends-empty` virtual server with gateway OAuth and no Cloudflare Access. The separate `/preview/` route uses Envoy OIDC. | **Move after MCP backends.** Under [HOME-742](https://factory-plan.jomcgi.dev/factory/issue/HOME-742), give the factory restore job read access to the hub GCS archive and verify a restore into a separate PostgreSQL instance. Connect the factory backends and verify tool registrations, team mapping and caller permissions. Test the main and friends MCP OAuth flows separately, confirm the friends tool list is empty, and check the preview deny and sign-in paths before switching the hostnames. |
+Kept state, all in project `h0melab`:
 
-The factory has a Kargo controller. Before each remaining cutover, configure
-its Warehouse, Stage and verification under [HOME-116](https://factory-plan.jomcgi.dev/factory/issue/HOME-116).
-Promote the factory revision through that pipeline, then verify Argo CD
-sync and health and run the data and route checks in the workload's issue.
-Record the prior hub revision and replica count before changing traffic or
-suspending writers so the previous deployment can be restored.
+| State | Where |
+| --- | --- |
+| Final database backups, taken 2026-11-25 | `gs://h0melab-cnpg-backups` (`authentik-pg`, `context-forge-pg`, `monolith-pg`), with WAL archive |
+| Disk snapshots | `hub-retire-*-20261125`, label `purpose=hub-retire`, one for each of the five PV disks |
+| Volumes | Five PVs, reclaim policy Retain, unattached |
+| Other buckets | `h0melab-ember-bases`, `h0melab-grimoire-sourcebooks` |
 
-After the cutovers, [HOME-262](https://factory-plan.jomcgi.dev/factory/issue/HOME-262)
-tracks the scale-down. Suspend recurring jobs and verify zero workload pods
-before scaling the node pools to zero. Verify that each persistent volume
-has a retain policy or a recent snapshot, and record the costs of the
-retained resources there.
+To restore, resize both node pools (`core-e2` to 1 node; `ember-bricks` to
+autoscaling 1 to 3), set `cnpg.io/hibernation=off` on the three CNPG
+clusters and scale `argocd-application-controller` to 1. Argo CD then
+restores the replicas from git. To read old data without the hub, restore a
+backup into a throwaway CNPG cluster.
+
+The rest of the hub is still to remove: the Cloudflare tunnel and DNS for
+`auth.`, `friends.`, `private.` and `mcp.jomcgi.dev`, the hub directories in
+`projects/gke-apps` and `projects/platform-gke`, and the monitors for the
+hub health paths ([HOME-865](https://factory-plan.jomcgi.dev/factory/issue/HOME-865)).
 
 ## Bootstrap and rebuild
 
