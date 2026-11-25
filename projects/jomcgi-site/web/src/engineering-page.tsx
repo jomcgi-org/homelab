@@ -89,26 +89,28 @@ export function EngineeringPage() {
                     <span className="engineering-number">{project.num}</span>
                     <span>{categories[project.category].label}</span>
                     {project.status && <span>{project.status}</span>}
-                    <ul className="engineering-links">
-                      {project.links.map((link) => (
-                        <li key={link.href}>
-                          <a
-                            href={new URL(link.href, ORIGIN).href}
-                            target={
-                              link.href.startsWith("/") ? undefined : "_blank"
-                            }
-                            rel={
-                              link.href.startsWith("/")
-                                ? undefined
-                                : "noreferrer"
-                            }
-                          >
-                            {link.label}
-                            {link.href.startsWith("/") ? "" : " ↗"}
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
+                    {project.links.length > 0 && (
+                      <ul className="engineering-links">
+                        {project.links.map((link) => (
+                          <li key={link.href}>
+                            <a
+                              href={new URL(link.href, ORIGIN).href}
+                              target={
+                                link.href.startsWith("/") ? undefined : "_blank"
+                              }
+                              rel={
+                                link.href.startsWith("/")
+                                  ? undefined
+                                  : "noreferrer"
+                              }
+                            >
+                              {link.label}
+                              {link.href.startsWith("/") ? "" : " ↗"}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                   <Heading level={2} id={`${project.id}-heading`}>
                     {project.title}

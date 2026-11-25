@@ -162,7 +162,6 @@ export const projects: EngineeringProject[] = [
       },
     ],
     links: [
-      { label: "Browse the notes", href: "/app/notes" },
       {
         label: "projects/monolith/knowledge",
         href: "https://github.com/jomcgi/homelab/tree/main/projects/monolith/knowledge",
@@ -342,7 +341,7 @@ export const projects: EngineeringProject[] = [
         v: "A read-only, SSR tier renders the public pages from localhost in-pod and is CDN-cached: MapLibre vector tiles with terrain hillshade, day-by-day galleries, and an elevation-profile scrubber. The public reads never touch the write path.",
       },
     ],
-    links: [{ label: "Live trips", href: "/app/trips" }],
+    links: [],
   },
   {
     id: "ships",

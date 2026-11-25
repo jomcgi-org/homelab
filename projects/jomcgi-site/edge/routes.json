@@ -2,6 +2,7 @@
   "zone": "jomcgi.dev",
   "script": "jomcgi-site",
   "patterns": [
+    "jomcgi.dev/*",
     "jomcgi.dev/",
     "jomcgi.dev/apple-touch-icon.png",
     "jomcgi.dev/favicon.svg",
@@ -40,18 +41,18 @@
     "jomcgi.dev/stars*"
   ],
   "exactBecause": {
-    "jomcgi.dev/scotland": "HOME-207 requires this exact landing URL; /scotland* would take every /scotland/ descendant, and HOME-475 moves only the legacy connector paths /scotland/mcp* and /scotland/v1*. Query-string variants stay on the hub.",
-    "jomcgi.dev/scotland/privacy": "HOME-207 routes only this policy file, with an exact pattern; descendants and query-string variants stay on the hub.",
-    "jomcgi.dev/scotland/terms": "HOME-207 routes only this policy file, with an exact pattern; descendants and query-string variants stay on the hub.",
-    "jomcgi.dev/scotland/support": "HOME-207 routes only this policy file, with an exact pattern; descendants and query-string variants stay on the hub.",
-    "jomcgi.dev/scotland/marketplace.json": "HOME-207 routes only this catalog file, with an exact pattern; descendants and query-string variants stay on the hub.",
-    "jomcgi.dev/slop": "HOME-207 requires this exact drafts URL; /slop* would intercept /slop/factory, which stays on the hub until HOME-68. Query-string variants stay on the hub.",
-    "jomcgi.dev/": "HOME-206 moves only the root. A trailing wildcard would capture every path, including hub APIs and the Scotland connector; query URLs keep the hub fallback.",
-    "jomcgi.dev/robots.txt": "HOME-206 explicitly moves this exact file URL. Suffix paths and query URLs remain on the hub.",
-    "jomcgi.dev/sitemap.xml": "HOME-206 explicitly moves this exact file URL. Suffix paths and query URLs remain on the hub.",
-    "jomcgi.dev/llms.txt": "HOME-206 explicitly moves this exact file URL. Suffix paths and query URLs remain on the hub.",
-    "jomcgi.dev/manifest.webmanifest": "HOME-206 explicitly moves this exact file URL. Suffix paths and query URLs remain on the hub.",
-    "jomcgi.dev/favicon.svg": "HOME-206 explicitly moves this exact file URL. Suffix paths and query URLs remain on the hub.",
-    "jomcgi.dev/apple-touch-icon.png": "HOME-206 explicitly moves this exact file URL. Suffix paths and query URLs remain on the hub."
+    "jomcgi.dev/scotland": "HOME-207 requires this exact landing URL. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set.",
+    "jomcgi.dev/scotland/privacy": "HOME-207 routes only this policy file, with an exact pattern. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set.",
+    "jomcgi.dev/scotland/terms": "HOME-207 routes only this policy file, with an exact pattern. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set.",
+    "jomcgi.dev/scotland/support": "HOME-207 routes only this policy file, with an exact pattern. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set.",
+    "jomcgi.dev/scotland/marketplace.json": "HOME-207 routes only this catalog file, with an exact pattern. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set.",
+    "jomcgi.dev/slop": "HOME-207 requires this exact drafts URL. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set.",
+    "jomcgi.dev/": "HOME-206 moves only the root. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set.",
+    "jomcgi.dev/robots.txt": "HOME-206 explicitly moves this exact file URL. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set.",
+    "jomcgi.dev/sitemap.xml": "HOME-206 explicitly moves this exact file URL. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set.",
+    "jomcgi.dev/llms.txt": "HOME-206 explicitly moves this exact file URL. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set.",
+    "jomcgi.dev/manifest.webmanifest": "HOME-206 explicitly moves this exact file URL. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set.",
+    "jomcgi.dev/favicon.svg": "HOME-206 explicitly moves this exact file URL. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set.",
+    "jomcgi.dev/apple-touch-icon.png": "HOME-206 explicitly moves this exact file URL. jomcgi.dev/* (HOME-261) sends its query-string variants and descendants to the Worker as well; the pattern stays exact, so removing the catch-all alone restores the earlier route set."
   }
 }

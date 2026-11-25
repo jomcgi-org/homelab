@@ -112,14 +112,18 @@ describe("engineering page", () => {
     expect(container.querySelector("[style]")).toBeNull();
   });
 
-  it("keeps unmigrated app links on jomcgi.dev when opened from the preview", () => {
+  it("keeps app links on jomcgi.dev when opened from the preview, and drops retired ones", () => {
     const preview = new DOMParser().parseFromString(
       prerender("engineering.html"),
       "text/html",
     );
+    // HOME-261: the hub pages for these are retired.
+    for (const label of ["Browse the notes", "Live trips"])
+      expect(within(preview.body).queryByRole("link", { name: label })).toBe(
+        null,
+      );
     for (const [label, destination] of [
-      ["Browse the notes", "https://jomcgi.dev/app/notes"],
-      ["Live trips", "https://jomcgi.dev/app/trips"],
+      ["Live at jomcgi.dev/app/ships ↗", "https://jomcgi.dev/app/ships"],
     ]) {
       const link = within(preview.body).getByRole("link", { name: label });
       expect(

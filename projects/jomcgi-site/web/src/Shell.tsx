@@ -1,7 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { GROUPS, hrefFor, sectionsIn } from "./sections";
 
-/** A group with more links than this folds into one menu. */
+/** A group with this many links or more folds into one menu. */
 const MENU_FROM = 3;
 
 /* The menu is a native <details>: every link is in the HTML and it opens
@@ -70,7 +70,7 @@ export function Shell({
                   </a>
                 </li>
               ));
-              return links.length > MENU_FROM ? (
+              return links.length >= MENU_FROM ? (
                 <li key={group}>
                   <Menu
                     label={group}

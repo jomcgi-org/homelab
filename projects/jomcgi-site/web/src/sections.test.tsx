@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GROUPS, ORIGIN, SECTIONS, hrefFor, sectionsIn } from "./sections";
+import { GROUPS, SECTIONS, hrefFor, sectionsIn } from "./sections";
 
 describe("URL contract", () => {
   it("gives every section one top-level prefix", () => {
@@ -17,11 +17,15 @@ describe("URL contract", () => {
     }
   });
 
-  it("links a section that is not live to its current page on jomcgi.dev", () => {
+  it("links only live sections, since the hub pages of the others are retired", () => {
+    // HOME-261: jomcgi.dev/* answers a retired hub URL with the 404 page, so
+    // no page may link a section that this site does not serve.
     for (const section of SECTIONS) {
-      expect(hrefFor(section)).toBe(
-        section.live ? section.path : `${ORIGIN}${section.legacy}`,
-      );
+      if (section.live) expect(hrefFor(section)).toBe(section.path);
+      else expect(() => hrefFor(section)).toThrow(/not live/);
+    }
+    for (const group of GROUPS) {
+      for (const section of sectionsIn(group)) expect(section.live).toBe(true);
     }
   });
 });

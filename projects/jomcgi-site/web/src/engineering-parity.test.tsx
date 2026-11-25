@@ -32,10 +32,17 @@ process.stdout.write(JSON.stringify({ categories: m.categories, intro: m.intro, 
   );
 const asJson = (value: unknown) => JSON.parse(JSON.stringify(value));
 
-it("copies every hub content export unchanged", () => {
-  expect(asJson({ categories, intro, marqueeItems, projects })).toEqual(
-    hubExports(),
-  );
+// The hub pages these links opened are retired, and jomcgi.dev/* answers
+// them with the 404 page (HOME-261), so the site drops the links.
+const RETIRED_LINKS = new Set(["/app/notes", "/app/trips"]);
+
+it("copies every hub content export unchanged, except links to retired hub pages", () => {
+  const hub = hubExports();
+  for (const project of hub.projects)
+    project.links = project.links.filter(
+      ({ href }: { href: string }) => !RETIRED_LINKS.has(href),
+    );
+  expect(asJson({ categories, intro, marqueeItems, projects })).toEqual(hub);
 });
 
 it("ports every hub diagram's boxes, groups and arrow labels into the pre-render", () => {

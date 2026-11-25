@@ -10,7 +10,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { validate } from "../../factory-storyboard/schema/validate.ts";
 import { join, posix } from "node:path";
 
-import { snapshotTrips, renderTrips } from "./trips.mjs";
+import { dropTripPages, snapshotTrips, renderTrips } from "./trips.mjs";
 import { makeSummary, stampSummary } from "./stars-summary.mjs";
 
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
@@ -80,9 +80,14 @@ export async function snapshot(
 ) {
   const log = [];
   for (const [section, config] of Object.entries(sources.sections)) {
-    // A disabled section has no source objects yet (trips, HOME-452).
+    // A disabled section has no source objects yet (trips, HOME-452), and
+    // deploys no page.
     if (config.enabled === false) {
       log.push(`${section}: disabled, not snapshotted`);
+      if (config.format === "trips") {
+        await dropTripPages(join(out, ".."));
+        log.push(`${section}: pages removed`);
+      }
       continue;
     }
     const { bucket } = config;

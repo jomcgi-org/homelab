@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { HomePage } from "./home-page";
 import { NotFoundPage } from "./not-found-page";
 import { HOME_KEYS, sectionHref } from "./home-data";
+import { GROUPS, SECTIONS, sectionsIn } from "./sections";
 
 function renderPage(page: ReactNode) {
   return render(<Theme theme={neutralTheme}>{page}</Theme>);
@@ -32,12 +33,21 @@ describe("pages", () => {
     }
   });
 
-  it("lists every section on the 404 page", () => {
-    renderPage(<NotFoundPage />);
+  it("links every live section from the 404 page, and nothing else", () => {
+    // HOME-261: jomcgi.dev/* answers every unknown path with this page.
+    const { container } = renderPage(<NotFoundPage />);
     expect(
       screen.getByRole("heading", { level: 1, name: "This page isn't here." }),
     ).toBeTruthy();
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(4);
+    const live = GROUPS.flatMap(sectionsIn).map(({ path }) => path);
+    const cards = [...container.querySelectorAll("a.site-card-link")].map(
+      (link) => link.getAttribute("href"),
+    );
+    expect(cards).toEqual(live);
+    for (const section of SECTIONS.filter(({ live }) => !live)) {
+      expect(screen.queryAllByRole("link", { name: section.name })).toEqual([]);
+    }
   });
 
   it("renders without inline styles, which the CSP would block", () => {

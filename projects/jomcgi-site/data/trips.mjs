@@ -198,6 +198,21 @@ export async function* tripPages(dist, snapshot, renderer) {
   }
 }
 
+// The pages the deploy renders trips into, and the bundle that renders them.
+const TEMPLATES = ["trip", "trip-day", "trip-timeline"];
+const RENDERER = ".trips-renderer";
+
+/**
+ * Removes every Trips page and the renderer from a deploy copy. While Trips
+ * is disabled, jomcgi.dev/* (HOME-261) would serve its empty templates, so a
+ * disabled section deploys none and its paths get the 404 page.
+ */
+export async function dropTripPages(dist) {
+  await rm(join(dist, RENDERER), { recursive: true, force: true });
+  for (const name of ["trips", ...TEMPLATES])
+    await rm(join(dist, `${name}.html`), { force: true });
+}
+
 export async function renderTrips(dist, snapshot, renderer) {
   let pages = 0;
   for await (const { path, html } of tripPages(dist, snapshot, renderer)) {
@@ -206,9 +221,8 @@ export async function renderTrips(dist, snapshot, renderer) {
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, html);
   }
-  await rm(join(dist, ".trips-renderer"), { recursive: true, force: true });
-  for (const name of ["trip", "trip-day", "trip-timeline"])
-    await rm(join(dist, `${name}.html`));
+  await rm(join(dist, RENDERER), { recursive: true, force: true });
+  for (const name of TEMPLATES) await rm(join(dist, `${name}.html`));
   async function count(dir) {
     const children = await readdir(dir, { withFileTypes: true });
     return (

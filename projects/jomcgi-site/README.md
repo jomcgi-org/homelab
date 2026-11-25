@@ -33,20 +33,22 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
 
 ## Contracts
 
-- **URLs.** A section has one top-level prefix (`/hikes`). It stays linked to
-  its current jomcgi.dev page until it goes live here. Setting `live: true` in
-  `src/sections.ts` and adding its patterns to `edge/routes.json` moves it.
-  Removing them rolls it back: the edge Job deletes each route of Worker
-  `jomcgi-site` that is not in the file, and the path falls back to the hub.
+- **URLs.** A section has one top-level prefix (`/hikes`). No page links it
+  until it goes live here (`live: true` in `src/sections.ts`).
+  `jomcgi.dev/*` in `edge/routes.json` sends every apex path to the Worker
+  (see "Catch-all" below). The section patterns stay beside it, so removing
+  the catch-all alone restores the earlier route set: the edge Job deletes
+  each route of Worker `jomcgi-site` that is not in the file.
   `wrangler` cannot do this: with a zone-scoped token it adds routes but never
   deletes them, so the prod env lists none. Cloudflare matches a route against the
   whole URL, query string included, so a pattern ends in `*` (`jomcgi.dev/cv*`
   also serves `/cv?ref=x`). An exact pattern is allowed only with a reason in
-  `exactBecause`, and a test keeps every pattern off paths the hub or other
-  services still own.
+  `exactBecause`. A test keeps every pattern on the apex host, because the
+  zone's other hostnames belong to other services.
 - **Rollback.** `edge.serveRoutes` in the prod Application turns every route
   on or off. Off, the edge Job deletes all routes of `jomcgi-site`, so every
-  jomcgi.dev path goes back to the hub, and the cache rules still apply. The
+  jomcgi.dev path goes back to the zone's origin (the hub tunnel, which fails
+  once the hub is retired), and the cache rules still apply. The
   prod Application is registered with it off, and a later PR turns it on, so
   reverting that PR is the rollback; it needs no chart publish. Remove the
   Application only after its routes are gone, because removing it does not
@@ -164,9 +166,8 @@ are relative to `//projects/jomcgi-site/web`.
 edge apply job owns these routes; `wrangler.jsonc` lists no prod routes.
 [sections.ts](web/src/sections.ts) marks Blog live. The `jomcgi.dev/blog*`
 pattern covers the index, posts and `?tag=` queries under the route contract
-above. Removing it from [routes.json](edge/routes.json) returns those URLs
-to the hub. [apply.test.mjs](edge/apply.test.mjs) checks these URLs and keeps
-the remaining hub paths outside the site's routes.
+above, and the catch-all covers them too. [apply.test.mjs](edge/apply.test.mjs)
+checks these URLs.
 
 ## LLM leaderboard
 
@@ -227,9 +228,8 @@ age at view time and shows a notice after 90 days. A date-based test would block
 unrelated pull requests, so the notice is the only check on age.
 
 `/docs` and everything under it redirect to `/homelab` with 301
-(`web/public/_redirects`). `jomcgi.dev/docs*` stays in `edge/routes.json` so the
-Worker can answer old links; removing it sends them back to the hub, which still
-serves its own `/docs`. A blog post tagged with a retired project (`embervm`)
+(`web/public/_redirects`). `jomcgi.dev/docs*` stays in `edge/routes.json` beside
+the catch-all, so the Worker answers old links with the redirect. A blog post tagged with a retired project (`embervm`)
 shows a notice that the project was retired, and the home page leaves such
 posts out. `site-inputs.mjs` and `src/blog-shared.tsx` keep the same tag list,
 and `src/blog.test.tsx` checks they agree.
@@ -273,7 +273,7 @@ them after promotion.
 
 | Criterion | Requirement | Evidence |
 | --- | --- | --- |
-| 1 | Same home text, layout, portrait, keypad and clock; keypad links use `hrefFor`. | [home-built.mjs](web/home-built.mjs) compares emitted text and keypad order to the hub source, checks the page structure, clock placeholder and original portrait bytes. [home.test.tsx](web/src/home.test.tsx) checks link migration and the clock across daylight saving. |
+| 1 | Same home text, layout, portrait, keypad and clock; keypad links use `hrefFor`, and only a live section has a key (HOME-261). | [home-built.mjs](web/home-built.mjs) compares emitted text and keypad order to the hub source, without the retired sections' keys, checks the page structure, clock placeholder and original portrait bytes. [home.test.tsx](web/src/home.test.tsx) checks link migration and the clock across daylight saving. |
 | 7 | Copy the content, title, description, canonical URL, Open Graph and Twitter tags. | [home-built.mjs](web/home-built.mjs) compares the emitted HTML with the original hub page and shared public origin. The latest post titles, dates and URLs must match the manifest. |
 | 8 | Interactive parts hydrate. Large data or heavy code loads on intent through a dynamic import. Each route stays under the 150 KiB JavaScript budget. | [home-browser.mjs](web/home-browser.mjs) holds the built entry while checking static content, then proves hydration retains the original DOM. It checks the clock, focus readouts, saved scheme, actual portrait network requests and canvas startup on keyboard/pointer intent, plus reduced motion. [budget.mjs](web/budget.mjs) measures every built entry for `:budget_test`. |
 | 9 | No inline styles, colour literals or named colours outside `palette.css`. No axe violations. | [contrast.test.tsx](web/src/contrast.test.tsx) checks source colours and tokens. [home-browser.mjs](web/home-browser.mjs) runs full axe, including colour contrast and visible labels, against the built CSS in both schemes, at desktop and portrait/landscape phone sizes. It rejects inline/injected styles after interaction. |
@@ -281,6 +281,43 @@ them after promotion.
 CI runs `home-browser.mjs` as `:home_browser_test`: Chromium from
 `@sparticuz/chromium` loads the `:build` output with the production CSP.
 In `web/`, run `pnpm build`, then `pnpm test:browser` for home, leaderboard and stars.
+
+## Catch-all (HOME-261)
+
+`jomcgi.dev/*` gives Worker `jomcgi-site` every path on the apex host, so no
+jomcgi.dev request reaches the hub's tunnel. Other hostnames on the zone keep
+their owners. The Worker runs no script; its asset server decides:
+
+```text
+jomcgi.dev/<path> ─► Worker jomcgi-site
+  ├─ _redirects rule ─► 301 /app/{hikes,stars,llm-leaderboard}*, 301 /docs*,
+  │                     308 /scotland/{mcp,v1/*} to scotland-mcp.jomcgi.dev
+  ├─ built file ──────► 200 page
+  └─ no match ────────► 404 with 404.html, Cache-Control max-age=0, must-revalidate
+```
+
+The `/assets/*` rule in `_headers` also applies to a 404 under that prefix.
+Site-check requires every probed 404 to carry no cache lifetime.
+
+The retired hub paths (`/api`, `/functions`, `/health`, `/grimoire`,
+`/notes`, `/trips`, `/app/trips`, `/app/grimoire`, `/slop/factory` and the
+other hub apps) get no redirect: the 404 page links every live section.
+No page links a section that is not live, and `hrefFor` throws for one,
+because its old hub URL now answers 404. A disabled data section deploys no
+page (Trips, above). `/app/ships` serves the staged Ships page (HOME-411),
+which reads the public mirror; Ships stays out of the nav until it is live.
+
+Rollback: set `edge.serveRoutes: false` in `deploy/application-prod.yaml`.
+With the hub retired, that takes every jomcgi.dev path down, so to keep the
+site and drop only the catch-all, follow the pin rule in that file: routes
+off, confirm the zone has no `jomcgi-site` routes, lower the pin to a chart
+without `jomcgi.dev/*`, then routes on. Never lower the pin alone.
+
+After the prod promotion, check on `jomcgi.dev`: `/trips`, `/grimoire`,
+`/notes`, `/api/anything` and `/functions/x` answer 404 with the 404 page;
+`/app/hikes` and `/app/stars` answer 301; `/scotland/mcp` answers 308 to
+`scotland-mcp.jomcgi.dev`; `/`, `/blog` and `/cv` answer 200 with the
+Web Analytics beacon in the HTML.
 
 ## Deploy
 
@@ -292,8 +329,8 @@ chart or image, a change to a Job alone, and a change to `edge.serveRoutes`
 alone make the Application OutOfSync and sync it again. The PostSync
 `site-check` Job then verifies `next.jomcgi.dev` in dev. In prod, it follows
 the edge Job and verifies the Worker's routes on `jomcgi.dev` only while
-`edge.serveRoutes` is on. With routes off, the hub serves those paths and
-the check is omitted. Any Job's failure fails the sync. See
+`edge.serveRoutes` is on. With routes off, the Worker serves no jomcgi.dev
+path and the check is omitted. Any Job's failure fails the sync. See
 [the verification contract](ARCHITECTURE.md) for coverage and data freshness.
 
 Both Applications are listed through `deploy/kustomization.yaml`, which
@@ -357,15 +394,14 @@ to load on intent. Each entry hydrates only its own page through `mount.tsx`.
 | Scotland marketplace | `web/marketplace.test.mjs` checks the built catalog’s plugin source and factory MCP endpoint (`web:marketplace_test`). |
 | Hydration and the 150 KiB JS limit | `web/src/prerender.test.tsx` hydrates every page without recoverable errors (`web:test`); `web/budget.mjs` measures initial JS from built entries (`web:budget_test`). |
 | Palette, inline styles and accessibility | `web/src/contrast.test.tsx` scans TypeScript and CSS and checks both palette modes; `web/src/a11y.test.tsx` runs axe on every registered page (`web:test`). |
-| Exact routes and unlisted drafts | `edge/apply.test.mjs` checks that only the legacy connector patterns reach `/scotland/mcp` and `/scotland/v1`, and that no pattern reaches `/slop/factory` (`edge:apply_test`); `web/src/scotland.test.tsx` checks `live`, the drafts index exclusion, and noindex metadata and headers (`web:test`). |
+| Exact routes and unlisted drafts | `edge/apply.test.mjs` checks the six exact patterns and the legacy connector patterns (`edge:apply_test`), and `check/tier1.test.mjs` that the connector paths answer 308 (`check:tier1_test`); `web/src/scotland.test.tsx` checks `live`, the drafts index exclusion, and noindex metadata and headers (`web:test`). |
 
 The [local browser verification](validation/scotland-browser.md) records
 hydration with the compiled scripts and full axe results for these five pages.
 All 20 light/dark and desktop/mobile cases passed, including colour contrast.
 
-The six URLs use exact patterns in `edge/routes.json`. `/slop/factory` stays
-on the hub. The hub pages remain available for rollback when the section
-patterns are removed.
+The six URLs use exact patterns in `edge/routes.json`. `/slop/factory` has no
+page here, so the catch-all answers it with the 404 page.
 
 HOME-475 moves the hub connector's old URLs to the Worker. The patterns
 `jomcgi.dev/scotland/mcp*` and `jomcgi.dev/scotland/v1*` send them to it, and
@@ -393,10 +429,11 @@ the two patterns first needs the hub copy back, with ready pods, in the order
 that `projects/scotland-connector/ARCHITECTURE.md` "Hub copy rollback" gives.
 Remove the patterns only after that.
 
-`exactBecause` records HOME-207's explicit exceptions to the wildcard rule:
-query-string variants such as `/scotland?ref=x` and `/slop?ref=x` still reach
-the hub. Descendants are also outside these six exact patterns. The edge
-tests check this alongside the query-safe wildcard routes from HOME-203.
+`exactBecause` records HOME-207's explicit exceptions to the wildcard rule.
+Under the catch-all, query-string variants such as `/scotland?ref=x` and
+descendants reach the Worker too, which answers the page or the 404 page.
+The edge tests check this alongside the query-safe wildcard routes from
+HOME-203.
 
 Local artifact checks do not establish a live migration. Production serving
 still depends on the `edge.serveRoutes` switch and promotion described above.
@@ -471,21 +508,21 @@ boundary. `web:budget_test` measures the Factory entry against 150 KiB.
 HOME-224 kept `sections.ts` at `live: false`, with no changes to production
 edge routes, charts or deployment files. HOME-414 routed `/factory*` and its
 data to the Worker, and the nav now links `/factory` (`live: true`, HOME-225),
-so a reader stays on this site. The hub keeps `/slop/factory`. After the dev
+so a reader stays on this site. After the dev
 deploy, the delivery owner checks
 `https://next.jomcgi.dev/factory` and `/factory/goals/x` for HTTP 200 and the
 shell's unavailable states. Local build checks do not establish that rollout.
 
 ## Trips rollout (HOME-242)
 
-Trips is off until the hub's `trips-export` job commits `trips/export.json`
-(HOME-452). `data/sources.json` marks the section `"enabled": false`, so the
-snapshot skips it and the site-check checks no Trips page or freshness. The
-`/trips` routes are out of `edge/routes.json`, and the Trips links point at
-the hub. To turn it on, set `enabled` back to `true`, restore the three
-`jomcgi.dev/app/trips*`, `/data/trips/*` and `/trips*` routes, and set
-`live: true` in `web/src/sections.ts`. In `edge/apply.test.mjs`, move the
-Trips paths from `STAYS_ON_THE_HUB` back to the routed-pages test.
+Trips is off (HOME-452), and HOME-261 drops the hub copy. `data/sources.json`
+marks the section `"enabled": false`, so the snapshot skips it and removes
+the Trips templates and renderer from the deploy copy, and the site-check
+checks no Trips page or freshness. Under the catch-all, `/trips` then gets
+the 404 page, and no page links Trips. To turn it on, set `enabled` back to
+`true` and `live: true` in `web/src/sections.ts`; the catch-all already
+routes `/trips*` and `/data/trips/*`. In `edge/apply.test.mjs`, move the
+Trips paths from `RETIRED_HUB_PATHS` to the routed-pages test.
 
 Before promoting the Trips release to production, record the successful dev
 sync time and release. Read `https://next.jomcgi.dev/data/trips/latest.json`
@@ -507,7 +544,9 @@ production pin PR described above.
 `web/engineering.html` and `web/src/engineering.tsx` serve `/engineering` without
 the hub's SvelteKit runtime. The build pre-renders all 11 records and diagrams;
 the browser hydrates the systems index. The page makes no data request.
-Unmigrated application links keep their `jomcgi.dev` destination on the preview host.
+Application links keep their `jomcgi.dev` destination on the preview host.
+The links to retired hub pages (`/app/notes`, `/app/trips`) are removed
+(HOME-261); the parity test allows only that difference.
 
 The source is `projects/monolith/frontend/src/routes/public/engineering/`.
 Its data and Svelte files are inputs only to the parity test, through

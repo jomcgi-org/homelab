@@ -3,11 +3,26 @@ import { readFileSync } from "node:fs";
 
 export const JUNK_PATH = "/__site-check_missing_page_7e86b5";
 
+// Paths the retired hub served (HOME-261). The Worker has no page or redirect
+// for them, so each must answer the site's 404 page wherever the stage routes
+// it to the Worker. Trips is not here: it is a disabled section that can
+// come back (data/sources.json).
+export const RETIRED_PATHS = [
+  "/api/anything",
+  "/functions/x",
+  "/grimoire",
+  "/app/grimoire",
+  "/app/trips",
+  "/health",
+  "/notes",
+];
+
 export function scopeFor(stage) {
-  if (stage === "dev") return { owns: () => true, junkPaths: [JUNK_PATH] };
+  if (stage === "dev")
+    return { owns: () => true, junkPaths: [JUNK_PATH, ...RETIRED_PATHS] };
   assert.equal(stage, "prod", "unknown site-check stage");
-  // Use the same manifest as the edge Job. The hub still owns other paths
-  // during migration; its pages need not match this Worker's release.
+  // Use the same manifest as the edge Job. A path outside its patterns is
+  // not this Worker's, so its page need not match this release.
   const routes = JSON.parse(
     readFileSync(new URL("../edge/routes.json", import.meta.url)),
   );
@@ -36,7 +51,8 @@ export function scopeFor(stage) {
     )
     // Fill the wildcard without adding a slash. A legacy prefix can redirect
     // every descendant (for example /app/llm-leaderboard/*) to a real page.
-    .map((path) => path.slice(0, -1) + JUNK_PATH.slice(1));
+    .map((path) => path.slice(0, -1) + JUNK_PATH.slice(1))
+    .concat(RETIRED_PATHS.filter(owns));
   assert.ok(
     junkPaths.length,
     "production needs a page route for its 404 check",

@@ -212,14 +212,25 @@ test("a disabled section is skipped without reading its objects", async () => {
     read.push(`${bucket}/${key}`);
     throw new Error(`unexpected GET ${bucket}/${key}`);
   };
-  const out = await mkdtemp(join(tmpdir(), "snapshot-"));
+  // A deploy copy: the built pages, with the snapshot's output under data/.
+  const dist = await mkdtemp(join(tmpdir(), "snapshot-"));
+  const out = join(dist, "data");
+  await mkdir(join(dist, ".trips-renderer"), { recursive: true });
+  await writeFile(join(dist, ".trips-renderer", "render.mjs"), "");
+  const pages = ["trips", "trip", "trip-day", "trip-timeline", "index"];
+  for (const name of pages) await writeFile(join(dist, `${name}.html`), "");
   const log = await snapshot(
     { sections: { trips: { ...SOURCES.sections.trips, enabled: false } } },
     get,
     out,
   );
   assert.deepEqual(read, []);
-  assert.deepEqual(log, ["trips: disabled, not snapshotted"]);
+  assert.deepEqual(log, [
+    "trips: disabled, not snapshotted",
+    "trips: pages removed",
+  ]);
+  // HOME-261: jomcgi.dev/* would serve the empty templates, so none deploy.
+  assert.deepEqual(await readdir(dist), ["index.html"]);
 });
 
 test("r2Getter signs each request and returns the body and Last-Modified", async () => {

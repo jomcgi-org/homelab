@@ -1,6 +1,7 @@
 // The site's sections and their URLs (HOME-174 URL contract).
-// A section is `live` once its pages are served by this site. Until then its
-// link points at the current page on jomcgi.dev, so the preview host works.
+// A section is `live` once its pages are served by this site. Until then no
+// page links it: the hub pages that served the others are retired, and
+// jomcgi.dev/* answers their old URLs with the 404 page (HOME-261).
 
 export const ORIGIN = "https://jomcgi.dev";
 
@@ -11,8 +12,6 @@ export interface Section {
   group: Group;
   /** The section's address in this site: one top-level prefix. */
   path: `/${string}`;
-  /** The page that serves this section today, on jomcgi.dev. */
-  legacy: `/${string}`;
   live: boolean;
   summary: string;
   /** Draft notes stay addressable without appearing in the site index. */
@@ -23,7 +22,6 @@ export const HOME: Section = {
   name: "Home",
   group: "About",
   path: "/",
-  legacy: "/",
   live: true,
   summary: "Joe McGinley, Scotland.",
 };
@@ -35,7 +33,6 @@ export const SECTIONS: readonly Section[] = [
     name: "Blog",
     group: "Writing",
     path: "/blog",
-    legacy: "/blog",
     live: true,
     summary: "Notes on building and running the homelab.",
   },
@@ -43,9 +40,6 @@ export const SECTIONS: readonly Section[] = [
     name: "Homelab",
     group: "Writing",
     path: "/homelab",
-    // Until this section is live here, the hub's /docs is the page that
-    // served the same purpose.
-    legacy: "/docs",
     live: true,
     summary: "What runs, how a threat is contained, and where to read more.",
   },
@@ -53,7 +47,6 @@ export const SECTIONS: readonly Section[] = [
     name: "Slop",
     group: "Writing",
     path: "/slop",
-    legacy: "/slop",
     live: true,
     listed: false,
     summary: "Draft pages. Not listed, wording in flux.",
@@ -62,7 +55,6 @@ export const SECTIONS: readonly Section[] = [
     name: "Hikes",
     group: "Apps",
     path: "/hikes",
-    legacy: "/app/hikes",
     live: true,
     summary: "Scottish walks with their weather windows.",
   },
@@ -70,7 +62,6 @@ export const SECTIONS: readonly Section[] = [
     name: "Stars",
     group: "Apps",
     path: "/stars",
-    legacy: "/app/stars",
     live: true,
     summary: "Dark-sky sites and the nights worth going out.",
   },
@@ -78,7 +69,6 @@ export const SECTIONS: readonly Section[] = [
     name: "Ships",
     group: "Apps",
     path: "/ships",
-    legacy: "/app/ships",
     live: false,
     summary: "Vessels moving around the coast.",
   },
@@ -86,7 +76,6 @@ export const SECTIONS: readonly Section[] = [
     name: "Trips",
     group: "Apps",
     path: "/trips",
-    legacy: "/app/trips",
     // Not live until the hub export commits trips/export.json (HOME-452).
     live: false,
     summary: "Trips, day by day, with photos.",
@@ -95,7 +84,6 @@ export const SECTIONS: readonly Section[] = [
     name: "LLM leaderboard",
     group: "Apps",
     path: "/llm-leaderboard",
-    legacy: "/app/llm-leaderboard",
     live: true,
     // Unlisted until the agent factory supplies its data. The page stays at
     // its address.
@@ -107,7 +95,6 @@ export const SECTIONS: readonly Section[] = [
     name: "Grimoire",
     group: "Apps",
     path: "/grimoire",
-    legacy: "/app/grimoire",
     live: false,
     summary: "A reader for open tabletop rules.",
   },
@@ -115,7 +102,6 @@ export const SECTIONS: readonly Section[] = [
     name: "Scotland",
     group: "Apps",
     path: "/scotland",
-    legacy: "/scotland",
     live: true,
     summary:
       "Plan and check Scottish walks and stargazing with forecast verdicts.",
@@ -124,9 +110,6 @@ export const SECTIONS: readonly Section[] = [
     name: "Factory",
     group: "Factory",
     path: "/factory",
-    legacy: "/slop/factory",
-    // Its route, jomcgi.dev/factory*, is in edge/routes.json (HOME-202), so
-    // the nav stays on the page this site serves.
     live: true,
     summary: "The software factory: goals, work in flight and what shipped.",
   },
@@ -134,7 +117,6 @@ export const SECTIONS: readonly Section[] = [
     name: "Engineering",
     group: "About",
     path: "/engineering",
-    legacy: "/engineering",
     live: true,
     // Unlisted: the Homelab page covers these systems and links to the
     // repository for detail. The page stays at its address.
@@ -145,19 +127,21 @@ export const SECTIONS: readonly Section[] = [
     name: "CV",
     group: "About",
     path: "/cv",
-    legacy: "/cv",
     live: true,
     summary: "Work history.",
   },
 ];
 
-/** Where a link to the section goes right now. */
+/** Where a link to the section goes. Only a live section has one. */
 export function hrefFor(section: Section): string {
-  return section.live ? section.path : `${ORIGIN}${section.legacy}`;
+  if (!section.live) throw new Error(`${section.name} is not live`);
+  return section.path;
 }
 
+/** The live, listed sections of a nav group. */
 export function sectionsIn(group: Group): Section[] {
   return SECTIONS.filter(
-    (section) => section.group === group && section.listed !== false,
+    (section) =>
+      section.group === group && section.live && section.listed !== false,
   );
 }
