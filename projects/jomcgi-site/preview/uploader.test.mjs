@@ -432,7 +432,8 @@ fs.writeFileSync(process.env.WRANGLER_OUTPUT_FILE_PATH,
     wrangler: fake,
     configSource: config,
     workRoot: root,
-    env: { PATH: process.env.PATH },
+    // As main.mjs does: the rules_js node launcher needs its environment.
+    env: { ...process.env },
   });
   const files = new Map([
     ["index.html", Buffer.from("<p>hi")],

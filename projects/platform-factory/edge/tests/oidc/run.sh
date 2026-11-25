@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 chart=../../chart
 [[ $(kubectl config current-context) == kind-edge-oidc ]]
 projects=../../../..
-namespaces=(edge kagent t3 factory-landing argocd factory grafana)
+namespaces=(edge kagent t3 factory-landing argocd factory grafana jomcgi-site-dev)
 for ns in "${namespaces[@]}"; do kubectl create namespace "$ns"; done
 
 # Use the CRDs and controller shipped with the edge chart.
