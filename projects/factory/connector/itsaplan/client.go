@@ -350,10 +350,9 @@ type Issue struct {
 	DelegateUserID *string           `json:"delegateUserId"`
 	CreatedAt      string            `json:"createdAt"`
 	ArchivedAt     *time.Time        `json:"archivedAt"`
-	// Priority is urgent, high, medium, low or null (none). DueDate is a UTC
-	// calendar date (YYYY-MM-DD) or null. Admission order reads both.
-	Priority *string `json:"priority"`
-	DueDate  *string `json:"dueDate"`
+	// DueDate is a UTC calendar date (YYYY-MM-DD) or null. Admission order
+	// reads it with Priority (urgent, high, medium, low or null).
+	DueDate *string `json:"dueDate"`
 }
 
 // Checklist and its items arrive in display order from GET /issues/<id>.
