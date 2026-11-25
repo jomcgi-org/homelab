@@ -312,6 +312,8 @@ func run(log *slog.Logger) error {
 		GoalReasons:     goalReasons,
 
 		PlannerSchedules: cfg.File.PlannerSchedules,
+		PlannerTracked:   cfg.File.PlannerTracked,
+		Planner:          plannerRuntime(cfg.File.Planner),
 	}, st, its, a2a, sessions, gh, m, log)
 	notifier, err := notify.New(notify.Config{
 		URL: cfg.NotifyURL, TokenURL: cfg.NotifyTokenURL, AppPasswordFile: cfg.NotifyPasswordFile,
@@ -550,4 +552,16 @@ func (t tokenReviewTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	req.Close = true // Prevent transport retries on a reused connection.
 	req.Header.Set("X-Request-ID", id)
 	return t.next.RoundTrip(req)
+}
+
+// plannerRuntime maps the planner config. Absent, no planner session starts.
+func plannerRuntime(p *config.Planner) *dispatch.PlannerRuntime {
+	if p == nil {
+		return nil
+	}
+	return &dispatch.PlannerRuntime{
+		AgentKey:   p.AgentKey,
+		Agent:      kagent.AgentRef{Namespace: p.KagentNamespace, Name: p.KagentAgent},
+		RunTimeout: time.Duration(p.RunTimeout),
+	}
 }

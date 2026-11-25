@@ -25,7 +25,7 @@ func (f *fakeItsaplan) GetProject(_ context.Context, project string) (*itsaplan.
 	}
 	p := &itsaplan.Project{
 		Columns:   append(append([]itsaplan.Column(nil), f.columns...), itsaplan.Column{ID: 5, Name: "Backlog", StateType: "backlog"}),
-		Assignees: []itsaplan.Assignee{{UserID: "joe-id", Username: "joe", Kind: "member"}, {UserID: "coder-user", Username: "coder", Kind: "agent"}},
+		Assignees: []itsaplan.Assignee{{UserID: "joe-id", Username: "joe", Kind: "member"}, {UserID: "coder-user", Username: "coder", Kind: "agent"}, {UserID: "codex-user", Username: "homelab-codex", Kind: "agent"}},
 	}
 	p.Permissions.WorkItems.Read = !f.activationMissingPermissions
 	p.Permissions.WorkItems.Create = !f.activationMissingPermissions

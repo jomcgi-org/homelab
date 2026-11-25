@@ -49,6 +49,11 @@ type File struct {
 	Links       Links       `yaml:"links"`
 
 	PlannerSchedules []planner.Schedule `yaml:"plannerSchedules"`
+	PlannerTracked   []planner.Tracked  `yaml:"plannerTracked"`
+	// Planner, when set, starts planner sessions for itsaplan cron runs of
+	// the planner agent (HOME-546). Absent, the connector starts none and
+	// the stored-result filing path stays inert.
+	Planner *Planner `yaml:"planner"`
 	// BuildBuddy, when set, names a failed CI status's targets and tests in
 	// revision prompts.
 	BuildBuddy *BuildBuddy `yaml:"buildbuddy"`
@@ -107,6 +112,20 @@ type Agent struct {
 	APIKeyFile  string `yaml:"apiKeyFile"`
 	Concurrency int    `yaml:"concurrency"`
 }
+
+// Planner is the planner runtime: the itsaplan agent whose cron runs the
+// connector claims, and the kagent Agent that analyses. The Agent lives in its
+// own namespace, never a coding or review namespace.
+type Planner struct {
+	AgentKey        string   `yaml:"agentKey"`
+	APIKeyFile      string   `yaml:"apiKeyFile"`
+	KagentNamespace string   `yaml:"kagentNamespace"`
+	KagentAgent     string   `yaml:"kagentAgent"`
+	RunTimeout      Duration `yaml:"runTimeout"`
+}
+
+// DefaultPlannerRunTimeout bounds one planner session.
+const DefaultPlannerRunTimeout = 30 * time.Minute
 
 // Binding is one repository binding.
 type Binding struct {
@@ -279,6 +298,11 @@ func Parse(b []byte) (*File, error) {
 		}
 		names[schedule.Name] = true
 	}
+	for _, t := range f.PlannerTracked {
+		if err := t.Validate(); err != nil {
+			return nil, fmt.Errorf("config: planner tracked %q: %w", t.Fingerprint, err)
+		}
+	}
 	if f.Intervals.Poll == 0 {
 		f.Intervals.Poll = Duration(5 * time.Second)
 	}
@@ -340,6 +364,20 @@ func Parse(b []byte) (*File, error) {
 		return nil, fmt.Errorf("config: coordinator key and apiKeyFile are required")
 	}
 	agents := map[string]bool{}
+	if p := f.Planner; p != nil {
+		if p.AgentKey == "" || p.APIKeyFile == "" || p.KagentNamespace == "" || p.KagentAgent == "" {
+			return nil, fmt.Errorf("config: planner needs agentKey, apiKeyFile, kagentNamespace and kagentAgent")
+		}
+		if p.AgentKey == f.Coordinator.Key {
+			return nil, fmt.Errorf("config: planner agent %q is also the coordinator", p.AgentKey)
+		}
+		if p.RunTimeout == 0 {
+			p.RunTimeout = Duration(DefaultPlannerRunTimeout)
+		}
+		if time.Duration(p.RunTimeout) < time.Minute {
+			return nil, fmt.Errorf("config: planner runTimeout must be at least one minute")
+		}
+	}
 	for i := range f.Agents {
 		a := &f.Agents[i]
 		if a.Key == "" || a.APIKeyFile == "" {
@@ -347,6 +385,10 @@ func Parse(b []byte) (*File, error) {
 		}
 		if agents[a.Key] {
 			return nil, fmt.Errorf("config: duplicate agent %q", a.Key)
+		}
+		if f.Planner != nil && a.Key == f.Planner.AgentKey {
+			// The claim loop hands every claimed run to coding dispatch.
+			return nil, fmt.Errorf("config: planner agent %q is also a coding agent", a.Key)
 		}
 		agents[a.Key] = true
 		if a.Concurrency <= 0 {
@@ -455,6 +497,9 @@ func (f *File) KeyFiles() KeyFiles {
 	k := KeyFiles{f.Coordinator.Key: f.Coordinator.APIKeyFile}
 	for _, a := range f.Agents {
 		k[a.Key] = a.APIKeyFile
+	}
+	if f.Planner != nil {
+		k[f.Planner.AgentKey] = f.Planner.APIKeyFile
 	}
 	return k
 }

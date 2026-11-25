@@ -94,17 +94,16 @@ Closing a stopped run permits no new schedule. Send admission locks the
 generation through the transaction that records `send_started_at`, under
 the writer fence. A stop that commits first prevents the send (HOME-151).
 
-## Planner proposals (designed)
+## Planner proposals (staged off)
 
-The planner design takes instructions from a schedule template on the base branch. Planner output enters the delegated issue as quoted evidence. The factory triage job adds [allowlisted actions](triage.md) that the connector checks and runs.
+An itsaplan `cron` run of `homelab-planner` starts one planner session ([flow, bounds and metrics](planner.md), HOME-40). The connector takes the analysis prompt, issue title and instructions from a reviewed schedule on the base branch. Planner output enters the delegated issue as quoted evidence. The factory triage job adds [allowlisted actions](triage.md). The runtime is off until the connector config has a `planner` block.
 
 **Why.** Joe chose delegated fixes for the three pilots
 ([decision](https://github.com/jomcgi-org/homelab/issues/7935#issuecomment-6891325789),
 HOME-45). A planner can copy an instruction from a CI log or a PR into its
-proposal. In this design the template on `main` supplies every instruction, and the
-connector quotes and sanitizes planner text so it cannot close its evidence
-block. Copied text stays quoted evidence. The rule is [REVIEW.md](../REVIEW.md) "Planner
-exception".
+proposal, so the template on `main` supplies every instruction and the
+connector quotes and sanitizes planner text. The rule is
+[REVIEW.md](../REVIEW.md) "Planner exception".
 
 ## Dispatch and admission
 

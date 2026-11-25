@@ -37,6 +37,16 @@ type Metrics struct {
 	WorkerWaits       *prometheus.CounterVec // outcome
 
 	CredentialRefusals *prometheus.CounterVec // role, kind
+
+	// Planner runs (HOME-549). Each run adds its counts once, when it
+	// finishes; the last-run gauges hold the newest run's counts per schedule.
+	PlannerRuns         *prometheus.CounterVec // schedule, outcome
+	PlannerProposals    *prometheus.CounterVec // schedule, outcome
+	PlannerLastRun      *prometheus.GaugeVec   // schedule, outcome
+	PlannerTokens       *prometheus.CounterVec // schedule, direction
+	PlannerLastTokens   *prometheus.GaugeVec   // schedule, direction
+	PlannerBreakerOpen  *prometheus.GaugeVec   // schedule
+	PlannerSessionError *prometheus.CounterVec // step
 }
 
 // New registers the metrics with reg; a nil reg leaves them unregistered.
@@ -160,9 +170,37 @@ func New(reg prometheus.Registerer) *Metrics {
 				"(result, comment, issue_done, deferred_start), a lookup (admission, replacement, brief, issue_check, run_check, deferred_poll) or a runner call " +
 				"(claim, heartbeat, events).",
 		}, []string{"role", "kind"}),
+		PlannerRuns: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_planner_runs_total",
+			Help: "Planner runs by schedule and outcome: admitted, refused, completed, failed.",
+		}, []string{"schedule", "outcome"}),
+		PlannerProposals: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_planner_proposals_total",
+			Help: "Proposals of finished planner runs by schedule and outcome: created (reserved), delegated, joe, backlog, dropped, deduplicated.",
+		}, []string{"schedule", "outcome"}),
+		PlannerLastRun: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "factory_connector_planner_last_run_proposals",
+			Help: "The newest finished planner run's proposal counts, by the same outcomes.",
+		}, []string{"schedule", "outcome"}),
+		PlannerTokens: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_planner_tokens_total",
+			Help: "Tokens the broker measured for finished planner sessions, by direction (input, output). A run with no measured usage adds nothing.",
+		}, []string{"schedule", "direction"}),
+		PlannerLastTokens: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "factory_connector_planner_last_run_tokens",
+			Help: "The newest finished planner run's measured tokens, by direction.",
+		}, []string{"schedule", "direction"}),
+		PlannerBreakerOpen: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "factory_connector_planner_breaker_open",
+			Help: "1 while an enabled planner schedule's breaker is tripped (four consecutive low-yield runs), else 0.",
+		}, []string{"schedule"}),
+		PlannerSessionError: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_planner_step_errors_total",
+			Help: "Planner runtime step failures by step: claim, session, send, read, report, delete.",
+		}, []string{"step"}),
 	}
 	if reg != nil {
-		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
+		reg.MustRegister(m.PlannerRuns, m.PlannerProposals, m.PlannerLastRun, m.PlannerTokens, m.PlannerLastTokens, m.PlannerBreakerOpen, m.PlannerSessionError, m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
 			m.DeferredStarted, m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.ItsaplanUnavailable, m.TickErrors,
 			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.CILogReads, m.GoalReasonReads, m.SessionRecoveries, m.SessionsDeleted, m.StuckTurns, m.WorkerWaits, m.CredentialRefusals,
 			m.HeldRuns, m.OldestHold)
