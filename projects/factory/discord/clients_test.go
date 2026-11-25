@@ -222,3 +222,33 @@ func TestPolicyRequiresEveryLimit(t *testing.T) {
 		}
 	}
 }
+
+// The bridge registers no slash commands, so start-up empties the list the
+// old hub bot left: it reads the application ID, then PUTs an empty array.
+func TestClearCommandsEmptiesTheApplicationsCommands(t *testing.T) {
+	var calls []string
+	var put string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		if r.Header.Get("Authorization") != "Bot tok" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.Method == http.MethodPut {
+			b, _ := io.ReadAll(r.Body)
+			put = strings.TrimSpace(string(b))
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"app1"}`))
+	}))
+	defer srv.Close()
+	r := &REST{Base: srv.URL, Token: func() (string, error) { return "tok", nil }}
+	if err := r.ClearCommands(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := "GET /oauth2/applications/@me;PUT /applications/app1/commands"
+	if strings.Join(calls, ";") != want || put != "[]" {
+		t.Fatalf("calls = %v, put body = %q; want %s with []", calls, put, want)
+	}
+}

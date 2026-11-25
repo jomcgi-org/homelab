@@ -99,6 +99,23 @@ func (r *REST) Me(ctx context.Context) (User, error) {
 	return u, err
 }
 
+// ClearCommands removes every global slash command the application has
+// registered. The hub bot that used this token registered /agent and others;
+// the bridge registers none, and nothing else re-syncs them, so they stay in
+// Discord's picker and answer "application did not respond" until cleared.
+func (r *REST) ClearCommands(ctx context.Context) error {
+	var app struct {
+		ID string `json:"id"`
+	}
+	if err := r.do(ctx, http.MethodGet, "/oauth2/applications/@me", nil, &app); err != nil {
+		return err
+	}
+	if app.ID == "" {
+		return errors.New("discord: application ID is empty")
+	}
+	return r.do(ctx, http.MethodPut, "/applications/"+app.ID+"/commands", []struct{}{}, nil)
+}
+
 // GatewayURL is the bot's gateway address.
 func (r *REST) GatewayURL(ctx context.Context) (string, error) {
 	var out struct {
