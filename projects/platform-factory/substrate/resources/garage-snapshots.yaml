@@ -1,0 +1,42 @@
+# The ate-snapshots bucket in Garage, the replacement for rustfs
+# (snapshot-store.yaml). garage-init (projects/platform-factory/garage) fills
+# this Secret with the bucket's key pair, the S3 endpoint and the region: it
+# needs the empty Secret to exist, and a Role to read and update it. The
+# snapshot sidecars and the asset Jobs read the key from it once they move
+# from snapshot-store-credentials.
+#
+# Argo CD never prunes the Secret, and the substrate Application ignores its
+# data (egress-scan/deploy/application.yaml).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ate-snapshots-s3
+  namespace: ate-system
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-init
+  namespace: ate-system
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [ate-snapshots-s3]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-init
+  namespace: ate-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: garage-init
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage

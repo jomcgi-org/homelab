@@ -39,6 +39,12 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: ate-system
+  # garage-init writes the bucket key into this Secret.
+  ignoreDifferences:
+    - kind: Secret
+      namespace: ate-system
+      name: ate-snapshots-s3
+      jsonPointers: [/data]
   syncPolicy:
     automated:
       prune: true
