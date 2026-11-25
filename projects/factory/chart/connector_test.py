@@ -48,7 +48,10 @@ _ENABLE_VALUES = {
     "connector": {
         "enabled": True,
         "bindings": {
-            "homelab": {"itsaplanProject": "HOME", "agents": ["homelab-codex"]}
+            "homelab": {
+                "itsaplanProject": "HOME",
+                "agents": ["task-agent", "homelab-codex"],
+            }
         },
         "database": {"endpoints": _DB},
     },
@@ -424,6 +427,7 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
         "factory-itsaplan-agent-homelab-codex": [
             {"key": "apiKey", "path": "homelab-codex"}
         ],
+        "factory-itsaplan-agent-task-agent": [{"key": "apiKey", "path": "task-agent"}],
     }
     # The itsaplan bootstrap declares the same Secrets.
     for name in sources:
@@ -435,10 +439,15 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
     }
     assert config["agents"] == [
         {
+            "key": "task-agent",
+            "apiKeyFile": "/var/run/secrets/factory-itsaplan/task-agent",
+            "concurrency": 10,
+        },
+        {
             "key": "homelab-codex",
             "apiKeyFile": "/var/run/secrets/factory-itsaplan/homelab-codex",
-            "concurrency": 10,
-        }
+            "concurrency": 4,
+        },
     ]
 
 
@@ -446,7 +455,7 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
 def test_connector_matches_coder_pool_after_activation(workers: int) -> None:
     docs = _render(
         [
-            "connector.agents[0].username=homelab-codex",
+            "connector.agents[0].username=task-agent",
             "connector.agents[0].concurrency=codexWorkers",
             f"agents.codex.concurrency={workers}",
         ]
