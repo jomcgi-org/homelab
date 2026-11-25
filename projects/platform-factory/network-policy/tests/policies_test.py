@@ -52,7 +52,6 @@ def test_platform_manifest_api_ports():
         ("external-secrets", PLATFORM / "external-secrets/chart"),
         ("factory", PROJECTS / "factory/chart"),
         ("factory-explore", PROJECTS / "factory-explore/chart"),
-        ("ships", PROJECTS / "ships/chart"),
     ],
 )
 def test_rendered_api_ports(release, chart):
@@ -66,7 +65,7 @@ def test_rendered_api_ports(release, chart):
             "runbookRevert.enabled=true",
         ]
         namespace = "kagent"
-    elif release in {"factory-explore", "ships"}:
+    elif release == "factory-explore":
         # Packaging supplies the image digest; the Applications use chart defaults.
         args = ["--set", "image.digest=sha256:" + "0" * 64]
     rendered = subprocess.check_output(

@@ -63,9 +63,6 @@ data:
     vaults/k8s-homelab/items/factory-renovate-gh-app
   scotland-connector: |-
     vaults/k8s-homelab/items/r2-s3-public-read
-  ships: |-
-    vaults/k8s-homelab/items/ghcr-read-permissions
-    vaults/k8s-homelab/items/marine
   stars-forecast: |-
     vaults/k8s-homelab/items/ghcr-read-permissions
     vaults/k8s-homelab/items/r2-s3-public-read

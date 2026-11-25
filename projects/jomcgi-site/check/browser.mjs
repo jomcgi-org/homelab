@@ -89,11 +89,10 @@ export async function checkPage(
     width = 1280,
     checkMap = false,
     servePhoto,
-    serveShipsRequest,
     factoryEnabled = sources.httpsManifests.factory.enabled !== false,
   },
 ) {
-  const { origin, pathname } = new URL(url);
+  const { origin } = new URL(url);
   const stagedManifest = (location) =>
     !factoryEnabled && location === origin + "/data/factory/manifest.json";
   const context = await browser.newContext({
@@ -139,18 +138,6 @@ export async function checkPage(
             errors.push(`photo request: ${error.message}`);
           }
           return route.abort();
-        }
-        if (pathname === "/app/ships" && route.request().method() === "GET") {
-          const target = new URL(route.request().url());
-          const shipsObject =
-            target.origin === "https://factory-data.jomcgi.dev" &&
-            /^\/ships\/(?:latest|(?:snapshot|heat|tracks\/\d{1,15})-[a-f0-9]{64}(?:-[A-Z2-7]{26})?)\.json$/.test(
-              target.pathname,
-            );
-          if (shipsObject || target.origin === tileOrigin)
-            return serveShipsRequest
-              ? serveShipsRequest(route)
-              : route.fallback();
         }
         if (mapPage && requestOrigin === tileOrigin) {
           if (checkMap) return route.fallback();
@@ -297,7 +284,6 @@ export async function tier2(
     concurrency = TIER2_CONCURRENCY,
     checkMaps = true,
     servePhoto,
-    serveShipsRequest,
   } = {},
 ) {
   const browser = await launchBrowser();
@@ -306,7 +292,6 @@ export async function tier2(
       [390, 1280].map((width) => ({
         ...page,
         servePhoto,
-        serveShipsRequest,
         colorScheme,
         width,
         checkMap: checkMaps && colorScheme === "light" && width === 1280,

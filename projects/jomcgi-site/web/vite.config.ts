@@ -67,7 +67,6 @@ export default defineConfig({
         "trip-day": "trip-day.html",
         "trip-timeline": "trip-timeline.html",
         engineering: "engineering.html",
-        ships: "app/ships.html",
         hikes: "hikes.html",
         stars: "stars.html",
       }),

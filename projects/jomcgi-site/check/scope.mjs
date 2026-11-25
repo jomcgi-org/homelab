@@ -6,8 +6,7 @@ export const JUNK_PATH = "/__site-check_missing_page_7e86b5";
 // Paths the retired hub served (HOME-261). The Worker has no page or redirect
 // for them, so each must answer the site's 404 page wherever the stage routes
 // it to the Worker. Trips is not here: it is a disabled section that can
-// come back (data/sources.json). The release ships no Ships page until
-// HOME-411, which takes /app/ships off this list.
+// come back (data/sources.json). Ships is removed (HOME-256).
 export const RETIRED_PATHS = [
   "/api/anything",
   "/functions/x",

@@ -68,16 +68,6 @@ export const SECTIONS: readonly Section[] = [
     summary: "Dark-sky sites and the nights worth going out.",
   },
   {
-    name: "Ships",
-    group: "Apps",
-    path: "/ships",
-    // Not live until its data reaches the page (HOME-411). The browser read
-    // of the public mirror has no CORS header, so the build ships no page.
-    live: false,
-    entries: ["app/ships.html"],
-    summary: "Vessels moving around the coast.",
-  },
-  {
     name: "Trips",
     group: "Apps",
     path: "/trips",

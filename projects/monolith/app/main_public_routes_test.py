@@ -73,7 +73,6 @@ REQUIRED_PATHS = [
 # Prefixes for the wholly-public domains; at least one route per prefix must
 # be mounted. Mirrors each domain router's declared prefix.
 REQUIRED_PREFIXES = [
-    "/api/ships",
     "/api/stars",
     "/api/hikes",
     "/api/dr-jobs",
@@ -123,7 +122,6 @@ def test_api_health_present():
 # under an unexpected prefix, so a new private surface cannot silently leak
 # into the public artifact.
 ALLOWED_PREFIXES = (
-    "/api/ships",
     "/api/stars",
     "/api/hikes",
     "/api/dr-jobs",

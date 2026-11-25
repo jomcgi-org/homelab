@@ -74,7 +74,7 @@ def _capture_sweep_coro():
 
     Identified by coroutine name rather than creation order, so the test does
     not depend on which order the composed leader hooks spawn their tasks
-    (chat starts bot, outbox drain, and sweep; ships starts the AIS ingest).
+    (chat starts bot, outbox drain, and sweep).
     """
     mock_bot = MagicMock()
     mock_bot.close = AsyncMock()
@@ -191,10 +191,10 @@ class TestSweepTaskRegistration:
         ):
             await start_leader_singletons(app, ALL_MODULES)
 
-        # Ships ingest, the agent_sessions pending-message sweep, title refresh,
-        # KG feed, permit supervision, guest cleanup, receipt retention, cd-probe and
-        # quota refresh are the nine service tasks.
-        assert len(tasks_created) == 9
+        # The agent_sessions pending-message sweep, title refresh, KG feed,
+        # permit supervision, guest cleanup, receipt retention, cd-probe and
+        # quota refresh are the eight service tasks.
+        assert len(tasks_created) == 8
         messages = [str(c) for c in mock_logger.info.call_args_list]
         assert not any("Message lock sweep started" in m for m in messages)
 

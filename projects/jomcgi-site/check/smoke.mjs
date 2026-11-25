@@ -1,36 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { client, checkLinks, tier1 } from "./tier1.mjs";
 import { checkPage, launchBrowser, tier2 } from "./browser.mjs";
 import { serveRelease, serveFixturePhoto } from "./release-fixture.mjs";
 import { scopeFor } from "./scope.mjs";
-
-// Mirror fixtures for the Ships page. The release has that page only while
-// Ships is live (web/src/sections.ts, HOME-411).
-const shipsSnapshot = "snapshot-" + "a".repeat(64) + ".json";
-const shipsFiles = new Map([
-  [
-    "https://factory-data.jomcgi.dev/ships/latest.json",
-    { snapshot: shipsSnapshot, heat: "heat-" + "b".repeat(64) + ".json" },
-  ],
-  [
-    "https://factory-data.jomcgi.dev/ships/" + shipsSnapshot,
-    { generated_at: "2026-11-19T12:00:00+00:00", vessels: [] },
-  ],
-  [
-    "https://tiles.openfreemap.org/styles/liberty",
-    { version: 8, sources: {}, layers: [] },
-  ],
-]);
-async function serveShipsRequest(route) {
-  const json = shipsFiles.get(route.request().url());
-  await route.fulfill({
-    status: json ? 200 : 404,
-    headers: { "Access-Control-Allow-Origin": "*" },
-    json: json ?? {},
-  });
-}
 
 export async function checkReleaseStage(dist, stage) {
   const server = await serveRelease(dist, stage);
@@ -48,9 +20,6 @@ export async function checkReleaseStage(dist, stage) {
       await tier2(pages, {
         checkMaps: false,
         servePhoto: serveFixturePhoto,
-        serveShipsRequest: existsSync(join(dist, "app/ships.html"))
-          ? serveShipsRequest
-          : undefined,
       }),
     );
   } finally {

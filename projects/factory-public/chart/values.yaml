@@ -34,16 +34,6 @@ buckets:
           # every few hours, and each run costs R2 Class A operations.
           schedule: "3-59/10 * * * *"
           suspend: false
-        # https://factory-data.jomcgi.dev/ships/latest.json
-        # Public by Joe's decision (HOME-256 comment 4484). HOME-410 turns
-        # the mirror on after the Ships ingester starts (HOME-537).
-        - bucket: ships
-          r2Prefix: ships
-          manifestName: latest.json
-          # Every 10 minutes, offset from the other sources: this source changes
-          # every few hours, and each run costs R2 Class A operations.
-          schedule: "6-59/10 * * * *"
-          suspend: false
   # The health publisher's own bucket: its write key covers nothing in
   # factory-public (HOME-260).
   - name: factory-health

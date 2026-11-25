@@ -95,11 +95,6 @@ def test_grimoire_verifier_cannot_dispatch_mutation(options):
 @pytest.mark.parametrize(
     ("command", "handler_path"),
     [
-        ("ships-heat-rollup", "ships.heat.heat_rollup_handler"),
-        (
-            "ships-partition-maintenance",
-            "ships.retention.partition_maintenance_handler",
-        ),
         ("dr-jobs-scrape-nhs", "dr_jobs.jobs.scrape_nhs_handler"),
         ("campsites-refresh", "campsites.jobs.refresh_handler"),
         ("grimoire-load-chunks", "grimoire.jobs.grimoire_load_chunks"),

@@ -902,22 +902,6 @@ def _run_job(name: str, import_path: str, handler_name: str) -> None:
     logger.info("%s: done", name)
 
 
-@app.command("ships-heat-rollup")
-def ships_heat_rollup() -> None:
-    """Rebuild the ships traffic-heat rollup (one-shot of ships.heat_rollup)."""
-    _run_job("ships-heat-rollup", "ships.heat", "heat_rollup_handler")
-
-
-@app.command("ships-partition-maintenance")
-def ships_partition_maintenance() -> None:
-    """Roll ships position partitions (one-shot of ships.partition_maintenance)."""
-    _run_job(
-        "ships-partition-maintenance",
-        "ships.retention",
-        "partition_maintenance_handler",
-    )
-
-
 @app.command("dr-jobs-scrape-nhs")
 def dr_jobs_scrape_nhs() -> None:
     """Scrape NHS Scotland vacancies (one-shot of dr_jobs.scrape_nhs)."""

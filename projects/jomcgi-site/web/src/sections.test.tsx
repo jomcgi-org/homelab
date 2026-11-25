@@ -31,11 +31,6 @@ describe("URL contract", () => {
   });
 
   it("builds a section's own entries only while it is live", () => {
-    // The Ships page reads data it cannot get yet, so it ships no page
-    // until HOME-411 sets it live.
-    const ships = SECTIONS.find((section) => section.name === "Ships")!;
-    expect(ships.entries).toEqual(["app/ships.html"]);
-    expect(built("app/ships.html")).toBe(ships.live);
     for (const section of SECTIONS)
       for (const entry of section.entries ?? []) {
         expect(Object.keys(PAGES), entry).toContain(entry);

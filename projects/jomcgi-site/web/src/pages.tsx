@@ -1,4 +1,3 @@
-import { ShipsPage } from "./ships-page";
 import { SlopPage } from "./slop-page";
 import { ScotlandSupportPage } from "./scotland-support-page";
 import { ScotlandTermsPage } from "./scotland-terms-page";
@@ -48,6 +47,5 @@ export const PAGES: Record<string, () => React.JSX.Element> = {
   "trip-timeline.html": TripTimelinePage,
   "engineering.html": EngineeringPage,
   "hikes.html": HikesPage,
-  "app/ships.html": ShipsPage,
   "stars.html": StarsPage,
 };

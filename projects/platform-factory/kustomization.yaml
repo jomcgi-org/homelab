@@ -47,7 +47,6 @@ resources:
   - ../factory-explore-site/deploy # Publishes the explorer Worker on sync
   - ../jomcgi-site/deploy # jomcgi.dev site: dev-stage deploy Job for next.jomcgi.dev (HOME-174)
   - ../scotland-connector/deploy
-  - ../ships/deploy
   - ./edge-tunnel # Publishes the edge hostnames; deployed last, removed first
   - ./t3 # Relay to the node-1 T3 socket
   - ./grimoire-data

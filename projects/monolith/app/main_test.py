@@ -251,9 +251,9 @@ async def test_lifespan_creates_background_tasks_on_startup():
         ):
             await start_leader_singletons(app, ALL_MODULES)
 
-    # Ships, pending-message sweep, titles, KG feed, permit supervision, guest
+    # Pending-message sweep, titles, KG feed, permit supervision, guest
     # cleanup, receipt retention, cd probe, quota refresh.
-    assert len(created_tasks) == 9
+    assert len(created_tasks) == 8
 
 
 @pytest.mark.asyncio
@@ -278,9 +278,9 @@ async def test_lifespan_cancels_all_tasks_on_shutdown():
             await start_leader_singletons(app, ALL_MODULES)
             await stop_leader_singletons(app, ALL_MODULES)
 
-    # Ships, pending-message sweep, titles, KG feed, permit supervision, guest
+    # Pending-message sweep, titles, KG feed, permit supervision, guest
     # cleanup, receipt retention, cd probe, quota refresh.
-    assert len(mock_tasks) == 9
+    assert len(mock_tasks) == 8
     for task in mock_tasks:
         task.cancel.assert_called_once()
 
@@ -305,9 +305,9 @@ async def test_lifespan_no_tasks_cancelled_before_shutdown():
             patches[1],
         ):
             await start_leader_singletons(app, ALL_MODULES)
-            # Ships, pending sweep, titles, KG feed, permit supervision, guest cleanup,
+            # Pending sweep, titles, KG feed, permit supervision, guest cleanup,
             # retention, cd probe, quota refresh.
-            assert len(mock_tasks) == 9
+            assert len(mock_tasks) == 8
             for task in mock_tasks:
                 task.cancel.assert_not_called()
             await stop_leader_singletons(app, ALL_MODULES)
@@ -462,7 +462,7 @@ async def test_lifespan_registers_done_callback_on_bot_task_when_token_set():
         if hasattr(coro, "close"):
             coro.close()
         task_counter[0] += 1
-        # Tasks created: 1=bot, 2=scheduler, 3=ships ingest, 4=sweep
+        # Tasks created: 1=bot, then the scheduler and sweep
         if task_counter[0] == 1:
             return bot_task_mock
         return _AwaitableTask()

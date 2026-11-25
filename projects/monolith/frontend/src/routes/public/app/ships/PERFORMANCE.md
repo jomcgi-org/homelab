@@ -56,9 +56,9 @@ hydration and JSON encoding. No index or production database change was made.
 | Traffic heat | 300 | 3,600 | 3,900 (65m) | 86,400 | 86,700 (24h5m) |
 
 All three policies set browser `max-age=0`. The loader and proxies mirror the
-constants in the [backend router](../../../../../../ships/router.py).
+constants in the backend router (`ships/router.py`, removed in HOME-256).
 
-[AIS ingestion](../../../../../../ships/ingest.py) consumes a
+AIS ingestion (`ships/ingest.py`, removed) consumes a
 continuous feed and flushes at 200 rows or when an incoming message finds the
 batch older than two seconds. This is not a guaranteed reporting cadence for
 each vessel. The snapshot query has no timestamp cutoff on `latest_positions`;

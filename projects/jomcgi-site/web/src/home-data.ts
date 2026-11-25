@@ -42,7 +42,6 @@ export const ALL_KEYS = [
   key("CV", "Ten years, underwriting to platform engineering."),
   key("Homelab", "What runs here, and how a threat is kept small."),
   key("Grimoire", "A D&D campaign manager built on grants."),
-  key("Ships", "Every ship off Scotland right now, from live AIS."),
   key("Stars", "Where the sky will be dark and clear tonight."),
   key("Hikes", "Scottish hill walks, planned by day and weather."),
   key("Trips", "A dash-mounted GoPro turned into a browseable journey."),

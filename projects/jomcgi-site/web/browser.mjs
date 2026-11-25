@@ -24,7 +24,7 @@ export async function withSiteBrowser(
       ),
     ].map(([, route, value]) => [route, value]),
   );
-  // An exact route (/app/ships) wins over its first segment (/trips/x).
+  // An exact route wins over its first segment (/trips/x).
   const policyFor = (path) =>
     routePolicies.get(path.replace(/\.html$/, "")) ??
     routePolicies.get("/" + path.split("/")[1].replace(/\.html$/, "")) ??
@@ -104,12 +104,7 @@ export async function withSiteBrowser(
     // Only a map page may reach the tile host or start a blob worker. On any
     // other page those requests stay unexpected, as its policy forbids them.
     const mapPage = () =>
-      /^\/(stars|hikes|trips|app\/ships)(\.html|\/|$)/.test(
-        new URL(page.url()).pathname,
-      );
-    // Only the Ships page reads the public mirror objects.
-    const shipsPage = () =>
-      /^\/app\/ships(\.html|\/|$)/.test(new URL(page.url()).pathname);
+      /^\/(stars|hikes|trips)(\.html|\/|$)/.test(new URL(page.url()).pathname);
     await page.setRequestInterception(true);
     page.on("request", (request) => {
       const url = request.url();
@@ -121,12 +116,6 @@ export async function withSiteBrowser(
       ) {
         // The run is offline. On a map page the tile host answers "not
         // found", and the page must stay usable without a base map.
-        void request.respond({ status: 404, body: "" });
-      } else if (
-        shipsPage() &&
-        url.startsWith("https://factory-data.jomcgi.dev/ships/")
-      ) {
-        // Offline, the mirror has no objects yet. The page must still load.
         void request.respond({ status: 404, body: "" });
       } else if (
         !url.startsWith(origin + "/") &&
