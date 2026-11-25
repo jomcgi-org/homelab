@@ -54,6 +54,7 @@ go_test(
         "admission_order_test.go",
         "admission_test.go",
         "artifact_transcript_test.go",
+        "coder_delegate_test.go",
         "deferred_test.go",
         "delivery_test.go",
         "engine_test.go",
