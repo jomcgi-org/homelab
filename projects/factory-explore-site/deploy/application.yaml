@@ -16,7 +16,7 @@ spec:
     helm:
       releaseName: factory-explore-site
       valuesObject:
-        manageHostname: false
+        manageHostname: true
         workloads:
           factory-explore-deploy:
             image:
