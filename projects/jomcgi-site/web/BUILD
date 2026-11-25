@@ -362,3 +362,14 @@ js_test(
     ],
     entry_point = "trips-built.test.mjs",
 )
+
+# Indexed through the parent package's repo_docs; web/ is its own package, so
+# the parent's glob does not reach AGENTS.md.
+filegroup(
+    name = "repo_docs",
+    srcs = glob(
+        ["*.md"],
+        allow_empty = True,
+    ),
+    visibility = ["//projects/jomcgi-site:__pkg__"],
+)
