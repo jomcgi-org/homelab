@@ -44,10 +44,12 @@ record_chart() {
   local record_dir="${WORKSPACE}/.chart-version-records" digest
   mkdir -p "$record_dir"
   if [[ "$CHART_DIR" == "projects/factory-explore-site/chart" ]]; then
+    # The build merges the pinned digest over the source `digest: ''`, and yq
+    # keeps that quote style, so the packaged value reads 'sha256:...'.
     digest=$("$HELM" show values "$CHART_TGZ" | awk '
       /^image:/ { image=1; next }
       /^[^[:space:]]/ { image=0 }
-      image && /^  digest:/ { print $2 }
+      image && /^  digest:/ { d=$2; gsub(/["\047]/, "", d); print d }
     ')
     if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
       echo "Invalid factory-explore-site image digest in packaged chart" >&2
