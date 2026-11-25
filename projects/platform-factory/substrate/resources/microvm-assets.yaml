@@ -1,5 +1,5 @@
 # Stages the microVM sandbox assets (sandboxconfig-microvm.yaml) and the
-# kubectl-ate CLI (assets.json "tools") in rustfs.
+# kubectl-ate CLI (assets.json "tools") in Garage.
 #
 # A Sync hook in wave 1: it runs after the wave-0 resources (rustfs and its
 # bucket Job) and finishes before the wave-2 one-off Jobs that run the CLI it
@@ -44,9 +44,9 @@ spec:
             - name: HOME
               value: /tmp
             - name: AWS_REGION
-              value: us-east-1
+              value: garage
             - name: AWS_ENDPOINT_URL
-              value: http://rustfs.ate-system.svc:9000
+              value: http://garage.garage.svc:3900
             - name: BUCKET
               value: ate-snapshots
             - name: PREFIX
@@ -55,7 +55,7 @@ spec:
               value: amd64
           envFrom:
             - secretRef:
-                name: snapshot-store-credentials
+                name: ate-snapshots-s3
           command:
             - /bin/sh
             - -c
@@ -69,10 +69,10 @@ spec:
                   echo "keys already staged:"; cat /work/existing.txt
                   exit 0
                 fi
-                echo "waiting for rustfs ($i/60)"
+                echo "waiting for Garage ($i/60)"
                 sleep 5
               done
-              echo "timed out waiting for rustfs"
+              echo "timed out waiting for Garage"
               exit 1
           resources:
             requests:
@@ -125,9 +125,9 @@ spec:
             - name: HOME
               value: /tmp
             - name: AWS_REGION
-              value: us-east-1
+              value: garage
             - name: AWS_ENDPOINT_URL
-              value: http://rustfs.ate-system.svc:9000
+              value: http://garage.garage.svc:3900
             - name: BUCKET
               value: ate-snapshots
             - name: PREFIX
@@ -136,7 +136,7 @@ spec:
               value: amd64
           envFrom:
             - secretRef:
-                name: snapshot-store-credentials
+                name: ate-snapshots-s3
           command:
             - /bin/sh
             - -c
@@ -178,7 +178,7 @@ spec:
           configMap:
             name: microvm-assets
 ---
-# Public release downloads and rustfs only. GitHub serves release files
+# Public release downloads and Garage only. GitHub serves release files
 # through a redirect to its release-assets host.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -192,10 +192,11 @@ spec:
   egress:
     - toEndpoints:
         - matchLabels:
-            app: rustfs
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
       toPorts:
         - ports:
-            - port: "9000"
+            - port: "3900"
               protocol: TCP
     - toFQDNs:
         - matchName: github.com

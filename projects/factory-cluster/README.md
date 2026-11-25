@@ -579,7 +579,7 @@ v53.0 (amd64 only; the nodes advertise `ate.dev/kvm`). WorkerPool
 ActorTemplate selects it with `workload: microvm-spike`. The gVisor class is
 unchanged.
 
-atelet fetches four assets from rustfs at
+atelet fetches four assets from Garage at
 `s3://ate-snapshots/microvm-assets/amd64/<sha256>`, outside the `/atespaces/`
 snapshot prefix: `cloud-hypervisor`, `virtiofsd`, `kata-kernel` and
 `kata-image`. Their sha256 values are in
@@ -715,8 +715,7 @@ flowchart LR
    | WorkerPool `gvisor-fork` | `substrate-gvisor-fork` | new; `replicas: 0`, so no pod |
    | ConfigMaps `gvisor-fork-assets-<hash>` and `gvisor-fork-conformance-<hash>` | `ate-system` | new; the Job scripts and pins |
    | Job `gvisor-fork-assets-init` | `ate-system` | new Sync hook (wave 1): runs at once, see below |
-   | CiliumNetworkPolicy `gvisor-fork-assets-init` | `ate-system` | new; the asset Job reaches rustfs 9000 and `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` 443 |
-   | CiliumNetworkPolicy `rustfs-gvisor-fork-assets` | `ate-system` | adds ingress to the existing `rustfs` pod: the asset Job, port 9000 |
+   | CiliumNetworkPolicy `gvisor-fork-assets-init` | `ate-system` | new; the asset Job reaches Garage 3900 and `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` 443 |
    | Job `gvisor-fork-conformance-3` (history: replaced at step 8) | `ate-system` | new, `suspend: true`: no pod. Argo shows health Suspended |
    | CiliumNetworkPolicy `gvisor-fork-conformance` | `ate-system` | new; matches no pod while the Job is suspended |
    | CiliumNetworkPolicy `ate-api-server-gvisor-fork-conformance` | `ate-system` | adds ingress to the existing `ate-api-server` pods: the conformance Job, port 443 |
@@ -725,7 +724,7 @@ flowchart LR
    only from a pod labelled `app: gvisor-fork-assets-init` or
    `app: gvisor-fork-conformance`. Cilium unions them with the existing rules.
    Only the asset Job runs. It lists the keys under `gvisor-fork-assets/amd64/`
-   in the `ate-snapshots` bucket of rustfs, downloads the release
+   in the `ate-snapshots` bucket of Garage, downloads the release
    `fork-seed-slice1-0250f9acf` from jomcgi-org/gvisor (public, 43 MB) unless the
    key exists, checks its sha256, repacks it and uploads
    `e4372aa444b22a8569d4fd94166da5cc282060e3ea8db9ec7a9833cbc104687c.tar`. Its
