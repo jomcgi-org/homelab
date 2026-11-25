@@ -1,7 +1,8 @@
 {{- if .Values.planner.enabled }}
 {{- /*
-The scheduled planner's kagent Agent (HOME-40): one read-only Codex session per
-admitted run, in its own namespace and atespace. The broker mints its github-git
+The scheduled planner's kagent Agent (HOME-40): one read-only session per
+admitted run, on the Codex or Claude Code harness (agents.planner.harness), in
+its own namespace and atespace. The broker mints its github-git
 token from the reviewer App's agent permissions (contents: read), so the
 planner can clone and read the repository and cannot push. It has no memory or
 MCP server, no itsaplan key and no coding binding's session.
@@ -13,5 +14,8 @@ MCP server, no itsaplan key and no coding binding's session.
 {{- end }}
 {{- $_ := set $binding "namespace" (include "factory.plannerNamespace" .) }}
 {{- $_ := set $binding "agent" "planner" }}
+{{- with .Values.planner.harnessImage }}
+{{- $_ := set $binding "workloadImage" . }}
+{{- end }}
 {{- include "factory.bindingResources" (dict "root" $ "binding" $binding "description" "Analyzes, read-only, for scheduled planning in") }}
 {{- end }}

@@ -261,7 +261,8 @@ agents:
   codex:
     # The Codex harness through the broker's relay (provider `broker`, the only
     # provider so far): ModelConfig provider OpenAI, apiFormat responses, an
-    # actor JWT for audience factory-broker.
+    # actor JWT for audience factory-broker. Only agents.planner may set
+    # harness claude (the broker's Claude relay, below).
     harness: codex
     provider: broker
     model: gpt-6-astra
@@ -384,8 +385,14 @@ agents:
     systemPrompt: |
       you review pull requests read-only per the rules in your task; you never push, commit or open PRs
 
-  # The scheduled planner (planner.enabled): one fixed Codex session per run,
+  # The scheduled planner (planner.enabled): one fixed session per run,
   # read-only. It has no pool scaling; the pool holds `concurrency` workers.
+  # harness codex uses the broker's Codex relay. harness claude uses Claude
+  # Code through the broker's Claude relay: ModelConfig provider Anthropic,
+  # anthropic.baseUrl <broker Service>/anthropic and an actor JWT for audience
+  # factory-broker, sent as x-api-key. It needs broker.claude.enabled, a
+  # planner.harnessImage and a Claude model ID here, which the broker's
+  # claude.modelAllowlist must list for the planner's actors.
   planner:
     harness: codex
     provider: broker
@@ -902,6 +909,11 @@ planner:
   # The longest an admitted run may take before the connector ends it (Go
   # duration). The schedule's own minInterval still spaces runs.
   runTimeout: 30m
+  # The planner Harness's workload image, pinned by digest (<repo>@sha256:...),
+  # of the agents.planner.harness kind. harness claude requires one, for
+  # example the private Claude harness from projects/factory/harness/claude.
+  # Empty, a Codex planner keeps kagent's harness image.
+  harnessImage: ""
 
 # ---------------------------------------------------------------------------
 # Later steps of the delivery plan. Nothing below renders yet, and setting any

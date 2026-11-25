@@ -264,6 +264,89 @@ def test_bootstrap_schedules_one_cron_per_complete_job(on: list[dict]) -> None:
     ]
 
 
+_CLAUDE_IMAGE = (
+    "ghcr.io/jomcgi/homelab/projects/factory/harness/claude@sha256:" + "a" * 64
+)
+_CODEX_IMAGE = (
+    "ghcr.io/jomcgi/homelab/projects/factory/harness/codex@sha256:" + "b" * 64
+)
+# A placeholder ID, not a model choice: deploy values pick the model.
+_CLAUDE = [
+    "agents.planner.harness=claude",
+    "agents.planner.model=claude-model-under-test",
+    "broker.claude.enabled=true",
+    f"planner.harnessImage={_CLAUDE_IMAGE}",
+]
+
+
+@pytest.fixture(scope="module")
+def claude() -> list[dict]:
+    return _helm(*_CLAUDE)
+
+
+def test_claude_planner_calls_the_brokers_claude_relay(claude: list[dict]) -> None:
+    model = _in(claude, "ModelConfig", _NS, "planner")
+    # Anthropic credential target: kagent puts the actor JWT in x-api-key for
+    # this base URL; Claude Code appends /v1/messages.
+    assert model["spec"] == {
+        "provider": "Anthropic",
+        "model": "claude-model-under-test",
+        "anthropic": {
+            "baseUrl": "http://factory-broker.factory.svc.cluster.local/anthropic"
+        },
+        "actorJwt": {"audiences": ["factory-broker"]},
+    }
+    harness = _in(claude, "Harness", _NS, "claude")
+    assert harness["spec"]["claude"] == {}
+    assert "codex" not in harness["spec"]
+    assert harness["spec"]["workload"] == {"image": _CLAUDE_IMAGE}
+    agent = _in(claude, "Agent", _NS, "homelab-planner")
+    assert agent["spec"]["harnessRef"] == {"name": "claude"}
+    assert agent["spec"]["egressPolicyRefs"] == [{"name": "github-git"}]
+    assert "tools" not in agent["spec"]["template"]["inline"]
+    kinds = [d["kind"] for d in _in_ns(claude, _NS)]
+    assert "RemoteMCPServer" not in kinds
+    assert kinds.count("ModelConfig") == 1
+
+
+def test_claude_planner_stays_read_only(claude: list[dict]) -> None:
+    harness = _in(claude, "Harness", _NS, "claude")
+    env = {e["name"]: e.get("value") for e in harness["spec"]["env"]}
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert not any("pushInsteadOf" in str(v) for v in env.values())
+    egress = _in(claude, "EgressPolicy", _NS, "github-git")
+    assert [d["origin"] for d in egress["spec"]["destinations"]] == [
+        "https://github.com"
+    ]
+    broker = _config(claude, "factory-broker")
+    planner = [b for b in broker["reviewBindings"] if b["namespace"] == _NS]
+    assert [b["name"] for b in planner] == ["planner-homelab"]
+    assert _NS in broker["actorJwt"]["allowedAtespaces"]
+    # The coding and review bindings stay on Codex.
+    for d in claude:
+        if d["kind"] == "ModelConfig" and d["metadata"]["namespace"] != _NS:
+            assert d["spec"]["provider"] == "OpenAI"
+
+
+def test_codex_planner_render_is_unchanged(on: list[dict]) -> None:
+    model = _in(on, "ModelConfig", _NS, "planner")
+    assert model["spec"] == {
+        "provider": "OpenAI",
+        "model": "gpt-6-astra",
+        "openAI": {
+            "baseUrl": "http://factory-broker.factory.svc.cluster.local/v1",
+            "apiFormat": "responses",
+        },
+        "actorJwt": {"audiences": ["factory-broker"]},
+    }
+    harness = _in(on, "Harness", _NS, "codex")
+    assert harness["spec"]["codex"] == {}
+    assert "workload" not in harness["spec"]
+    # The Claude relay switch changes nothing a Codex planner renders.
+    relay_on = _helm("broker.claude.enabled=true")
+    assert _in_ns(relay_on, _NS) == _in_ns(on, _NS)
+
+
 @pytest.mark.parametrize(
     ("sets", "message"),
     [
@@ -275,6 +358,16 @@ def test_bootstrap_schedules_one_cron_per_complete_job(on: list[dict]) -> None:
         (["planner.runTimeout=soon"], "Does not match pattern"),
         (["agents.planner.autoscaling.enabled=true"], "autoscaling is not supported"),
         (['agents.planner.resources.cpu="2"'], "runtimeDefaults"),
+        (["planner.harnessImage=latest"], "Does not match pattern"),
+        ([f"planner.harnessImage={_CLAUDE_IMAGE}"], "must be a Codex harness"),
+        ([c for c in _CLAUDE if "broker.claude" not in c], "broker.claude.enabled"),
+        ([c for c in _CLAUDE if "harnessImage" not in c], "needs planner.harnessImage"),
+        (
+            [*_CLAUDE[:3], f"planner.harnessImage={_CODEX_IMAGE}"],
+            "needs planner.harnessImage",
+        ),
+        (["agents.codex.harness=claude"], "supported only for agents.planner"),
+        (["agents.reviewer.harness=claude"], "supported only for agents.planner"),
     ],
 )
 def test_enabling_the_planner_fails_closed(sets: list[str], message: str) -> None:

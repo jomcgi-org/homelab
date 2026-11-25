@@ -36,6 +36,17 @@
 {{- if (($a.autoscaling | default dict).enabled) }}
 {{- fail "agents.planner.autoscaling is not supported: the reaper publishes no demand for the planner pool" }}
 {{- end }}
+{{- $image := .Values.planner.harnessImage | default "" }}
+{{- if eq $a.harness "claude" }}
+{{- if not .Values.broker.claude.enabled }}
+{{- fail "agents.planner.harness claude needs broker.claude.enabled: the planner's model calls go to the broker's Claude relay" }}
+{{- end }}
+{{- if not (regexMatch "(/harness/claude|/claude-harness)@sha256:[0-9a-f]{64}$" $image) }}
+{{- fail "agents.planner.harness claude needs planner.harnessImage, a Claude harness image pinned by digest" }}
+{{- end }}
+{{- else if and $image (not (regexMatch "(/harness/codex|/codex-harness)@sha256:[0-9a-f]{64}$" $image)) }}
+{{- fail "planner.harnessImage must be a Codex harness image pinned by digest when agents.planner.harness is codex" }}
+{{- end }}
 {{- if not (has "github-git" $a.egress) }}
 {{- fail "agents.planner.egress needs github-git: the planner reads the repository" }}
 {{- end }}

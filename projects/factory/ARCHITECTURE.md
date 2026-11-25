@@ -801,8 +801,10 @@ reuse state, even after a prolonged persistence failure.
   **kagent v1.0.1 compatibility: verified in source.** Its
   [Claude compiler](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/translator/claude/compiler.go#L182)
   accepts `ModelConfig.spec.anthropic.baseUrl` and sets `ANTHROPIC_BASE_URL`.
-  Use the broker Service URL ending in `/anthropic`, without `/v1`, and
-  `actorJwt.audiences: [factory-broker]` with `provider: Anthropic`.
+  An agent profile with `harness: claude` (only `agents.planner`) renders
+  that ModelConfig: `provider: Anthropic`, `anthropic.baseUrl` set to the
+  broker Service URL ending in `/anthropic`, without `/v1`, and
+  `actorJwt.audiences: [factory-broker]`.
   Its [credential target](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/translator/credentials.go#L259)
   injects the JWT into `x-api-key` without a prefix. The broker verifies that
   header or a Bearer JWT and rejects requests containing both. The sandbox
@@ -994,7 +996,10 @@ false by default. When set, the chart renders:
   bootstrap pauses, and never deletes, a schedule that leaves the values;
 - one kagent Agent (`agents.planner`) in its own namespace, with a read-only
   `github-git` token, no memory or MCP server, no push-guard rewrite and no
-  itsaplan or coding key;
+  itsaplan or coding key. It runs on Codex, or with `harness: claude` on
+  Claude Code through the broker's Claude relay. Claude needs
+  `broker.claude.enabled` and a digest-pinned Claude `planner.harnessImage`;
+  the render fails without them;
 - the connector's `planner` config (agent key, key file, Agent, run timeout),
   and the planner's key file beside the agents' in the connector's key volume.
 
@@ -1017,7 +1022,11 @@ core schedules need no Pro. A schedule below the workspace's
 `minScheduleIntervalSeconds` is refused by itsaplan and stops the bootstrap.
 To turn it on: add the namespace to `kagent.rbac.namespaces` and to Substrate's
 `credentialProvider.namespacePolicies`, set `planner.enabled`, and give each
-job a `cron` and `prompt`.
+job a `cron` and `prompt`. A Claude planner also needs its model in the
+broker's `claude.modelAllowlist` for each planner actor. That allowlist takes
+only exact `session-<ID>` actors, and each run starts a fresh session, so
+the relay denies a Claude planner run until the broker can allow the
+planner's atespace.
 
 ### Factory front page
 

@@ -57,6 +57,14 @@ destinations as absolute names, so a search-domain name such as
 http://{{ include "factory.brokerName" . }}.{{ .Values.broker.namespace }}.svc.{{ .Values.clusterDomain }}/v1
 {{- end }}
 
+{{/*
+The Claude relay's base URL, on the same Service. Claude Code appends
+/v1/messages to ANTHROPIC_BASE_URL, so this ends in /anthropic without /v1.
+*/}}
+{{- define "factory.brokerClaudeRelayURL" -}}
+http://{{ include "factory.brokerName" . }}.{{ .Values.broker.namespace }}.svc.{{ .Values.clusterDomain }}/anthropic
+{{- end }}
+
 {{/* The broker's grant Secret and quota ConfigMap names. */}}
 {{- define "factory.brokerGrantSecret" -}}factory-broker-grant-{{ .Values.broker.grant }}{{- end }}
 {{- define "factory.brokerQuotaConfigMap" -}}factory-broker-quota{{- end }}

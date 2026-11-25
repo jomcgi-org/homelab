@@ -540,6 +540,11 @@
         "runTimeout": {
           "type": "string",
           "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)([0-9]+(ns|us|µs|ms|s|m|h))*$"
+        },
+        "harnessImage": {
+          "description": "The planner Harness's workload image, pinned by digest, of the agents.planner.harness kind. Required for claude; empty keeps kagent's Codex image.",
+          "type": "string",
+          "pattern": "^(|[^\\s@]+@sha256:[0-9a-f]{64})$"
         }
       }
     },
@@ -1078,11 +1083,11 @@
         "additionalProperties": false,
         "properties": {
           "harness": {
-            "description": "Only the Codex harness speaks the broker's relay.",
-            "enum": ["codex"]
+            "description": "codex uses the broker's Codex relay; claude (agents.planner only) uses its Claude relay.",
+            "enum": ["codex", "claude"]
           },
           "provider": {
-            "description": "broker: the credential broker's Codex relay.",
+            "description": "broker: the credential broker's relay for the harness.",
             "enum": ["broker"]
           },
           "model": {
