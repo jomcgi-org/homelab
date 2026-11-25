@@ -540,7 +540,7 @@ def test_bindings_derive_from_repositories() -> None:
                 )["spec"]["template"]["inline"]["systemPrompt"],
             },
             "itsaplanProject": "HOME",
-            "agents": ["homelab-codex"],
+            "agents": ["task-agent", "homelab-codex"],
             "trustedReviewers": ["reviewer-bot"],
             "requiredChecks": [
                 {"name": "pr-checks", "statusCreator": "buildbuddy-io[bot]"}
