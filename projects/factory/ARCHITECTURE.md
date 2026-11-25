@@ -388,7 +388,11 @@ The homelab coding binding supplies the local check tools and their download pol
 Helm, crane, buildifier, gofumpt, shfmt and shellcheck use the Linux amd64
 URLs and SHA-256 hashes in `bazel/tools/tools.lock.json`. Ruff's musl wheel
 uses that lock's version. pnpm, prettier, the Svelte plugin and Svelte use
-`package.json` versions, installed without lifecycle scripts. PyPI and npm
+`package.json` versions, installed without lifecycle scripts. The Astryx CLI
+and Core install the same way, at the Core version that
+`projects/jomcgi-site/web/package.json` pins, so the `astryx` command answers
+for the code the coder edits. Add another npm CLI as a row of `NPM_TOOLS` in
+`toolchain/install.py`. PyPI and npm
 verify their distribution integrity; their transitive dependency selection
 is resolved at bootstrap, outside the Bazel dependency graph. Setup checks
 the executables before publishing an environment file and caches them by

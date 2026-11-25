@@ -13,6 +13,22 @@ import tarfile
 import urllib.request
 
 
+# npm CLIs the sandbox runs by name. To add one, add a row: the version source
+# is a package.json dependency, so a repo bump also refreshes the tool cache.
+# Each row: (package.json, section, dependency, packages to install, command,
+# entry file).
+NPM_TOOLS = (
+    (
+        "projects/jomcgi-site/web/package.json",
+        "dependencies",
+        "@astryxdesign/core",
+        ("@astryxdesign/cli", "@astryxdesign/core"),
+        "astryx",
+        "@astryxdesign/cli/clients/cli/bin/astryx.mjs",
+    ),
+)
+
+
 def install_binary(name: str, pin: dict, root: Path) -> None:
     archive = root / "download"
     with urllib.request.urlopen(pin["url"], timeout=120) as response:
@@ -86,6 +102,11 @@ def install(repo: Path, root: Path) -> None:
         f"{name}@{dependencies[name]}"
         for name in ("prettier", "prettier-plugin-svelte", "svelte")
     ]
+    entries = {}
+    for source, section, dependency, names, command, entry in NPM_TOOLS:
+        version = json.loads((repo / source).read_text())[section][dependency]
+        packages += [f"{name}@{version}" for name in names]
+        entries[command] = entry
     # npm requires separate paths for user and global configuration.
     npm_global_config = root / "npm-global.conf"
     npm_global_config.write_text("")
@@ -113,6 +134,8 @@ def install(repo: Path, root: Path) -> None:
         'env NODE_PATH="$root/js/node_modules" "$root/bin/node" '
         '"$root/js/node_modules/prettier/bin/prettier.cjs"',
     )
+    for command, entry in entries.items():
+        wrapper(root, command, f'"$root/bin/node" "$root/js/node_modules/{entry}"')
 
 
 if __name__ == "__main__":
