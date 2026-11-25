@@ -685,7 +685,6 @@ def test_active_managers_and_upstream_chart_updates_remain_available():
         ),
         "First-party image versions are published and promoted by CI and Kargo.",
         "Hold the Envoy Gateway and Proxy family while the header regression and paired guard are resolved.",
-        "The custom manager owns Polylane cloudflared tag and separate digest together.",
     ]
 
 
