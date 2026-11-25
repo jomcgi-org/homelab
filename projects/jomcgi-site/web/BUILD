@@ -162,6 +162,23 @@ js_test(
     ],
 )
 
+# The local preview's screenshot step (HOME-877): arguments, the loopback
+# server, failure exit codes and cleanup on a signal, on an invented site.
+js_test(
+    name = "preview_shots_test",
+    size = "medium",
+    data = [
+        "preview-shots.mjs",
+        ":node_modules/@sparticuz/chromium",
+        ":node_modules/playwright",
+    ],
+    entry_point = "preview-shots.test.mjs",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+)
+
 js_test(
     name = "marketplace_test",
     args = ["$(rootpath :build)"],

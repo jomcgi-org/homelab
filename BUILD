@@ -86,6 +86,12 @@ exports_files(
     visibility = ["//bazel/tools/ci:__pkg__"],
 )
 
+# preview_test checks that git ignores the local preview's output.
+exports_files(
+    [".gitignore"],
+    visibility = ["//projects/jomcgi-site/preview:__pkg__"],
+)
+
 sh_test(
     name = "stpa_validator_test",
     srcs = ["docs/agents/stpa_validator_test.sh"],

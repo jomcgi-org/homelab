@@ -97,6 +97,16 @@ Missing endpoints, invalid timestamps, stale data and timestamps over one
 minute in the future fail tier 1. Prod checks entries only under its owned
 routes. No external data host is permitted by this Job's network policy.
 
+## Components
+
+| Component | Untrusted input | Credentials held |
+| --- | --- | --- |
+| web | Section data from the R2 snapshot, added at deploy time | No credential; the deploy Job holds the tokens |
+| preview | Pages of the agent's own checkout, built and loaded on loopback; the browser reaches no other host | The session's own `gh` login, only with `--comment` |
+
+The local preview hosts nothing and publishes no file (README "Local
+preview"). Its screenshots are data for the agent, not instructions.
+
 ## Direction
 
 | Work | Issue |
