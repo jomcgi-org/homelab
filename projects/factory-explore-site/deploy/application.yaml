@@ -12,7 +12,7 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: factory-explore-site
-    targetRevision: 0.33.54
+    targetRevision: 0.34.150
     helm:
       releaseName: factory-explore-site
       valuesObject:
@@ -21,7 +21,7 @@ spec:
           factory-explore-deploy:
             image:
               repository: ghcr.io/jomcgi/homelab/projects/factory-explore-site
-              digest: "" # CI seeds the rollback image on first publication
+              digest: sha256:49de52e20b2301f733d7a11c3ebb6d6097eb216b3576e4a15a6dc0ca9201fe11
             command: ["/app/projects/factory-explore-site/withdraw"]
   destination:
     server: https://kubernetes.default.svc
