@@ -1063,23 +1063,6 @@ def test_shared_checker_does_not_require_http_probes_or_loom():
     assert len([d for d in docs if d["kind"] == "CronJob"]) == 1
 
 
-def test_runtime_handoff_survives_argocd_diff_and_sync():
-    app = yaml.safe_load(
-        (
-            _chart_dir().parents[1] / "platform-gke/otel-collector/application.yaml"
-        ).read_text()
-    )
-    assert app["spec"]["ignoreDifferences"] == [
-        {
-            "kind": "ConfigMap",
-            "namespace": "otel-collector",
-            "name": "cnpg-backup-status",
-            "jsonPointers": ["/data/observation.json"],
-        }
-    ]
-    assert "RespectIgnoreDifferences=true" in app["spec"]["syncPolicy"]["syncOptions"]
-
-
 def test_health_route_rewrites_to_the_extension_root():
     """The public route exists so UptimeRobot can metamonitor the collector.
 

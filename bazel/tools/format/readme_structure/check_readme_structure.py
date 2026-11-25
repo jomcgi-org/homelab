@@ -11,7 +11,7 @@ Both are mechanically decidable, so they are enforced here rather than left to
 a human noticing. Prose staleness (a wrong model name, an out-of-date count)
 needs judgment and is handled out of band by the weekly refresh routine.
 
-Invoked two ways, mirroring `projects/firecracker/tools/env_readme/`:
+Invoked two ways:
 
   * As a CLI from the CI "Format check" step (`check()` against the real
     checkout, `exit 1` on any violation). That step runs on the full working
@@ -36,10 +36,6 @@ COVERAGE_ALLOWLIST = frozenset(
     {
         "__pycache__",  # stray bytecode, never a project
         "shared",  # cross-project helpers, not a standalone system
-        # The README's layout tree explicitly shows "major dirs" only; these are
-        # real projects deliberately left out of that top-level tree. Promote one
-        # into the README (and drop it from here) if it grows into a headline system.
-        "model-bench",
     }
 )
 

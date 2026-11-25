@@ -185,16 +185,21 @@ def infer_apps(files: list[str], repo: str) -> list[str]:
     """Apps whose ``projects/<app>/`` or ``projects/gke-apps/<app>/`` the PR touched.
 
     An app is a directory under ``projects/gke-apps/`` (the hub Applications),
-    and every one of them is named after its directory.
+    and every one of them is named after its directory. The hub is retired
+    (HOME-262) and that directory is deleted, so a 404 means no apps.
     """
-    known = set(
-        _gh(
+    try:
+        listing = _gh(
             "api",
             f"repos/{repo}/contents/projects/gke-apps",
             "--jq",
             '.[] | select(.type == "dir") | .name',
-        ).split()
-    )
+        )
+    except LandError as exc:
+        if "404" not in str(exc) and "Not Found" not in str(exc):
+            raise
+        listing = ""
+    known = set(listing.split())
     touched = set()
     for path in files:
         parts = path.split("/")

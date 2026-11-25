@@ -1,2 +1,0 @@
-# cargo fmt uses the pinned rust-toolchain.toml and the workspace's Rust edition.
-edition = "2024"

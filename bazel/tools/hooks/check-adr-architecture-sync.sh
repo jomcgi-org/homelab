@@ -22,8 +22,7 @@ fi
 #
 # Watched directories cover two kinds of mechanism:
 #
-#   - Chart and deploy trees. The mcp architecture sweep
-#     found that most load-bearing architecture in this repo is recorded as
+#   - Chart and deploy trees. An architecture sweep found that most load-bearing architecture in this repo is recorded as
 #     values-file comments, so a values edit is exactly when the architecture
 #     doc needs re-reading.
 #   - The build and CI trees behind bazel/ARCHITECTURE.md: the ci wrapper
@@ -31,16 +30,9 @@ fi
 #     Matching is by substring, so a bare file name (buildbuddy.yaml) works
 #     as a watched path too.
 COVERAGE=(
-	"projects/embervm/chart/ projects/embervm/ARCHITECTURE.md"
-	"projects/embervm/deploy/ projects/embervm/ARCHITECTURE.md"
-	"projects/mcp/context-forge-gateway/chart/ projects/mcp/ARCHITECTURE.md"
-	"projects/mcp/context-forge-gateway/deploy/ projects/mcp/ARCHITECTURE.md"
 	"bazel/tools/ci/ bazel/ARCHITECTURE.md"
 	"buildbuddy.yaml bazel/ARCHITECTURE.md"
 	"projects/platform/ projects/platform/ARCHITECTURE.md"
-	"projects/platform-gke/ projects/platform/ARCHITECTURE.md"
-	"projects/gke-apps/ projects/platform/ARCHITECTURE.md"
-	"projects/gke-cluster/ projects/platform/ARCHITECTURE.md"
 )
 
 for pair in "${COVERAGE[@]}"; do

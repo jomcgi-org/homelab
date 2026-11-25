@@ -72,14 +72,14 @@ def test_doc_kinds_are_three_current_state_documents():
 
 
 def test_project_with_only_readme_yields_one_entry(tmp_path: Path):
-    rel_path = "projects/embervm/README.md"
-    _write(tmp_path, rel_path, "# EmberVM\n\nRuntime docs")
+    rel_path = "projects/monolith/README.md"
+    _write(tmp_path, rel_path, "# Monolith\n\nService docs")
     _track(tmp_path, rel_path)
 
     entries = _tracked_manifest(tmp_path)
 
     assert len(entries) == 1
-    assert entries[0]["slug"] == "embervm"
+    assert entries[0]["slug"] == "monolith"
 
 
 def test_missing_project_readme_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -94,11 +94,11 @@ def test_missing_project_readme_raises(tmp_path: Path, monkeypatch: pytest.Monke
 def test_manifest_orders_projects_then_document_kinds(tmp_path: Path):
     docs = {
         "projects/platform/STPA.md": "# Platform STPA",
-        "projects/mcp/ARCHITECTURE.md": "# MCP Architecture",
-        "projects/embervm/STPA.md": "# EmberVM STPA",
-        "projects/embervm/README.md": "# EmberVM",
-        "projects/mcp/README.md": "# MCP",
-        "projects/embervm/ARCHITECTURE.md": "# EmberVM Architecture",
+        "projects/platform/ARCHITECTURE.md": "# Platform Architecture",
+        "projects/monolith/STPA.md": "# Monolith STPA",
+        "projects/monolith/README.md": "# Monolith",
+        "projects/platform/README.md": "# Platform",
+        "projects/monolith/ARCHITECTURE.md": "# Monolith Architecture",
     }
     for path, content in docs.items():
         _write(tmp_path, path, content)
@@ -107,11 +107,11 @@ def test_manifest_orders_projects_then_document_kinds(tmp_path: Path):
     entries = _tracked_manifest(tmp_path)
 
     assert [(entry["project"], entry["kind"]) for entry in entries] == [
-        ("embervm", "readme"),
-        ("embervm", "architecture"),
-        ("embervm", "stpa"),
-        ("mcp", "readme"),
-        ("mcp", "architecture"),
+        ("monolith", "readme"),
+        ("monolith", "architecture"),
+        ("monolith", "stpa"),
+        ("platform", "readme"),
+        ("platform", "architecture"),
         ("platform", "stpa"),
     ]
     assert [entry["order"] for entry in entries] == list(range(6))
@@ -153,7 +153,7 @@ def test_non_project_docs_are_not_indexed(tmp_path: Path):
 
 
 def test_build_manifest_strips_nul_bytes(tmp_path: Path):
-    rel_path = "projects/sextant/README.md"
+    rel_path = "projects/platform/README.md"
     _write(tmp_path, rel_path, "# Sextant\n\nbe\x00fore")
     _track(tmp_path, rel_path)
 
@@ -164,7 +164,7 @@ def test_build_manifest_strips_nul_bytes(tmp_path: Path):
 
 
 def test_build_manifest_skips_deleted_tracked_path(tmp_path: Path):
-    rel_path = "projects/model-bench/README.md"
+    rel_path = "projects/platform/README.md"
     _write(tmp_path, rel_path)
     _track(tmp_path, rel_path)
     paths = iter_doc_paths(tmp_path)

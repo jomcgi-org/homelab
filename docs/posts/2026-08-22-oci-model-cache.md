@@ -19,6 +19,6 @@ HuggingFace models are huge and slow to download. I wanted to reference a model 
 
 ## Source
 
-- [projects/operators/oci-model-cache](https://github.com/jomcgi/homelab/tree/main/projects/operators/oci-model-cache)
+- [projects/operators/oci-model-cache](https://github.com/jomcgi/homelab/tree/hub-final/projects/operators/oci-model-cache)
 
 <!-- Numbers above were current on 2026-08-22 when this was transcribed from the engineering page. This is a point-in-time post; do not update it, write a new one. -->

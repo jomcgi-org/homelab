@@ -37,12 +37,7 @@ except ImportError:  # pragma: no cover - script invocation
     from public_content import check_public_content
 
 PUBLIC_PROJECTS = (
-    ("embervm", "projects/embervm"),
     ("monolith", "projects/monolith"),
-    ("mcp", "projects/mcp"),
-    ("sextant", "projects/sextant"),
-    ("model-bench", "projects/model-bench"),
-    ("oci-model-cache", "projects/operators/oci-model-cache"),
     ("platform", "projects/platform"),
 )
 

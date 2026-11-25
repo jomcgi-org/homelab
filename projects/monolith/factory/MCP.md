@@ -387,7 +387,7 @@ upstream discovery or visibility gap, not its exact layer. The deployed path
 also has Context Forge discovery, existing tool associations/visibility and the
 client's cached catalogue. Compare the native hashes with supported gateway
 and client discovery evidence when available. See
-[the gateway discovery contract](../../mcp/ARCHITECTURE.md). Repository tests
+[the gateway discovery contract](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/mcp/ARCHITECTURE.md). Repository tests
 cover native registration and the gateway's description rules; they cannot
 refresh an already-running client's tools. Deployment alone is not proof of
 caller exposure. Use the connector's supported refresh/reconnect workflow if

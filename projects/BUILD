@@ -15,40 +15,10 @@ exports_files(
     visibility = ["//projects/platform-factory/cloudnative-pg/tests:__pkg__"],
 )
 
-filegroup(
-    name = "backup_status_application",
-    # application.yaml lives in the generated platform-gke package, which
-    # exports it above. A glob cannot cross that package boundary, so depend
-    # on the explicit label instead of globbing from this package.
-    srcs = ["//projects/platform-gke/otel-collector:application.yaml"],
-    visibility = ["//projects/platform/otel-collector:__pkg__"],
-)
-
 py_library(
     name = "projects",
     srcs = ["__init__.py"],
     visibility = ["//:__subpackages__"],
-)
-
-# The cluster enrollment roots intentionally have no package-local BUILD files.
-# Expose the hub enrollment path for Renovate's deployment test without creating
-# package-local BUILD files in those roots.
-filegroup(
-    name = "hub_renovate_enrollment_manifests",
-    srcs = [
-        "gke-cluster/hub-root-application.yaml",
-        "gke-cluster/kustomization.yaml",
-        "gke-cluster/root/root-application.yaml",
-        "platform-gke/kustomization.yaml",
-    ],
-    visibility = ["//projects/platform/renovate:__pkg__"],
-)
-
-exports_files(
-    [
-        "gke-apps/kustomization.yaml",
-    ],
-    visibility = ["//projects/loom/deploy:__pkg__"],
 )
 
 # //bazel/helm/content_rules:coverage_test reads the factory cluster's
@@ -71,13 +41,6 @@ filegroup(
     visibility = ["//projects/platform/renovate:__pkg__"],
 )
 
-# The faas workload test checks build_workload_spec against this CRD sample.
-filegroup(
-    name = "faas_workload_sample",
-    srcs = ["embervm/crd/samples/workload-echo-fn.yaml"],
-    visibility = ["//projects/monolith:__pkg__"],
-)
-
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(
@@ -88,12 +51,6 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ) + ["//projects/factory/browser-comparison:repo_docs"],
     visibility = ["//projects/monolith:__pkg__"],
-)
-
-filegroup(
-    name = "stpa_model",
-    srcs = ["embervm/STPA.md"] + glob(["embervm/stpa/*.json"]),
-    visibility = ["//:__pkg__"],
 )
 
 sh_test(

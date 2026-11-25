@@ -21,16 +21,18 @@ BuildBuddy MCP tools:
 2. `get_target` to find the failing targets.
 3. `get_log` for the trace.
 
-Factory guests ship `ci-log <full-commit-sha>` in the Claude runtime image:
+The EmberVM Claude runtime image shipped `ci-log <full-commit-sha>`. EmberVM
+was deleted with the hub (HOME-262); tag `hub-final` keeps the script at
+`projects/embervm/runtimes/claude/ci_log.py`. Run it from that tag:
 
 ```bash
 ci-log "$(git rev-parse HEAD)"
 ci-log "$(git rev-parse HEAD)" --wait 60
 ```
 
-Use `--repo owner/name` outside `jomcgi-org/homelab`. From a checkout without
-the installed command, run `python3 projects/embervm/runtimes/claude/ci_log.py`
-with the same arguments. It uses the existing `gh` identity to read the exact
+Use `--repo owner/name` outside `jomcgi-org/homelab`. Without the installed
+command, run `git show hub-final:projects/embervm/runtimes/claude/ci_log.py`
+into a file and run it with `python3` and the same arguments. It uses the existing `gh` identity to read the exact
 commit's latest `pr-checks` status, then the credential-free log endpoint.
 It never starts CI or changes authentication. A failed status or log read is
 an error. An empty log response is labeled unavailable; it provides no evidence

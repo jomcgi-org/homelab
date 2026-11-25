@@ -1,7 +1,6 @@
 # Parent of the factory cluster's root Application, the one object applied by
 # hand (by bootstrap-gitops.sh). It syncs only root/, so a bad commit to the
-# root is repaired by the next commit there; see
-# projects/gke-cluster/hub-root-application.yaml for the same pattern on the hub.
+# root is repaired by the next commit there.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

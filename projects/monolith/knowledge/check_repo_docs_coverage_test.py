@@ -34,8 +34,8 @@ def test_missing_docs_reports_uncovered_indexed_paths_only():
 def test_missing_docs_includes_public_docs_selection():
     # Every public doc is also a repo doc today; the check covers both
     # generators' selections so neither can drift out on its own.
-    tracked = ["projects/sextant/README.md"]
-    assert c.missing_docs(tracked, []) == ["projects/sextant/README.md"]
+    tracked = ["projects/platform/README.md"]
+    assert c.missing_docs(tracked, []) == ["projects/platform/README.md"]
 
 
 def test_main_fails_on_empty_query_output(tmp_path: Path):

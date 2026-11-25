@@ -9,7 +9,10 @@
 
 export const REPO = "https://github.com/jomcgi-org/homelab";
 export const repoFile = (path: string) => `${REPO}/blob/main/${path}`;
-export const repoDir = (path: string) => `${REPO}/tree/main/${path}`;
+export const repoDir = (path: string, ref = "main") =>
+  `${REPO}/tree/${ref}/${path}`;
+/** The tag that keeps the code deleted with the cloud hub (HOME-262). */
+export const HUB_FINAL = "hub-final";
 
 /** The day someone last checked every statement on the page. Bump it only
  * after reading the page against the repository. */
@@ -205,6 +208,8 @@ export interface Project {
   status: Status;
   /** A directory in the repository. */
   path: string;
+  /** The git ref that holds the directory, when it is not on main. */
+  ref?: string;
 }
 
 export interface ProjectGroup {
@@ -307,8 +312,9 @@ export const groups: ProjectGroup[] = [
       {
         name: "mcp",
         what: "The gateway that lets AI clients reach the monolith's tools with one sign-in.",
-        status: "moving",
+        status: "retired",
         path: "projects/mcp",
+        ref: HUB_FINAL,
       },
     ],
   },
@@ -318,32 +324,37 @@ export const groups: ProjectGroup[] = [
       {
         name: "sextant",
         what: "Generates type-safe Go state machines for Kubernetes operators, so an invalid transition is a compile error.",
-        status: "live",
+        status: "retired",
         path: "projects/sextant",
+        ref: HUB_FINAL,
       },
       {
         name: "oom-inference",
         what: "Serves a 125B-parameter model from a 24 GB GPU. See the blog post.",
-        status: "experiment",
+        status: "retired",
         path: "projects/oom-inference",
+        ref: HUB_FINAL,
       },
       {
         name: "operators",
         what: "Keeps the OCI model cache operator, which mounts Hugging Face models from a registry. It has no deployment today.",
-        status: "experiment",
+        status: "retired",
         path: "projects/operators",
+        ref: HUB_FINAL,
       },
       {
         name: "model-bench",
         what: "Screened budget models on tasks from this repository. Production trials replace it.",
         status: "retired",
         path: "projects/model-bench",
+        ref: HUB_FINAL,
       },
       {
         name: "embervm",
         what: "Firecracker orchestration, a private Lambda on owned metal. Retired in November 2026. The blog keeps its story.",
         status: "retired",
         path: "projects/embervm",
+        ref: HUB_FINAL,
       },
     ],
   },

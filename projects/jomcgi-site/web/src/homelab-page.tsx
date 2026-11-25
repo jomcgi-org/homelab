@@ -160,7 +160,7 @@ export function HomelabPage() {
                 {group.projects.map((project) => (
                   <li key={project.name}>
                     <div className="homelab-project-head">
-                      <a href={repoDir(project.path)}>{project.name}</a>
+                      <a href={repoDir(project.path, project.ref)}>{project.name}</a>
                       <span
                         className="homelab-status"
                         data-status={project.status}

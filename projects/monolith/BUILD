@@ -222,14 +222,6 @@ filegroup(
         "//projects:repo_docs",
         "//projects/capacity-forecast:repo_docs",
         "//projects/design-system:repo_docs",
-        "//projects/embervm/deploy:repo_docs",
-        "//projects/embervm/dev/apple:repo_docs",
-        "//projects/embervm/dev/deploy:repo_docs",
-        "//projects/embervm/rootfs:repo_docs",
-        "//projects/embervm/runtimes/claude:repo_docs",
-        "//projects/embervm/runtimes/python:repo_docs",
-        "//projects/embervm/runtimes/python/testdata/echo:repo_docs",
-        "//projects/embervm/specs:repo_docs",
         "//projects/factory-explore-site:repo_docs",
         "//projects/factory/alert-relay:repo_docs",
         "//projects/factory/deploy:repo_docs",
@@ -237,17 +229,8 @@ filegroup(
         "//projects/factory/itsaplan-web:repo_docs",
         "//projects/factory/push-guard:repo_docs",
         "//projects/factory/tests/itsaplan:repo_docs",
-        "//projects/firecracker/sandbox/elixir:repo_docs",
-        "//projects/firecracker/sandbox/go:repo_docs",
-        "//projects/firecracker/sandbox/javascript:repo_docs",
-        "//projects/firecracker/sandbox/ocaml:repo_docs",
-        "//projects/firecracker/sandbox/python:repo_docs",
-        "//projects/firecracker/sandbox/rust:repo_docs",
         "//projects/grimoire/deploy:repo_docs",
         "//projects/hikes:repo_docs",
-        "//projects/loom/deploy:repo_docs",
-        "//projects/mcp/context-forge-gateway/deploy:repo_docs",
-        "//projects/model-bench:repo_docs",
         "//projects/monolith/auth:repo_docs",
         "//projects/monolith/deploy:repo_docs",
         "//projects/monolith/dev/deploy:repo_docs",
@@ -255,7 +238,6 @@ filegroup(
         "//projects/monolith/frontend:repo_docs",
         "//projects/monolith/trips/export:repo_docs",
         "//projects/monolith/web/grimoire:repo_docs",
-        "//projects/operators/oci-model-cache:repo_docs",
         "//projects/platform-factory/external-secrets:repo_docs",
         "//projects/platform-factory/hindsight-discord:repo_docs",
         "//projects/platform-factory/network-policy:repo_docs",
@@ -263,15 +245,11 @@ filegroup(
         "//projects/platform-factory/substrate/egress-scan/gate:repo_docs",
         "//projects/platform-factory/substrate/gvisor-fork/engine:repo_docs",
         "//projects/platform-factory/substrate/gvisor-fork/engine-pro:repo_docs",
-        "//projects/platform-gke/polylane:repo_docs",
         "//projects/platform/argocd:repo_docs",
         "//projects/platform/authentik:repo_docs",
         "//projects/platform/cert-manager:repo_docs",
-        "//projects/platform/honeycomb:repo_docs",
         "//projects/platform/kargo:repo_docs",
-        "//projects/platform/kyverno:repo_docs",
         "//projects/platform/renovate:repo_docs",
-        "//projects/platform/spire:repo_docs",
         "//projects/scotland-connector/internal/httpapi:repo_docs",
         "//projects/scotland-connector/plugin:repo_docs",
         "//projects/trips:repo_docs",
@@ -283,7 +261,7 @@ filegroup(
 )
 
 # Stdlib-only, so it runs on the executor's python3 like the other script
-# genrules (e.g. //projects/embervm/runtimes/claude). The output path puts the
+# genrules. The output path puts the
 # file beside knowledge/repo_docs.py in any runfiles tree that carries it, which
 # is where repo_docs.manifest_path() looks when REPO_DOCS_MANIFEST_PATH is unset.
 genrule(
@@ -2898,20 +2876,6 @@ py_test(
     data = ["//projects/monolith/chart:migrations"],
     imports = ["."],
     deps = ["@pip//pytest"],
-)
-
-py_test(
-    name = "agent_board_catalogue_test",
-    srcs = ["app/agent_board_catalogue_test.py"],
-    data = [
-        "//projects/embervm/runtimes/claude:shim_source",
-        "//projects/embervm/runtimes/pi:agent_mcp_source",
-    ],
-    imports = ["."],
-    deps = [
-        ":monolith_agents_backend",
-        "@pip//pytest",
-    ],
 )
 
 py_test(
@@ -7640,13 +7604,11 @@ py_test(
 py_test(
     name = "faas_workload_test",
     srcs = ["faas/workload_test.py"],
-    data = ["//projects:faas_workload_sample"],
     imports = ["."],
     deps = [
         ":pkg_faas",
         "@pip//kubernetes_asyncio",
         "@pip//pytest",
-        "@pip//pyyaml",
     ],
 )
 
@@ -9765,23 +9727,6 @@ py_test(
     deps = [
         "@pip//numpy",
         "@pip//pytest",
-    ],
-)
-
-# Static boundary contract for the inactive GKE recovery manifests.
-py_test(
-    name = "recovery_network_test",
-    srcs = ["recovery_network_test.py"],
-    data = [
-        "//projects/embervm/dev/deploy:recovery_values",
-        "//projects/monolith/dev/deploy:recovery_support_manifests",
-    ],
-    env = {
-        "EMBER_RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
-    },
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
     ],
 )
 

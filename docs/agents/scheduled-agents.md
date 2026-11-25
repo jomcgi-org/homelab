@@ -299,8 +299,8 @@ their sequences rather than proposing a rewrite
 | GraphQL and A2A | Partial data with errors, missing objects, wrong IDs, unknown task states, truncation and incomplete pagination cannot grant merge permission or prove cessation. | Fuzz HTTP fake-server envelopes and call-site properties; retain minimized failures in CI. Weekly longer runs use new protocol versions and corpus seeds. |
 
 Reuse [TLC infrastructure](../../bazel/tla/tlc_test.sh) and
-[EmberVM specs](../../projects/embervm/specs/BUILD). Extend the current
-EmberVM-only visibility deliberately. [oom-inference's verification](../../projects/oom-inference/specs/README.md)
+[EmberVM specs](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/embervm/specs/BUILD). Tag `hub-final`
+keeps the specs. [oom-inference's verification](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/oom-inference/specs/README.md)
 already separates small CI models and larger runs with broken mutants.
 Choose TLA+ first; a Quint migration needs a demonstrated modelling or
 maintenance benefit. A deliberately broken writer, stale approval, omitted

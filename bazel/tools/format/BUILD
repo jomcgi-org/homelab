@@ -50,7 +50,7 @@ prettier.prettier_binary(
     ],
 )
 
-# Rust formatting belongs to cargo fmt under oom-inference's pinned toolchain.
+# No Rust formatter here (#7082): omitting rust disables that language.
 format_multirun(
     name = "format_code",
     go = "@aspect_rules_lint//format:gofumpt",

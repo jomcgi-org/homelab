@@ -20,8 +20,6 @@ and CI must also pass before an update can merge.
 | `MODULE.bazel` OCI pulls | `bazel-module` | Existing image digests stay pinned; native extraction covers the three OCI bases. |
 | Bazel `http_archive` / `http_file` declarations | `bazel` | Reads `MODULE.bazel` and `.bzl` files; updates supported GitHub release URLs and checksums. Variable-built URLs and raw GitHub file URLs are gaps below. |
 | `pyproject.toml` and `bazel/requirements/overrides.txt` | `pep621` / `pip_requirements` | Root manifest and security-floor changes invoke the existing Bazel requirement compiler. Weekly maintenance also runs both targets with `--upgrade` to refresh transitives within these bounds. Generated locks are outputs. |
-| Both `projects/oom-inference/*/pyproject.toml` manifests | `pep621` | Native uv artifact support maintains their adjacent `uv.lock` files. The root Bazel post-upgrade command does not run for these projects. |
-| `projects/model-bench/requirements-venv.txt` | `pip_requirements` | Pins remain explicit and are updated by the requirements manager. |
 | `go.mod` | `gomod` | Updates `go.sum`; the Bazel Go SDK derives its version from this file. CI owns Gazelle BUILD regeneration. |
 | Root and workspace `package.json` files | `npm` | Maintains the shared `pnpm-lock.yaml`; lifecycle scripts remain disabled. Security override ranges remain in range. |
 | `Chart.yaml` dependencies | `helmv3` | Refreshes `Chart.lock` and committed subchart archives. Published wrapper versions and Application pins remain main-publish outputs. |

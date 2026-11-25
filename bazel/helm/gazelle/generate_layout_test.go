@@ -199,38 +199,3 @@ spec:
 		})
 	}
 }
-
-func TestGenerateRulesContextForge(t *testing.T) {
-	const pkg = "projects/mcp/context-forge-gateway/deploy"
-	root := filepath.Join("..", "..", "..")
-	file, err := rule.LoadFile(filepath.Join(root, pkg, "BUILD"), pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	generated := generateLayout(t, root, pkg, file)
-	if len(generated.Gen) != 1 || generated.Gen[0].Kind() != "argocd_app" {
-		t.Fatalf("Context Forge generation = %v, want one argocd_app", generated.Gen)
-	}
-	app := generated.Gen[0]
-	if !reflect.DeepEqual(app.Attr("generate_manifests"), rule.ExprFromValue(false)) {
-		t.Fatal("generated app must leave both admissibility renders intact")
-	}
-	wantValues := []string{"//projects/mcp/context-forge-gateway/chart:values.yaml", "values.yaml"}
-	if got := app.AttrStrings("values_files"); !reflect.DeepEqual(got, wantValues) {
-		t.Fatalf("Application values_files = %v, want %v", got, wantValues)
-	}
-	merger.MergeFile(file, generated.Empty, generated.Gen, merger.PreResolve, NewLanguage().Kinds(), nil)
-	first := string(file.Format())
-	generated = generateLayout(t, root, pkg, file)
-	merger.MergeFile(file, generated.Empty, generated.Gen, merger.PreResolve, NewLanguage().Kinds(), nil)
-	if string(file.Format()) != first {
-		t.Fatal("Context Forge generation is not stable on the second pass")
-	}
-	counts := map[string]int{}
-	for _, r := range file.Rules {
-		counts[r.Kind()]++
-	}
-	if counts["argocd_app"] != 1 || counts["helm_admissibility_render"] != 2 || counts["filegroup"] != 3 {
-		t.Fatalf("merged rule counts = %v", counts)
-	}
-}

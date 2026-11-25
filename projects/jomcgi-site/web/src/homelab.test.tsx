@@ -73,7 +73,7 @@ describe("homelab page", () => {
       expect(project.path).toMatch(/^projects\/[a-z0-9-]+$/);
       const link = screen.getByRole("link", { name: project.name });
       expect(link.getAttribute("href")).toBe(
-        `${REPO}/tree/main/${project.path}`,
+        `${REPO}/tree/${project.ref ?? "main"}/${project.path}`,
       );
     }
     expect(container.querySelectorAll(".homelab-status")).toHaveLength(
