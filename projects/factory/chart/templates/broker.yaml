@@ -1,4 +1,4 @@
-{{- /* invariant: FACT-13 */ -}}
+{{- /* invariant: HOME-294-1 */ -}}
 {{- if .Values.broker.enabled }}
 {{- /*
 The credential broker (ARCHITECTURE.md, "Credential broker"): one replica,

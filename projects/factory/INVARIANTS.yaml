@@ -365,7 +365,7 @@ invariants:
   - projects/factory/connector/dispatch/assessment.go
   test: //projects/factory/connector/dispatch:dispatch_test
   state: live
-- id: FACT-13
+- id: HOME-294-1
   statement: Author and reviewer App keys belong to separate broker processes and namespaces.
   mechanism:
   - projects/factory/chart/templates/broker.yaml
