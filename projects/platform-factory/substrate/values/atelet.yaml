@@ -1,10 +1,10 @@
 # The substrate-atelet chart. values/common.yaml is applied first.
 objectStore:
   backend: s3
-  endpoint: http://rustfs.ate-system.svc:9000
-  region: us-east-1
+  endpoint: http://garage.garage.svc:3900
+  region: garage
   pathStyle: true
-  credentialsSecret: snapshot-store-credentials
+  credentialsSecret: ate-snapshots-s3
 
 # Private ghcr.io pulls (HOME-539). The atelet pulls actor and workload images
 # itself, so pod imagePullSecrets do not apply. It runs this kubelet exec

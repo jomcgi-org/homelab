@@ -16,9 +16,9 @@ postgres:
 atelet:
   enabled: false
 
-# Snapshots stay in the rustfs that resources/snapshot-store.yaml runs. The
-# chart's bundled rustfs would put its access key in plain values; this one
-# reads the key bootstrap-substrate.sh generates.
+# Snapshots live in Garage's ate-snapshots bucket (resources/garage-snapshots.yaml).
+# The chart's bundled rustfs stays off. resources/snapshot-store.yaml still runs
+# the old rustfs, kept for rollback until it is removed.
 rustfs:
   enabled: false
 ateApi:
@@ -33,20 +33,20 @@ ateApi:
 objectStorePlugin:
   extraEnv:
     - name: AWS_REGION
-      value: us-east-1
+      value: garage
     - name: AWS_ENDPOINT_URL
-      value: http://rustfs.ate-system.svc:9000
+      value: http://garage.garage.svc:3900
     - name: AWS_S3_USE_PATH_STYLE
       value: "true"
     - name: AWS_ACCESS_KEY_ID
       valueFrom:
         secretKeyRef:
-          name: snapshot-store-credentials
+          name: ate-snapshots-s3
           key: AWS_ACCESS_KEY_ID
     - name: AWS_SECRET_ACCESS_KEY
       valueFrom:
         secretKeyRef:
-          name: snapshot-store-credentials
+          name: ate-snapshots-s3
           key: AWS_SECRET_ACCESS_KEY
 
 atenetRouter:

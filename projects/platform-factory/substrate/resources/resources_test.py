@@ -377,14 +377,21 @@ def test_microvm_asset_job_mounts_its_generated_config_and_matches_the_pins() ->
     assert f"--bucket {_ASSETS['bucket']} " in json.dumps(init)
 
 
-def test_microvm_asset_job_reaches_only_rustfs_and_github_releases() -> None:
+def test_microvm_asset_job_reaches_only_garage_and_github_releases() -> None:
     docs = _docs()
     policy = _one(docs, "CiliumNetworkPolicy", "microvm-assets-init")["spec"]
     assert policy["endpointSelector"]["matchLabels"] == {"app": "microvm-assets-init"}
     assert "ingress" not in policy
-    rustfs, github = policy["egress"]
-    assert rustfs["toEndpoints"] == [{"matchLabels": {"app": "rustfs"}}]
-    assert rustfs["toPorts"] == [{"ports": [{"port": "9000", "protocol": "TCP"}]}]
+    garage, github = policy["egress"]
+    assert garage["toEndpoints"] == [
+        {
+            "matchLabels": {
+                "k8s:io.kubernetes.pod.namespace": "garage",
+                "app.kubernetes.io/name": "garage",
+            }
+        }
+    ]
+    assert garage["toPorts"] == [{"ports": [{"port": "3900", "protocol": "TCP"}]}]
     assert {f["matchName"] for f in github["toFQDNs"]} == {
         "github.com",
         "release-assets.githubusercontent.com",
@@ -393,9 +400,6 @@ def test_microvm_asset_job_reaches_only_rustfs_and_github_releases() -> None:
     assert github["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
     pod_labels = _microvm_job(docs)["spec"]["template"]["metadata"]["labels"]
     assert pod_labels == {"app": "microvm-assets-init"}
-    (admit,) = _one(docs, "CiliumNetworkPolicy", "rustfs")["spec"]["ingress"]
-    (expression,) = admit["fromEndpoints"][0]["matchExpressions"]
-    assert "microvm-assets-init" in expression["values"]
 
 
 def test_microvm_spike_pool_runs_one_pinned_microvm_worker() -> None:
@@ -821,7 +825,6 @@ _FORK_OBJECTS = {
     ("CiliumNetworkPolicy", "ate-system", "ate-api-server-gvisor-fork-conformance"),
     ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-assets-init"),
     ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-conformance"),
-    ("CiliumNetworkPolicy", "ate-system", "rustfs-gvisor-fork-assets"),
     ("CiliumNetworkPolicy", _FORK_NS, "substrate-workers"),
     ("Job", "ate-system", "gvisor-fork-assets-init"),
     ("Job", "ate-system", "gvisor-fork-conformance-6"),

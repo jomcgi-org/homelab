@@ -147,16 +147,23 @@ def test_asset_job_mounts_its_generated_config_and_matches_the_pins() -> None:
             assert env["ARCH"] == _ASSETS["arch"]
 
 
-def test_asset_job_reaches_only_rustfs_and_github_releases() -> None:
+def test_asset_job_reaches_only_garage_and_github_releases() -> None:
     docs = _docs()
     policy = _one(docs, "CiliumNetworkPolicy", "gvisor-fork-assets-init")["spec"]
     assert policy["endpointSelector"]["matchLabels"] == {
         "app": "gvisor-fork-assets-init"
     }
     assert "ingress" not in policy
-    rustfs, github = policy["egress"]
-    assert rustfs["toEndpoints"] == [{"matchLabels": {"app": "rustfs"}}]
-    assert rustfs["toPorts"] == [{"ports": [{"port": "9000", "protocol": "TCP"}]}]
+    garage, github = policy["egress"]
+    assert garage["toEndpoints"] == [
+        {
+            "matchLabels": {
+                "k8s:io.kubernetes.pod.namespace": "garage",
+                "app.kubernetes.io/name": "garage",
+            }
+        }
+    ]
+    assert garage["toPorts"] == [{"ports": [{"port": "3900", "protocol": "TCP"}]}]
     assert {f["matchName"] for f in github["toFQDNs"]} == {
         "github.com",
         "release-assets.githubusercontent.com",
@@ -165,13 +172,6 @@ def test_asset_job_reaches_only_rustfs_and_github_releases() -> None:
     assert github["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
     pod_labels = _job(docs)["spec"]["template"]["metadata"]["labels"]
     assert pod_labels == {"app": "gvisor-fork-assets-init"}
-    # A separate policy admits the Job to rustfs; the wired one is untouched.
-    admit = _one(docs, "CiliumNetworkPolicy", "rustfs-gvisor-fork-assets")["spec"]
-    assert admit["endpointSelector"]["matchLabels"] == {"app": "rustfs"}
-    (rule,) = admit["ingress"]
-    assert rule["fromEndpoints"] == [
-        {"matchLabels": {"app": "gvisor-fork-assets-init"}}
-    ]
 
 
 # stage.py against a synthetic build archive.

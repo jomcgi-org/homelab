@@ -147,21 +147,21 @@ spec:
         - name: ATE_STORAGE_BACKEND
           value: "s3"
         - name: AWS_REGION
-          value: us-east-1
+          value: garage
         - name: AWS_ENDPOINT_URL
-          value: http://rustfs.ate-system.svc:9000
+          value: http://garage.garage.svc:3900
         - name: AWS_S3_USE_PATH_STYLE
           value: "true"
         - name: AWS_ACCESS_KEY_ID
           valueFrom:
             secretKeyRef:
               key: AWS_ACCESS_KEY_ID
-              name: snapshot-store-credentials
+              name: ate-snapshots-s3
         - name: AWS_SECRET_ACCESS_KEY
           valueFrom:
             secretKeyRef:
               key: AWS_SECRET_ACCESS_KEY
-              name: snapshot-store-credentials
+              name: ate-snapshots-s3
         - name: OTEL_TRACES_EXPORTER
           value: none
         - name: OTEL_METRICS_EXPORTER
