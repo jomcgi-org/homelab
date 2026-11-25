@@ -110,6 +110,12 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// The bridge registers no slash commands. Clear any the old hub bot left,
+	// so the picker lists none. A failure only logs: the bridge works without it.
+	if err := rest.ClearCommands(ctx); err != nil {
+		log.Warn("clear stale slash commands", "error", err)
+	}
+
 	// A server with `ingest` stores every human message (HOME-833). The
 	// ingestor outlives the gateway so the last turns' lines are stored.
 	intents := discord.IntentsFor(policy)
