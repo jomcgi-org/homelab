@@ -305,50 +305,74 @@ def test_all_explorer_requests_use_the_explorer_priority_level():
     ]
 
 
+SESSION_ROLE_RULES = {
+    "factory": [
+        {
+            "apiGroups": [""],
+            "resources": ["pods/portforward"],
+            "resourceNames": ["factory-itsaplan-session-forward-0"],
+            "verbs": ["get", "create"],
+        },
+        {
+            "apiGroups": [""],
+            "resources": ["secrets"],
+            "verbs": ["get"],
+            "resourceNames": ["factory-itsaplan-joe-sessions"],
+        },
+    ],
+    # PR previews: the uploader pod and the service token that opens previews.
+    "jomcgi-site-dev": [
+        {
+            "apiGroups": [""],
+            "resources": ["pods/portforward"],
+            "resourceNames": ["jomcgi-site-preview-0"],
+            "verbs": ["get", "create"],
+        },
+        {
+            "apiGroups": [""],
+            "resources": ["secrets"],
+            "resourceNames": ["jomcgi-site-preview-access"],
+            "verbs": ["get"],
+        },
+    ],
+}
+
+
 def test_session_permissions():
     for kind in ("ClusterRole", "Role"):
-        (binding,) = [
+        bindings = [
             b
             for b in by_kind(kind + "Binding")
             if any(s["name"] == SESSIONS for s in b["subjects"])
         ]
-        assert binding["subjects"] == [
-            {
-                "kind": "Group",
-                "apiGroup": "rbac.authorization.k8s.io",
-                "name": SESSIONS,
-            },
-            NODE_SESSION,
-        ]
-        namespace = "factory" if kind == "Role" else None
-        assert binding["metadata"].get("namespace") == namespace
-        assert binding["roleRef"] == {
-            "apiGroup": "rbac.authorization.k8s.io",
-            "kind": kind,
-            "name": "factory-sessions",
-        }
-        (role,) = [
-            r
-            for r in by_kind(kind)
-            if r["metadata"]["name"] == "factory-sessions"
-            and r["metadata"].get("namespace") == namespace
-        ]
-        if kind == "Role":
-            assert role["rules"] == [
+        namespaces = list(SESSION_ROLE_RULES) if kind == "Role" else [None]
+        assert sorted(
+            (b["metadata"].get("namespace") or "") for b in bindings
+        ) == sorted(n or "" for n in namespaces)
+        for binding in bindings:
+            namespace = binding["metadata"].get("namespace")
+            assert binding["subjects"] == [
                 {
-                    "apiGroups": [""],
-                    "resources": ["pods/portforward"],
-                    "resourceNames": ["factory-itsaplan-session-forward-0"],
-                    "verbs": ["get", "create"],
+                    "kind": "Group",
+                    "apiGroup": "rbac.authorization.k8s.io",
+                    "name": SESSIONS,
                 },
-                {
-                    "apiGroups": [""],
-                    "resources": ["secrets"],
-                    "verbs": ["get"],
-                    "resourceNames": ["factory-itsaplan-joe-sessions"],
-                },
+                NODE_SESSION,
             ]
-        else:
+            assert binding["roleRef"] == {
+                "apiGroup": "rbac.authorization.k8s.io",
+                "kind": kind,
+                "name": "factory-sessions",
+            }
+            (role,) = [
+                r
+                for r in by_kind(kind)
+                if r["metadata"]["name"] == "factory-sessions"
+                and r["metadata"].get("namespace") == namespace
+            ]
+            if kind == "Role":
+                assert role["rules"] == SESSION_ROLE_RULES[namespace]
+                continue
             assert "aggregationRule" not in role
             core, extensions = role["rules"]
             assert core["apiGroups"] == [""]
@@ -454,6 +478,20 @@ def test_session_permissions():
             True,
         ),
         ("get", "pods/portforward", "factory-itsaplan-web-example", "factory", False),
+        ("get", "pods/portforward", "jomcgi-site-preview-0", "jomcgi-site-dev", True),
+        (
+            "create",
+            "pods/portforward",
+            "jomcgi-site-preview-0",
+            "jomcgi-site-dev",
+            True,
+        ),
+        ("create", "pods/portforward", "jomcgi-site-preview-0", "factory", False),
+        ("create", "pods/portforward", "other", "jomcgi-site-dev", False),
+        ("get", "secrets", "jomcgi-site-preview-access", "jomcgi-site-dev", True),
+        ("get", "secrets", "jomcgi-site-cloudflare", "jomcgi-site-dev", False),
+        ("get", "secrets", "jomcgi-site-preview-github-app", "jomcgi-site-dev", False),
+        ("list", "secrets", None, "jomcgi-site-dev", False),
         ("get", "pods/log", "example", "default", True),
         ("get", "pods/ephemeralcontainers", "example", "default", True),
         ("get", "nodes/status", "node-1", None, True),

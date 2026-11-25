@@ -1,0 +1,99 @@
+{{- /*
+The PR preview uploader (README "PR previews"), dev stage only. A
+StatefulSet gives RBAC a stable pod name, jomcgi-site-preview-0. The server
+listens on 127.0.0.1, so only `kubectl port-forward` reaches it, and the
+policy below admits no ingress. The pod spec comes from the factory library,
+so its security defaults apply. The policy is written here because the alias
+hosts need one FQDN pattern, and library exceptions name only library
+workloads.
+*/}}
+{{- if .Values.preview.enabled }}
+{{- if ne .Values.stage "dev" }}
+{{- fail "preview.enabled is for the dev stage only: previews belong to Worker jomcgi-site-dev" }}
+{{- end }}
+{{- $name := "jomcgi-site-preview" }}
+{{- $ctx := dict "root" . "name" $name "workload" .Values.preview.workload }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "factory-library.selector" $ctx | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+spec:
+  replicas: 1
+  serviceName: {{ $name }}
+  selector:
+    matchLabels:
+      {{- include "factory-library.selector" $ctx | nindent 6 }}
+  template:
+    {{- include "factory-library.pod" $ctx | nindent 4 }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "factory-library.selector" $ctx | nindent 6 }}
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  egress:
+    # The FQDN rules below learn addresses from DNS answers.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    # PR reads and the preview comment.
+    - toFQDNs:
+        - matchName: api.github.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # wrangler's version upload and the workers.dev subdomain lookup.
+    - toFQDNs:
+        - matchName: api.cloudflare.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # The Access gate checks on pr-<N>-jomcgi-site-dev.<subdomain>.workers.dev.
+    - toFQDNs:
+        - matchPattern: "pr-*-jomcgi-site-dev.*.workers.dev"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+{{- range $secret, $item := .Values.preview.secrets }}
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+type: Opaque
+metadata:
+  name: {{ $secret }}
+  namespace: {{ $.Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ $item }}
+{{- end }}
+{{- end }}

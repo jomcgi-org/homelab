@@ -97,6 +97,16 @@ Missing endpoints, invalid timestamps, stale data and timestamps over one
 minute in the future fail tier 1. Prod checks entries only under its owned
 routes. No external data host is permitted by this Job's network policy.
 
+## Components
+
+| Component | Untrusted input | Credentials held |
+| --- | --- | --- |
+| web | Section data from the R2 snapshot, added at deploy time | No credential; the deploy Job holds the tokens |
+| preview | A session's archive of built files for one PR, and the PR's page content | Worker Scripts token for jomcgi-site-dev, the preview GitHub App key and the Access service token |
+
+The preview uploader treats its archive as untrusted and accepts static files
+only (README "PR previews").
+
 ## Direction
 
 | Work | Issue |

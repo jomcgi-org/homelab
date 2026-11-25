@@ -148,6 +148,77 @@ edge:
           fqdn: api.cloudflare.com
           port: 443
 
+# PR previews (README "PR previews"): the uploader that sessions reach with
+# `kubectl port-forward pod/jomcgi-site-preview-0`. It uploads a PR's built
+# site as preview alias pr-<N> of Worker jomcgi-site-dev. Dev stage only.
+# Off until the 1Password items below exist (README "PR previews", "Inputs").
+preview:
+  enabled: false
+  # 1Password items synced into this namespace.
+  secrets:
+    # GitHub App with only Pull requests: write, installed on the repository:
+    # fields app-id, installation-id and private-key.
+    jomcgi-site-preview-github-app: vaults/k8s-homelab/items/jomcgi-site-preview-github-app
+    # The factory agents' Cloudflare Access service token: fields client-id
+    # and client-secret. Sessions may read this Secret to open previews.
+    jomcgi-site-preview-access: vaults/k8s-homelab/items/jomcgi-site-preview-access
+  # Rendered with the factory library's pod defaults; templates/preview.yaml
+  # adds the StatefulSet, headless Service and network policy.
+  workload:
+    containerName: uploader
+    command:
+      - /app/projects/jomcgi-site/preview/preview
+    env:
+      - name: HOME
+        value: /tmp
+      - name: CLOUDFLARE_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-cloudflare
+            key: api-token
+      - name: CLOUDFLARE_ACCOUNT_ID
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-cloudflare
+            key: account-id
+      - name: GITHUB_APP_ID
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-preview-github-app
+            key: app-id
+      - name: GITHUB_APP_INSTALLATION_ID
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-preview-github-app
+            key: installation-id
+      - name: GITHUB_APP_PRIVATE_KEY
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-preview-github-app
+            key: private-key
+      - name: ACCESS_CLIENT_ID
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-preview-access
+            key: client-id
+      - name: ACCESS_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-preview-access
+            key: client-secret
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+    writablePaths:
+      # One upload at a time: the archive (64 MiB at most) and wrangler's
+      # staging copy.
+      - name: tmp
+        mountPath: /tmp
+        sizeLimit: 1Gi
+
 secrets:
   ghcr-imagepull-secret:
     workload: jomcgi-site-deploy

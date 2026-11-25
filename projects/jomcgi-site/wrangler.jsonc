@@ -16,6 +16,9 @@
     // before Freight promotes to prod.
     "dev": {
       "routes": [{ "pattern": "next.jomcgi.dev", "custom_domain": true }],
+      // PR previews (README "PR previews"): version and alias URLs on
+      // workers.dev, behind Cloudflare Access. Prod keeps them off.
+      "preview_urls": true,
     },
     // jomcgi.dev itself. wrangler publishes routes only when this lists some,
     // and with our zone-scoped token it never deletes one. So prod lists none:

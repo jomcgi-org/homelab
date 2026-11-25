@@ -354,3 +354,56 @@ def test_stage_guard(extra, error):
     result = render(*extra)
     assert result.returncode != 0
     assert error in result.stderr
+
+
+def test_preview_uploader_is_off_by_default():
+    assert not [name for name in docs(render()) if "preview" in name]
+
+
+def test_preview_uploader_has_a_stable_pod_name_and_no_ingress():
+    rendered = docs(render("--set", "preview.enabled=true"))
+    uploader = rendered["StatefulSet/jomcgi-site-preview"]
+    # RBAC names pod jomcgi-site-preview-0 for the sessions' port-forward.
+    assert uploader["spec"]["replicas"] == 1
+    pod = uploader["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    container = pod["containers"][0]
+    assert container["command"] == ["/app/projects/jomcgi-site/preview/preview"]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    secrets = {
+        e["name"]: e["valueFrom"]["secretKeyRef"]["name"]
+        for e in container["env"]
+        if "valueFrom" in e
+    }
+    assert secrets == {
+        "CLOUDFLARE_API_TOKEN": "jomcgi-site-cloudflare",
+        "CLOUDFLARE_ACCOUNT_ID": "jomcgi-site-cloudflare",
+        "GITHUB_APP_ID": "jomcgi-site-preview-github-app",
+        "GITHUB_APP_INSTALLATION_ID": "jomcgi-site-preview-github-app",
+        "GITHUB_APP_PRIVATE_KEY": "jomcgi-site-preview-github-app",
+        "ACCESS_CLIENT_ID": "jomcgi-site-preview-access",
+        "ACCESS_CLIENT_SECRET": "jomcgi-site-preview-access",
+    }
+    assert {
+        rendered[f"OnePasswordItem/{name}"]["spec"]["itemPath"]
+        for name in ("jomcgi-site-preview-github-app", "jomcgi-site-preview-access")
+    } == {
+        "vaults/k8s-homelab/items/jomcgi-site-preview-github-app",
+        "vaults/k8s-homelab/items/jomcgi-site-preview-access",
+    }
+    policy = rendered["CiliumNetworkPolicy/jomcgi-site-preview"]["spec"]
+    assert policy["enableDefaultDeny"] == {"ingress": True, "egress": True}
+    assert "ingress" not in policy
+    hosts = [fqdn for rule in policy["egress"] for fqdn in rule.get("toFQDNs", [])]
+    assert hosts == [
+        {"matchName": "api.github.com"},
+        {"matchName": "api.cloudflare.com"},
+        {"matchPattern": "pr-*-jomcgi-site-dev.*.workers.dev"},
+    ]
+
+
+def test_preview_uploader_is_dev_only():
+    result = render(*PROD, "--set", "preview.enabled=true")
+    assert result.returncode != 0
+    assert "preview.enabled is for the dev stage only" in result.stderr

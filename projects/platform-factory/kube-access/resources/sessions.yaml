@@ -142,3 +142,39 @@ subjects:
   - kind: ServiceAccount
     name: factory-node1-sessions
     namespace: kube-system
+---
+# PR previews (projects/jomcgi-site README "PR previews"): sessions upload
+# through the loopback-only uploader pod and read the factory service token
+# that opens previews.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factory-sessions
+  namespace: jomcgi-site-dev
+rules:
+  - apiGroups: [""]
+    resources: [pods/portforward]
+    resourceNames: [jomcgi-site-preview-0]
+    # kubectl port-forward over WebSocket authorizes as get; SPDY as create.
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [jomcgi-site-preview-access]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factory-sessions
+  namespace: jomcgi-site-dev
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factory-sessions
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: "authentik:factory-kube-sessions"
+  - kind: ServiceAccount
+    name: factory-node1-sessions
+    namespace: kube-system

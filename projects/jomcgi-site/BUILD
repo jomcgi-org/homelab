@@ -31,8 +31,9 @@ genrule(
 )
 
 # The site's Job image: run.sh (data snapshot, then `wrangler deploy --env
-# <stage>` with the pinned CLI), and the edge apply step at
-# /app/projects/jomcgi-site/edge/apply.
+# <stage>` with the pinned CLI), the edge apply step at
+# /app/projects/jomcgi-site/edge/apply, and the PR preview uploader at
+# /app/projects/jomcgi-site/preview/preview.
 apko_image(
     name = "image",
     arm64 = False,
@@ -43,6 +44,7 @@ apko_image(
         "//projects/jomcgi-site/check:layers",
         "//projects/jomcgi-site/data:layers",
         "//projects/jomcgi-site/edge:layers",
+        "//projects/jomcgi-site/preview:layers",
         "//projects/jomcgi-site/wrangler:layers",
     ],
 )
