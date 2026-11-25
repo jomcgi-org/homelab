@@ -40,3 +40,11 @@ go_test(
         "@io_nhooyr_websocket//:websocket",
     ],
 )
+
+# Markdown read by the monolith doc-manifest genrules (#6446). See
+# //projects/monolith:repo_docs_srcs.
+filegroup(
+    name = "repo_docs",
+    srcs = ["ARCHITECTURE.md"],
+    visibility = ["//projects/monolith:__pkg__"],
+)

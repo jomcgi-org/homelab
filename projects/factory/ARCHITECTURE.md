@@ -540,6 +540,8 @@ the boundary and rollout checks.
 
 Bosun answers mentions in the configured Discord servers. The bridge scopes memory to the guild and channel and passes messages to a separate kagent agent. The agent uses a dedicated model credential and has no coding tools. [Isolation decision](https://github.com/jomcgi-org/homelab/pull/8188#issuecomment-6960669519)
 
+The [Discord bridge architecture](discord/ARCHITECTURE.md) holds the chat and `/task` thread design.
+
 ### itsaplan
 
 The connector uses separate identities to claim coding work and coordinate issue updates.

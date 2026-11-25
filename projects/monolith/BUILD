@@ -233,6 +233,7 @@ filegroup(
         "//projects/factory-explore-site:repo_docs",
         "//projects/factory/alert-relay:repo_docs",
         "//projects/factory/deploy:repo_docs",
+        "//projects/factory/discord:repo_docs",
         "//projects/factory/discord/render:repo_docs",
         "//projects/factory/itsaplan-web:repo_docs",
         "//projects/factory/push-guard:repo_docs",
