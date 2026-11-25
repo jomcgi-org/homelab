@@ -13,6 +13,9 @@
 {{- if not $a }}
 {{- fail "reviewer.enabled needs agents.reviewer" }}
 {{- end }}
+{{- if eq $a.harness "claude" }}
+{{- fail "agents.reviewer: harness claude is supported only for agents.planner" }}
+{{- end }}
 {{- $runtime := .Values.kagent.config.runtimeDefaults }}
 {{- if or (ne (toString $a.resources.cpu) (toString $runtime.cpu)) (ne (toString $a.resources.memory) (toString $runtime.memory)) }}
 {{- fail "agents.reviewer: resources must equal kagent.config.runtimeDefaults" }}

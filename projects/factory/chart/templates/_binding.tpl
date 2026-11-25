@@ -124,7 +124,7 @@ spec:
   workload:
     image: {{ printf "%s@%s" $.Values.codexTrial.image.repository (required "codexCodeMode requires a published trial image digest" $.Values.codexTrial.image.digest) | quote }}
   {{- end }}
-  {{- /* reviewer.harnessImage or repositories[].harnessImage (HOME-530, HOME-652); never with codexCodeMode. */}}
+  {{- /* reviewer.harnessImage, repositories[].harnessImage or planner.harnessImage (HOME-530, HOME-652, HOME-40); never with codexCodeMode. */}}
   {{- with $r.workloadImage }}
   workload:
     image: {{ . | quote }}
@@ -249,6 +249,31 @@ spec:
 {{- $url := include "factory.brokerRelayURL" $ }}
 {{- if $arm.reasoningEffort }}{{- $url = printf "%s/effort/%s" $url $arm.reasoningEffort }}{{- end }}
 {{- $suffix := ternary "" (printf "-%s" $arm.name) (eq $arm.name "control") }}
+{{- if eq $a.harness "claude" }}
+{{- if or $suffix $arm.reasoningEffort }}
+{{- fail (printf "agents.%s: harness claude takes no trial arms or reasoning effort; those are Codex relay options" $r.agent) }}
+{{- end }}
+---
+# The broker's Claude relay (HOME-232). kagent binds the base URL's x-api-key
+# header to an actor JWT for audience factory-broker; Claude Code holds only
+# a placeholder ANTHROPIC_API_KEY.
+apiVersion: api.kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: {{ $r.agent }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  provider: Anthropic
+  model: {{ $arm.model | quote }}
+  anthropic:
+    baseUrl: {{ include "factory.brokerClaudeRelayURL" $ | quote }}
+  actorJwt:
+    audiences: [factory-broker]
+{{- else }}
 ---
 # The broker's Codex relay. kagent binds the origin's Authorization header
 # (prefix "Bearer ") to an actor JWT for audience factory-broker; Codex holds
@@ -273,6 +298,7 @@ spec:
     apiFormat: responses
   actorJwt:
     audiences: [factory-broker]
+{{- end }}
 ---
 apiVersion: api.kagent.dev/v1alpha3
 kind: Agent
