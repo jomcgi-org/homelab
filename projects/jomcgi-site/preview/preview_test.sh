@@ -15,8 +15,8 @@ fail() {
 	exit 1
 }
 
-repo="$root/repo"
-mkdir -p "$repo/projects/jomcgi-site/web"
+mkdir -p "$root/repo/projects/jomcgi-site/web"
+repo="$(realpath "$root/repo")"
 echo x >"$repo/tracked"
 # The repository's own ignore line for the default output directory.
 gitignore="${TEST_SRCDIR:+$TEST_SRCDIR/_main/.gitignore}"
@@ -128,6 +128,9 @@ mkdir -p "$root/mine" && touch "$root/mine/keep"
 expect_exit 2 --no-build --out "$root/mine"
 [[ -e "$root/mine/keep" ]] || fail "cleared a directory it did not make"
 expect_exit 2 --no-build --out "$repo/shots"
+expect_exit 2 --no-build --out "$root/../$(basename "$root")/repo/shots"
+ln -s "$repo" "$root/link"
+expect_exit 2 --no-build --out "$root/link/shots"
 expect_exit 2 --no-build --out /
 expect_exit 0 --no-build --out "$repo/ignored/shots"
 [[ -z "$(git -C "$repo" status --porcelain)" ]] || fail "ignored output shows in git"

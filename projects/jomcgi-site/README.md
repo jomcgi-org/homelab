@@ -493,7 +493,8 @@ flowchart LR
 - **PR comment.** `--comment` (with `--pr N` if the branch has no PR)
   needs a clean checkout whose HEAD is the PR head. It writes the page
   results and the head SHA as one comment with the session's own `gh`
-  account. A later run edits that comment, found by the hidden marker
+  account. That account must be a user login (`gh api user`), not an App
+  token. A later run edits that comment, found by the hidden marker
   `<!-- jomcgi-site-preview -->`. GitHub's API cannot take images, so the
   screenshots stay in `OUT` for the agent to read and cite.
 - **No TTL.** Nothing is hosted, so nothing expires. The files go away with

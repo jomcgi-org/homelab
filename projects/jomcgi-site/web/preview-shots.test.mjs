@@ -91,7 +91,9 @@ test("server", async () => {
     assert.equal(response.status, 404);
     assert.match(await response.text(), /Not found/);
     assert.equal((await get("/.vite/manifest.json")).status, 404);
-    assert.equal((await get("/%2e%2e/fixtures/manifest.json")).status, 404);
+    // An encoded slash keeps ".." in the path that reaches the server.
+    assert.equal((await get("/..%2ffixtures%2fmanifest.json")).status, 404);
+    assert.equal((await get("/x/..%2f..%2fpackage.json")).status, 404);
     assert.equal(
       await (await get("/data/factory/manifest.json")).text(),
       '{"version":1}',
