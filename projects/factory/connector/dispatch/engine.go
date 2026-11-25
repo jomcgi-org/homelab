@@ -158,6 +158,11 @@ type Config struct {
 	AdmissionReadTimeout time.Duration
 
 	PlannerSchedules []planner.Schedule
+	// PlannerTracked assigns fingerprints to the HOME issues that cover them.
+	PlannerTracked []planner.Tracked
+	// Planner starts planner sessions for itsaplan cron runs. Nil leaves them
+	// off (HOME-546).
+	Planner *PlannerRuntime
 }
 
 // QuotaSource reads the broker's quota reading for its Codex grant.
@@ -433,6 +438,7 @@ func (e *Engine) Tick(ctx context.Context) (result error) {
 		{"delivery_reverts", e.checkDeliveryReverts},
 		{"activation recovery", e.st.RecoverActivation},
 		{"human_gates", e.stepHumanGates},
+		{"planner_runs", e.stepPlannerRuns},
 		{"planner", e.stepPlanner},
 		{"outbox", e.flushOutbox},
 		{"sessions", e.sweepSessions},

@@ -105,3 +105,41 @@ func TestScheduleInstructionsLeaveRoomForEvidence(t *testing.T) {
 		t.Fatal("instructions that use reserved evidence space passed validation")
 	}
 }
+
+func TestScheduleNameAndTrackedAndMarker(t *testing.T) {
+	for prompt, want := range map[string]string{
+		RunPromptPrefix + "smoke":         "smoke",
+		" " + RunPromptPrefix + "a-b":     "a-b",
+		RunPromptPrefix + " smoke":        "",
+		"Please " + RunPromptPrefix + "x": "",
+		"":                                "",
+	} {
+		if got := ScheduleName(prompt); got != want {
+			t.Errorf("ScheduleName(%q) = %q, want %q", prompt, got, want)
+		}
+	}
+	if err := (Tracked{Fingerprint: "homelab:delivery:ci:flaky", Issue: "HOME-4"}).Validate(); err != nil {
+		t.Error(err)
+	}
+	for _, bad := range []Tracked{{"homelab", "HOME-4"}, {"homelab:a:b:c", "home-4"}, {"homelab:a:b:C", "HOME-4"}} {
+		if bad.Validate() == nil {
+			t.Errorf("accepted %+v", bad)
+		}
+	}
+	if m := FingerprintMarker("a:b:c:d"); m != "<!-- factory-planner-fp:a:b:c:d -->" || strings.Contains(m[4:len(m)-4], "-->") {
+		t.Errorf("marker %q", m)
+	}
+	s := Schedule{Name: "n", Namespace: "a:b", MinInterval: time.Hour, Cooldown: time.Hour, PerRun: 1, IssueTitle: "t", Instructions: "i"}
+	if s.Validate() != nil {
+		t.Fatal("valid schedule rejected")
+	}
+	s.Cron = "0 6 * *"
+	if s.Validate() == nil {
+		t.Error("four-field cron accepted")
+	}
+	s.Cron = "0 6 * * *"
+	s.Prompt = strings.Repeat("x", MaxPromptBytes+1)
+	if s.Validate() == nil {
+		t.Error("oversize prompt accepted")
+	}
+}

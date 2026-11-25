@@ -122,3 +122,11 @@ func (p Proposal) Description(instructions string) (string, bool) {
 	d := instructions + evidencePrefix + line + evidenceSuffix
 	return d, len(d) <= MaxDescriptionBytes
 }
+
+// FingerprintMarker is the trusted line every filed issue carries after its
+// evidence block. A later proposal with the same fingerprint is deduplicated
+// while an issue holds the marker open (HOME-548). The fingerprint's
+// character set cannot contain "-->".
+func FingerprintMarker(fingerprint string) string {
+	return "<!-- factory-planner-fp:" + fingerprint + " -->"
+}

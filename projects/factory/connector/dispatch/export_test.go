@@ -3,8 +3,14 @@ package dispatch
 import (
 	"context"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
 )
+
+// HandlePlannerClaim hands a claimed itsaplan run to planner admission.
+func (e *Engine) HandlePlannerClaim(ctx context.Context, run *itsaplan.Run) error {
+	return e.handlePlannerClaim(ctx, run)
+}
 
 // AwaitWorker exposes the worker wait to the package's tests.
 func (e *Engine) AwaitWorker(ctx context.Context, a *store.Attempt) bool {

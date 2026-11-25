@@ -304,3 +304,46 @@ func TestParsePlannerSchedules(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePlannerRuntime(t *testing.T) {
+	const planner = `planner:
+  agentKey: homelab-planner
+  apiKeyFile: /keys/planner
+  kagentNamespace: factory-r-homelab-planner
+  kagentAgent: homelab-planner
+plannerTracked:
+  - fingerprint: homelab:delivery:ci:flaky
+    issue: HOME-4
+`
+	f, err := Parse([]byte(sample + planner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Planner == nil || f.Planner.RunTimeout != Duration(DefaultPlannerRunTimeout) || len(f.PlannerTracked) != 1 {
+		t.Fatalf("planner = %+v, tracked = %+v", f.Planner, f.PlannerTracked)
+	}
+	if got, _ := f.KeyFiles().Key("homelab-planner"); got != "" {
+		t.Fatalf("unexpected key %q", got)
+	}
+	if f.KeyFiles()["homelab-planner"] != "/keys/planner" {
+		t.Fatal("planner key file missing from KeyFiles")
+	}
+	for name, input := range map[string]string{
+		"no namespace":    strings.Replace(planner, "kagentNamespace: factory-r-homelab-planner\n", "", 1),
+		"short timeout":   planner + "  runTimeout: 10s\n",
+		"coordinator key": strings.Replace(planner, "homelab-planner", "factory-coordinator", 1),
+		"bad fingerprint": strings.Replace(planner, "homelab:delivery:ci:flaky", "homelab", 1),
+		"bad issue":       strings.Replace(planner, "HOME-4", "four", 1),
+		"unknown key":     planner + "  extra: 1\n",
+	} {
+		if _, err := Parse([]byte(sample + input)); err == nil {
+			t.Errorf("%s: invalid planner config accepted", name)
+		}
+	}
+	// A coding agent cannot also be the planner agent: its claims would run
+	// as coding work.
+	both := strings.Replace(sample, "key: coder", "key: homelab-planner", 1) + planner
+	if _, err := Parse([]byte(both)); err == nil {
+		t.Error("planner agent accepted as a coding agent")
+	}
+}

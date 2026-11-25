@@ -44,6 +44,13 @@ func (f *fakeItsaplan) CreateIssue(_ context.Context, project string, n itsaplan
 	if n.Priority != "" {
 		is.Priority = &n.Priority
 	}
+	if n.AssigneeUserID != "" {
+		is.AssigneeUserID = n.AssigneeUserID
+	}
+	if n.DelegateUserID != "" {
+		delegate := n.DelegateUserID
+		is.DelegateUserID = &delegate
+	}
 	if f.issues == nil {
 		f.issues = make(map[int64]*itsaplan.Issue)
 	}

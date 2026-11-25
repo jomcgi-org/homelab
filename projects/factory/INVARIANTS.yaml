@@ -173,6 +173,13 @@ invariants:
   - projects/factory/reviewer/review/goal.go
   test: //projects/factory/reviewer/review:review_test
   state: live
+- id: HOME-40-1
+  statement: A planner session starts only for a run that admit_planner_run admitted, once, and a replayed or redelivered claim starts no second session.
+  mechanism:
+  - projects/factory/connector/dispatch/planner_runs.go
+  - projects/factory/connector/migrations/20261125100000_planner_runtime.sql
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live
 - id: HOME-72-1
   statement: Inline reviewer findings use COMMENT reviews and reconcile only the reviewer's own finding threads.
   mechanism:

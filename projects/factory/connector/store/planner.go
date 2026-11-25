@@ -16,15 +16,16 @@ func (w *Writer) SyncPlannerSchedules(ctx context.Context, schedules []planner.S
 		names := make([]string, 0, len(schedules))
 		for _, s := range schedules {
 			_, err := tx.ExecContext(ctx, `INSERT INTO planner_schedule
-				(name, namespace, ceiling, min_interval, cooldown, per_run, issue_title, instructions, enabled)
+				(name, namespace, ceiling, min_interval, cooldown, per_run, issue_title, instructions, prompt, enabled)
 				VALUES ($1, $2, $3, $4::bigint * interval '1 microsecond',
-					$5::bigint * interval '1 microsecond', $6, $7, $8, true)
+					$5::bigint * interval '1 microsecond', $6, $7, $8, $9, true)
 				ON CONFLICT (name) DO UPDATE SET namespace = EXCLUDED.namespace,
 					ceiling = EXCLUDED.ceiling, min_interval = EXCLUDED.min_interval,
 					cooldown = EXCLUDED.cooldown, per_run = EXCLUDED.per_run,
-					issue_title = EXCLUDED.issue_title, instructions = EXCLUDED.instructions, enabled = true`,
+					issue_title = EXCLUDED.issue_title, instructions = EXCLUDED.instructions,
+					prompt = EXCLUDED.prompt, enabled = true`,
 				s.Name, s.Namespace, s.EffectiveCeiling(), s.MinInterval.Microseconds(),
-				s.Cooldown.Microseconds(), s.PerRun, s.IssueTitle, s.Instructions)
+				s.Cooldown.Microseconds(), s.PerRun, s.IssueTitle, s.Instructions, s.Prompt)
 			if err != nil {
 				return fmt.Errorf("upsert planner schedule %q: %w", s.Name, err)
 			}

@@ -17,6 +17,53 @@ type Schedule struct {
 	PerRun       int           `yaml:"perRun"`
 	IssueTitle   string        `yaml:"issueTitle"`
 	Instructions string        `yaml:"instructions"`
+	// Cron is the five-field UTC expression the bootstrap gives the itsaplan
+	// schedule. Prompt is what the connector sends the planner Agent: reviewed
+	// text on main, so no run takes its task from itsaplan. A schedule with no
+	// prompt admits no run.
+	Cron   string `yaml:"cron"`
+	Prompt string `yaml:"prompt"`
+}
+
+// MaxPromptBytes bounds a schedule's analysis prompt.
+const MaxPromptBytes = 16 << 10
+
+// RunPromptPrefix starts the prompt of each itsaplan cron schedule. The
+// connector maps a claimed run to its reviewed schedule by the name after it
+// and never sends the itsaplan prompt to a model.
+const RunPromptPrefix = "factory-planner-schedule:"
+
+// ScheduleName returns the schedule an itsaplan run prompt selects, or "".
+func ScheduleName(runPrompt string) string {
+	name, ok := strings.CutPrefix(strings.TrimSpace(runPrompt), RunPromptPrefix)
+	if !ok || strings.TrimSpace(name) != name {
+		return ""
+	}
+	return name
+}
+
+// Tracked assigns a fingerprint to a HOME issue that already covers it, such
+// as one of the scheduled jobs HOME-4 to HOME-11. A proposal with that
+// fingerprint is deduplicated while the issue is open.
+type Tracked struct {
+	Fingerprint string `yaml:"fingerprint"`
+	Issue       string `yaml:"issue"`
+}
+
+var (
+	fingerprintShape = regexp.MustCompile(`^[a-z0-9._/-]+(:[a-z0-9._/-]+){3}$`)
+	issueKeyShape    = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
+)
+
+// Validate checks that a fingerprint is well formed and names an issue.
+func (t Tracked) Validate() error {
+	switch {
+	case len(t.Fingerprint) > 256 || !fingerprintShape.MatchString(t.Fingerprint):
+		return fmt.Errorf("fingerprint must be repo:area:object:failure-class")
+	case !issueKeyShape.MatchString(t.Issue):
+		return fmt.Errorf("issue must be a key such as HOME-4")
+	}
+	return nil
 }
 
 // Leave space for a proposal with a finding, fingerprint and evidence links.
@@ -42,6 +89,10 @@ func (s Schedule) Validate() error {
 		return fmt.Errorf("issueTitle is required")
 	case strings.TrimSpace(s.Instructions) == "" || len(s.Instructions) > maxInstructionsBytes:
 		return fmt.Errorf("instructions must be nonempty and at most %d bytes", maxInstructionsBytes)
+	case len(s.Prompt) > MaxPromptBytes:
+		return fmt.Errorf("prompt must be at most %d bytes", MaxPromptBytes)
+	case s.Cron != "" && len(strings.Fields(s.Cron)) != 5:
+		return fmt.Errorf("cron must have five fields")
 	}
 	return nil
 }
