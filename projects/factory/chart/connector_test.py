@@ -79,6 +79,17 @@ def _render(
     overrides: list[str] | None = None, enable: bool = True, trial: bool = False
 ) -> list[dict[str, Any]]:
     args = ["--values", str(_ENABLE_FILE)] if enable else []
+    # The deploy values run the scheduled planner and its Claude relay
+    # (HOME-40); planner_test.py covers them, and they would hide the
+    # connector checks below that turn a dependency off.
+    args += [
+        "--set",
+        "planner.enabled=false",
+        "--set",
+        "broker.claude.enabled=false",
+        "--set",
+        "broker.claude.modelAllowlist=null",
+    ]
     if trial:
         args += ["--values", str(_CHART_DIR / "files/coder-trial-values.yaml")]
         # The deploy values let the coder pool scale to zero, which the chart

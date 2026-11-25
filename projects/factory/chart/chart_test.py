@@ -75,6 +75,15 @@ def _render(
             "discord.bridge.enabled=false",
             "--set",
             "kagent.rbac.namespaces={kagent,factory-r-homelab}",
+            # The scheduled planner and its Claude relay (HOME-40) need the
+            # reviewer, which these tests turn off; planner_test.py and
+            # reviewer_test.py cover them.
+            "--set",
+            "planner.enabled=false",
+            "--set",
+            "broker.claude.enabled=false",
+            "--set",
+            "broker.claude.modelAllowlist=null",
         ]
     if trial:
         argv += ["--values", str(_CHART_DIR / "files/coder-trial-values.yaml")]
