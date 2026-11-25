@@ -38,6 +38,7 @@ resources:
   - upstream/postgres.yaml
   - api-server-config.yaml
   - snapshot-store.yaml
+  - garage-snapshots.yaml
   - sandboxconfig-microvm.yaml
   - microvm-assets.yaml
   - microvm-actor-spike.yaml

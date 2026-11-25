@@ -55,14 +55,15 @@ BUCKETS = [
     "factory-db-backups",
     "authentik-pg-backups",
 ]
-# (bucket, namespace, Secret). ate-snapshots is granted to ate-system when
-# Substrate moves its snapshots from rustfs.
+# (bucket, namespace, Secret). ate-snapshots is Substrate's snapshot store
+# (projects/platform-factory/substrate/resources/garage-snapshots.yaml).
 GRANTS = [
     ("factory-itsaplan", "factory", "factory-itsaplan-s3"),
     ("factory-evidence", "factory", "factory-evidence-s3"),
     ("kagent-pg-backups", "kagent-pg", "kagent-pg-s3"),
     ("factory-db-backups", "factory-db", "factory-db-s3"),
     ("authentik-pg-backups", "authentik", "authentik-pg-s3"),
+    ("ate-snapshots", "ate-system", "ate-snapshots-s3"),
 ]
 
 

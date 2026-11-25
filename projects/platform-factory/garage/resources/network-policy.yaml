@@ -32,8 +32,7 @@ spec:
             - port: "3903"
               protocol: TCP
     # The S3 API, only from the workloads holding a bucket key; a request
-    # still needs that bucket's key. Substrate (ate-snapshots) is added with
-    # its grant.
+    # still needs that bucket's key.
     - fromEndpoints:
         # The library labels only declared Garage consumers. Each request
         # still needs a bucket key. An explicit namespace wildcard permits
@@ -79,6 +78,19 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
             app.kubernetes.io/name: factory-connector
+        # Substrate's actor snapshots and staged assets (ate-snapshots): the
+        # snapshot sidecars of the API server and the atelets, and the Jobs
+        # that stage assets.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ate-system
+          matchExpressions:
+            - key: app
+              operator: In
+              values:
+                - ate-api-server
+                - atelet
+                - microvm-assets-init
+                - gvisor-fork-assets-init
       toPorts:
         - ports:
             - port: "3900"
