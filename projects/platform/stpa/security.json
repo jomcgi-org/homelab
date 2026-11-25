@@ -19,7 +19,7 @@
       "losses": [
         "L.release-integrity"
       ],
-      "status": "enforced-prod",
+      "status": "enforced-dev",
       "issue": "HOME-89",
       "view": "logical",
       "maturity": "built"
@@ -114,28 +114,28 @@
       "key": "runner.publish.provided",
       "control_action": "runner.publish",
       "guideword": "provided",
-      "condition": "Publishing during PR validation would promote candidate artifacts. The runner selects publication on main and build verification on PR and queue runs.",
+      "condition": "Publishing during PR validation would promote candidate artifacts. The runner selects publication on main and build verification on PR and queue runs. PR runs also receive the GHCR token, and the main-only gate is a routing guard inside a PR-controlled script (bazel/ARCHITECTURE.md:120).",
       "evidence": "buildbuddy.yaml:217",
       "view": "logical",
       "severity": "high",
       "hazards": [
         "unvalidated-release"
       ],
-      "status": "enforced-prod",
+      "status": "enforced-dev",
       "issue": "HOME-89"
     },
     {
       "key": "runner.write-back.provided",
       "control_action": "runner.write-back",
       "guideword": "provided",
-      "condition": "Advancing a pin before publication would direct GitOps to an unconfirmed release. The runner passes publication records to write-back after publishing.",
+      "condition": "Advancing a pin before publication would direct GitOps to an unconfirmed release. The runner passes publication records to write-back after publishing. PR runs also receive the GHCR token, and the main-only gate is a routing guard inside a PR-controlled script (bazel/ARCHITECTURE.md:120).",
       "evidence": "buildbuddy.yaml:225",
       "view": "logical",
       "severity": "high",
       "hazards": [
         "unvalidated-release"
       ],
-      "status": "enforced-prod",
+      "status": "enforced-dev",
       "issue": "HOME-89"
     }
   ],
