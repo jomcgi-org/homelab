@@ -109,6 +109,24 @@ func TestMigrationsAreIdempotentAndCreateTables(t *testing.T) {
 	}
 }
 
+// TestOutboxKindCheckAllowsEveryKind guards against a migration that rebuilds
+// outbox_kind_check without a kind an earlier migration added.
+func TestOutboxKindCheckAllowsEveryKind(t *testing.T) {
+	st := open(t)
+	var def string
+	if err := st.DB.QueryRow(`SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'outbox_kind_check'`).Scan(&def); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{
+		store.OutboxResult, store.OutboxComment, store.OutboxIssueDone, store.OutboxIssueReviewing,
+		store.OutboxDeferredStart, store.OutboxReviewFollowup, store.OutboxActivation, "retain", "assessment",
+	} {
+		if !strings.Contains(def, "'"+kind+"'") {
+			t.Errorf("outbox_kind_check %s does not allow %q", def, kind)
+		}
+	}
+}
+
 func TestSingleWriterAndEpoch(t *testing.T) {
 	st := open(t)
 	ctx := context.Background()
