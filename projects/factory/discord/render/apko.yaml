@@ -6,6 +6,7 @@ contents:
   packages:
     - ca-certificates-bundle
     - zlib
+    - libstdc++
     - busybox
 archs:
   - x86_64
