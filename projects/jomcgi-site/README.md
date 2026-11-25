@@ -176,7 +176,7 @@ sortable tables hydrate on intent or a linked `?m=` selection.
 `/app/llm-leaderboard` and its descendants redirect with 301 responses.
 The deploy image serves `web:build` through an assets-only Worker.
 
-`projects/model-bench` writes the sole snapshot at
+`projects/model-bench` (deleted; tag `hub-final` keeps it) wrote the frozen snapshot at
 `projects/monolith/frontend/src/lib/public/llm-leaderboard/leaderboard.json`.
 The site imports it and the hub model through `:leaderboard_sources`.
 

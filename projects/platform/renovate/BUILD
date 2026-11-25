@@ -104,25 +104,6 @@ py_test(
     deps = ["@pip//pyyaml"],
 )
 
-# Pin effective suspension, credential references and the hub enrollment path.
-py_test(
-    name = "hub_deployment_test",
-    srcs = ["hub_deployment_test.py"],
-    # The chart filegroup includes sibling tests; collect only this suite.
-    args = ["$(rootpath hub_deployment_test.py)"],
-    data = [
-        "BUILD",
-        ":chart",
-        "//projects:hub_renovate_enrollment_manifests",
-        "//projects/platform-gke/renovate:manifests",
-        "@multitool//tools/helm",
-    ],
-    env = {
-        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
-    },
-    deps = ["@pip//pyyaml"],
-)
-
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(

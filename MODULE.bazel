@@ -155,23 +155,6 @@ filegroup(
     urls = ["https://github.com/external-secrets/external-secrets/releases/download/helm-chart-2.15.0/external-secrets-2.15.0.tgz"],
 )
 
-# Loom 0.2.0 templates from weave-hand/loom#691. Package publication is an
-# operator check in #6605; the unregistered hub Application stays default-off.
-http_archive(
-    name = "loom_chart_0_2_0",
-    build_file_content = """
-exports_files(["Chart.yaml"], visibility = ["//visibility:public"])
-filegroup(
-    name = "chart_files",
-    srcs = glob(["**"], exclude = ["BUILD.bazel"]),
-    visibility = ["//visibility:public"],
-)
-""",
-    sha256 = "ddbfeafb4173365593c31dc63b33c7c4ec7a0197a4ebaba460cf614dd68d866d",
-    strip_prefix = "loom-15b16649e851331b9f912e87666e724747f4c32d/deploy/chart/chart",
-    urls = ["https://github.com/weave-hand/loom/archive/15b16649e851331b9f912e87666e724747f4c32d.tar.gz"],
-)
-
 http_archive(
     name = "kubernetes_json_schema_1_36_3",
     build_file_content = """
@@ -340,11 +323,8 @@ go_deps.gazelle_override(
 
 # All *direct* Go dependencies of the module have to be listed explicitly.
 # Run 'bazel mod tidy' to update this.
-# KEEP org_golang_google_protobuf and org_golang_google_grpc_cmd_protoc_gen_go_grpc:
-# they are consumed ONLY as protoc plugin binaries by the embervm node.proto codegen
-# genrules (//projects/embervm/proto/embervm/node/v1), not by any Go import go_deps
-# can see, so both are `// indirect` in go.mod and `bazel mod tidy` would drop them
-# from this list. Re-add them after any tidy or node_go_src stops resolving.
+# org_golang_google_grpc_cmd_protoc_gen_go_grpc was kept for the EmberVM
+# node.proto codegen, deleted with the hub (HOME-262). `bazel mod tidy` may drop it.
 use_repo(go_deps, "com_github_bazelbuild_buildtools", "com_github_betterleaks_betterleaks_v2", "com_github_envoyproxy_go_control_plane", "com_github_envoyproxy_go_control_plane_envoy", "com_github_go_jose_go_jose_v4", "com_github_go_logr_logr", "com_github_google_go_containerregistry", "com_github_google_uuid", "com_github_klauspost_compress", "com_github_lib_pq", "com_github_onsi_ginkgo_v2", "com_github_onsi_gomega", "com_github_prometheus_client_golang", "com_github_spf13_cobra", "com_github_spf13_viper", "com_github_spiffe_go_spiffe_v2", "com_github_stretchr_testify", "com_github_zricethezav_gitleaks_v8", "in_gopkg_yaml_v3", "io_k8s_api", "io_k8s_apimachinery", "io_k8s_client_go", "io_k8s_sigs_controller_runtime", "io_k8s_sigs_yaml", "io_k8s_utils", "io_nhooyr_websocket", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_trace", "org_golang_google_genproto_googleapis_rpc", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf", "org_golang_x_net", "org_golang_x_sync", "org_golang_x_sys", "org_golang_x_time")
 
 #########################
@@ -603,65 +583,10 @@ apko.translate_lock(
     name = "monolith_frontend_lock",
     lock = "//projects/monolith/frontend:apko.lock.json",
 )
-apko.translate_lock(
-    name = "rootfs_builder_lock",
-    lock = "//projects/firecracker/substrate/rootfs-builder:apko.lock.json",
-)
 
-# The six per-language code-executor guests (ADR agents/057). One lock each:
-# they share a guest-init binary but not a package set, so a toolchain bump in
-# one language re-bakes only that language's rootfs.
-apko.translate_lock(
-    name = "sandbox_python_lock",
-    lock = "//projects/firecracker/sandbox/python:apko.lock.json",
-)
-apko.translate_lock(
-    name = "sandbox_go_lock",
-    lock = "//projects/firecracker/sandbox/go:apko.lock.json",
-)
-apko.translate_lock(
-    name = "sandbox_rust_lock",
-    lock = "//projects/firecracker/sandbox/rust:apko.lock.json",
-)
-apko.translate_lock(
-    name = "sandbox_elixir_lock",
-    lock = "//projects/firecracker/sandbox/elixir:apko.lock.json",
-)
-apko.translate_lock(
-    name = "sandbox_ocaml_lock",
-    lock = "//projects/firecracker/sandbox/ocaml:apko.lock.json",
-)
-apko.translate_lock(
-    name = "sandbox_javascript_lock",
-    lock = "//projects/firecracker/sandbox/javascript:apko.lock.json",
-)
 apko.translate_lock(
     name = "stars_grid_apko_lock",
     lock = "//projects/monolith:stars/grid_gen/apko.lock.json",
-)
-apko.translate_lock(
-    name = "embervm_lock",
-    lock = "//projects/embervm/image:apko.lock.json",
-)
-apko.translate_lock(
-    name = "embervm_noded_lock",
-    lock = "//projects/embervm/noded/image:apko.lock.json",
-)
-apko.translate_lock(
-    name = "embervm_runtime_python_lock",
-    lock = "//projects/embervm/runtimes/python:apko.lock.json",
-)
-apko.translate_lock(
-    name = "embervm_runtime_postgres_lock",
-    lock = "//projects/embervm/runtimes/postgres:apko.lock.json",
-)
-apko.translate_lock(
-    name = "embervm_xds_lock",
-    lock = "//projects/embervm/xds/image:apko.lock.json",
-)
-apko.translate_lock(
-    name = "embervm_tokenbroker_lock",
-    lock = "//projects/embervm/tokenbroker/image:apko.lock.json",
 )
 apko.translate_lock(
     name = "egress_scan_engine_gate_lock",
@@ -703,35 +628,7 @@ apko.translate_lock(
     name = "scotland_connector_lock",
     lock = "//projects/scotland-connector/image:apko.lock.json",
 )
-apko.translate_lock(
-    name = "embervm_conformance_lock",
-    lock = "//projects/embervm/conformance:apko.lock.json",
-)
-apko.translate_lock(
-    name = "embervm_runtime_k3s_server_lock",
-    lock = "//projects/embervm/runtimes/k3s/k3s-server:apko.lock.json",
-)
-apko.translate_lock(
-    name = "embervm_runtime_k3s_agent_lock",
-    lock = "//projects/embervm/runtimes/k3s/k3s-agent:apko.lock.json",
-)
-apko.translate_lock(
-    name = "shotter_lock",
-    lock = "//projects/embervm/runtimes/shotter:apko.lock.json",
-)
-apko.translate_lock(
-    name = "embervm_scratch_prep_lock",
-    lock = "//projects/embervm/scratch-prep:apko.lock.json",
-)
-apko.translate_lock(
-    name = "embervm_runtime_claude_lock",
-    lock = "//projects/embervm/runtimes/claude:apko.lock.json",
-)
-apko.translate_lock(
-    name = "embervm_runtime_pi_lock",
-    lock = "//projects/embervm/runtimes/pi:apko.lock.json",
-)
-use_repo(apko, "discord_render_lock", "egress_scan_engine_gate_lock", "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "factory_alert_relay_lock", "factory_broker_lock", "factory_codex_mode_lock", "factory_connector_lock", "factory_landing_lock", "factory_push_guard_lock", "factory_reviewer_lock", "itsaplan_web_lock", "jomcgi_site_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "scotland_connector_lock", "shotter_lock", "stars_grid_apko_lock", "trips_lock")
+use_repo(apko, "discord_render_lock", "egress_scan_engine_gate_lock", "factory_alert_relay_lock", "factory_broker_lock", "factory_codex_mode_lock", "factory_connector_lock", "factory_landing_lock", "factory_push_guard_lock", "factory_reviewer_lock", "itsaplan_web_lock", "jomcgi_site_lock", "monolith_frontend_lock", "scotland_connector_lock", "stars_grid_apko_lock", "trips_lock")
 
 multiarch_http_file(
     name = "goose",
@@ -742,60 +639,6 @@ multiarch_http_file(
     binary_name = "goose",
     extract_path = "goose",
     package_dir = "/usr/local/bin",
-)
-
-# firecracker binary + guest kernel for the fc-invoke daemon, extracted from the
-# kata-containers static bundle and baked into the fc-invoke image so a node needs
-# no /opt/kata install (see projects/platform/firecracker-node). Pinned to a kata
-# release rather than the old install-kata.sh `releases/latest`. Both arches are
-# required: the fc-invoke image is dual-arch and apko needs a per-arch tar layer.
-#
-# The hypervisor binary and snapshot-editor come from the same upstream
-# Firecracker v1.16.1 release, not the kata bundle: kata pins v1.12.1 (still on
-# main), which
-# predates the vsock-after-snapshot-restore fixes the warm-restore fleet needs
-# (#4389; upstream #5688/#5882/#5958). Only the guest kernel still comes from
-# kata. Moving the Firecracker version invalidates every snapshot (the format
-# is version-locked) and nothing rebuilds them automatically: the base
-# signature has no hypervisor input, so any version change here MUST move
-# hypervisorEpoch in projects/embervm/chart/values.yaml in the same PR, which
-# re-keys every workload base via initEnv. //projects/embervm/chart:chart_hypervisor_epoch_test
-# fails CI if the two drift (#4409). Banked session and stateful memory
-# snapshots are not covered by that knob and fail over cold at rollout.
-kata_firecracker_archive = use_repo_rule("//bazel/tools/http:kata_firecracker_archive.bzl", "kata_firecracker_archive")
-
-kata_firecracker_archive(
-    name = "kata_firecracker",
-    amd64_firecracker_sha256 = "382a02a869e4d6d5cb14c40577f9545e8458021ea8b0b2d3fc10ec14d9c242e6",
-    amd64_firecracker_url = "https://github.com/firecracker-microvm/firecracker/releases/download/v1.16.1/firecracker-v1.16.1-x86_64.tgz",
-    amd64_sha256 = "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01",
-    amd64_url = "https://github.com/kata-containers/kata-containers/releases/download/3.32.0/kata-static-3.32.0-amd64.tar.zst",
-    arm64_firecracker_sha256 = "8d0e69f6d6f9a1724551f607f18504052c16c1828ee3d4d7b6e6c73380871e0e",
-    arm64_firecracker_url = "https://github.com/firecracker-microvm/firecracker/releases/download/v1.16.1/firecracker-v1.16.1-aarch64.tgz",
-    arm64_sha256 = "8736c054d9223974735394f822000823baef509e1c33405ec798240fa9b6e4b5",
-    arm64_url = "https://github.com/kata-containers/kata-containers/releases/download/3.32.0/kata-static-3.32.0-arm64.tar.zst",
-    firecracker_version = "v1.16.1",
-)
-
-# k3s binary + airgap image tarball, vendored per arch for the EmberVM composite
-# (R5) k3s guest images (standing decision 12: zero-egress k8s via baked airgap
-# images, not a registry cache). v1.30.6+k3s1 is a stable line with arm64+amd64
-# releases and first-class .tar.zst airgap support (auto-imported at startup).
-# Checksums are the upstream release sha256sum-<arch>.txt values, verified
-# 2026-07-17. The airgap tarball import at first boot sets the memory
-# high-water mark (fc-base sizing coupling); see runtimes/k3s READMEs.
-k3s_archive = use_repo_rule("//bazel/tools/http:k3s_archive.bzl", "k3s_archive")
-
-k3s_archive(
-    name = "k3s_archive",
-    amd64_airgap_sha256 = "3b82db1352631b3d4a5054570a1411de1023067da4c67b665687d0c86c97b709",
-    amd64_airgap_url = "https://github.com/k3s-io/k3s/releases/download/v1.30.6+k3s1/k3s-airgap-images-amd64.tar.zst",
-    amd64_binary_sha256 = "66f96a9a9ec631a4b69b08884d38f8ad8124907666323e9215993693d8853c66",
-    amd64_binary_url = "https://github.com/k3s-io/k3s/releases/download/v1.30.6+k3s1/k3s",
-    arm64_airgap_sha256 = "5077b9e9dc4d2a69aafa6f12daed27af4ef2ac6a2d2efa902728dc21c0c38c40",
-    arm64_airgap_url = "https://github.com/k3s-io/k3s/releases/download/v1.30.6+k3s1/k3s-airgap-images-arm64.tar.zst",
-    arm64_binary_sha256 = "d6a4aac2945bf7a757b87a56f41b49c500ed5d4ccc2b42284ebfbd3cd1a25162",
-    arm64_binary_url = "https://github.com/k3s-io/k3s/releases/download/v1.30.6+k3s1/k3s-arm64",
 )
 
 # Linux-only acceptance tools for the public Envoy Gateway policy guard. egctl
@@ -816,95 +659,10 @@ multiarch_http_file(
     binary_name = "envoy",
 )
 
-# Claude Code CLI for the EmberVM claude runtime guest (issue #4055). The npm
-# registry tarball holds exactly four entries; the payload is a single 262 MB
-# arch-specific ELF at package/claude, dynamically linked against glibc
-# (/lib64/ld-linux-x86-64.so.2, GLIBC_2.2.5 baseline), which Wolfi provides.
-#
-# amd64 only, deliberately: every cluster node and the RBE build executor are
-# amd64, so fetching a second 262 MB arm64 payload would build a manifest half of
-# which no node can run. Add arm64_url/arm64_sha256 here and aarch64 to
-# projects/embervm/runtimes/claude/apko.yaml together if that ever changes.
-#
-# The version is pinned rather than floating: the guest contract depends on
-# observed CLI behaviour (stream-json event shapes, the synthetic interrupt turn,
-# result field names), so a silent upgrade could change the shim's inputs.
-# pi coding agent for the EmberVM claude runtime guest, the Qwen adapter
-# (issue #4234). Qwen serves a 32768-token window, and the claude CLI ships 26
-# tools plus 41 slash commands into every request (codex measured 13692 input
-# tokens on a trivial prompt), so roughly 40% of the window would go to
-# scaffolding written for frontier models before reading a file. pi ships 4
-# tools and lets --system-prompt REPLACE the prompt, so the budget is ours.
-#
-# Vendored from the GitHub release, NOT npm: the npm package is a node entry
-# point (#!/usr/bin/env node) with a dependency tree, while the release tarball
-# carries a self-contained ELF at pi/pi. That is the difference between needing
-# a node runtime plus vendored deps in the guest and adding one binary.
-#
-# Dual-arch, unlike codex_cli: pi's payload sits at the arch-INDEPENDENT path
-# pi/pi inside both tarballs, so one extract_path serves both. Checksums are
-# upstream's published SHA256SUMS, verified against the downloaded artifacts.
-multiarch_http_file(
-    name = "pi_coding_agent",
-    amd64_sha256 = "b0625eb623197b0afe20c870d21ef2f34481f1504e5777df3f698a66c7636f5f",
-    amd64_url = "https://github.com/earendil-works/pi/releases/download/v0.83.0/pi-linux-x64.tar.gz",
-    arm64_sha256 = "b84f9016610c738dd9440df62f649880dbe9951db97a7ae936cbf292850e9802",
-    arm64_url = "https://github.com/earendil-works/pi/releases/download/v0.83.0/pi-linux-arm64.tar.gz",
-    binary_name = "pi",
-    # The Bun-compiled binary loads its theme JSONs and wasm sidecar relative
-    # to argv0 (observed live: ENOENT /usr/local/bin/theme/dark.json killed
-    # every guest turn), so ship them beside it.
-    extract_extra_paths = [
-        "pi/theme",
-        "pi/photon_rs_bg.wasm",
-    ],
-    extract_path = "pi/pi",
-    package_dir = "/usr/local/bin",
-)
-
-# Codex app-server for the EmberVM claude runtime, amd64 like the guest image.
-# The official full package includes the code-mode and exec hosts, resource
-# manifest, bundled tools and their licenses. Import the entire archive under
-# /usr/local in the runtime BUILD; copying only bin/codex breaks tool execution.
-# The pinned producer is exercised by the runtime's codex_compat_test target.
-http_file(
-    name = "codex_cli",
-    downloaded_file_path = "codex-package.tar.gz",
-    sha256 = "3bbf75e83de6b58aed28f2cf6e33ad423ec31fd4700a1457b94be557ea5a7c6e",
-    urls = ["https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-package-x86_64-unknown-linux-musl.tar.gz"],
-)
-
-multiarch_http_file(
-    name = "claude_code_cli",
-    amd64_sha256 = "642690c3afaa22029c17341e520d8c35ca85857fce6dcc9ecd90ef5e3c7f1027",
-    amd64_url = "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.284.tgz",
-    binary_name = "claude",
-    extract_path = "package/claude",
-    package_dir = "/usr/local/bin",
-)
-
-# Meta's Muse Code CLI for the EmberVM claude runtime guest. Amd64 only, matching
-# claude_code_cli and the guest image (runtimes/claude apko.yaml declares
-# archs: [x86_64]), since every cluster node and the RBE executor are amd64.
-# Statically linked ELF with no glibc dependency; comparable to codex_cli in
-# that respect. Pinned rather than floating because the adapter depends on
-# observed behaviour (run.terminal.completed payload shape, --session-id
-# continuity). Version and sha256 come from the muse-stable channel document
-# at https://api.meta.ai/muse-code/channels/muse-stable and its manifest_url.
-# If Meta rotates this URL, the pinned fetch fails instead of silently using a
-# different binary. The Muse binary adds 362 MB to the claude-runtime base
-# image.
-multiarch_http_file(
-    name = "muse_cli",
-    amd64_sha256 = "8b53c9cdbc025bc2d9068bc7016e2c1e51c3a0c608821da17528ad23be900a12",
-    amd64_url = "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.1-R4503.1&file=muse-x86-linux",
-    binary_name = "muse",
-    package_dir = "/usr/local/bin",
-)
-
 bazel_dep(name = "rules_pkg", version = "1.1.0")
 
-# Prebuilt Erlang/OTP for the EmberVM control-plane build (bazel/erlang). The RBE
+# Prebuilt Erlang/OTP (bazel/erlang). Its only user, the EmberVM control plane,
+# was deleted with the hub (HOME-262; tag hub-final keeps it). The RBE
 # executor is ubuntu-22.04, so the matching hex.pm OTP build runs natively with
 # working crypto (no from-source build / OpenSSL provisioning). Build-time only:
 # the release is include_erts:false and the apko image supplies erlang at runtime.
@@ -956,10 +714,9 @@ use_repo(
     "rebar3",
 )
 
-# Prebuilt TLC model checker for the ADR embervm/006 TLA+ pilot (bazel/tla). TLC
-# checks the adoption-protocol spec in projects/embervm/specs during CI; the jar
-# plus a vendored Temurin 21 JRE run natively on the amd64 executor. The dev-only
-# EmberVM conformance runner image also layers both for S6 (issue #6415).
+# Prebuilt TLC model checker (bazel/tla): the jar plus a vendored Temurin 21 JRE
+# run natively on the amd64 executor. Its only user, the EmberVM TLA+ pilot,
+# was deleted with the hub (HOME-262; tag hub-final keeps it).
 tla = use_extension("//bazel/tla:repositories.bzl", "tla")
 use_repo(tla, "temurin21_jre_linux_amd64", "tla2tools")
 

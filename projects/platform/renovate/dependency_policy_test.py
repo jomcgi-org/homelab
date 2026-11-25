@@ -184,7 +184,7 @@ def _python_update_config(
     name,
     *,
     security=False,
-    filename="projects/model-bench/requirements-venv.txt",
+    filename="projects/example/requirements.txt",
 ):
     """Apply matching rules and the forced GitHub vulnerability configuration."""
     inputs = {
@@ -233,7 +233,6 @@ def _python_update_config(
         ("MODULE.bazel", False),
         (".github/workflows/ci.yml", False),
         ("buildbuddy.yaml", False),
-        ("projects/model-bench/requirements-venv.txt", False),
     ],
 )
 @pytest.mark.parametrize("security", [False, True])
@@ -785,7 +784,6 @@ def test_overlays_are_scanned_and_python_regeneration_is_root_only(values_files)
     config = json.loads((ROOT / "renovate.json").read_text())
     for path in (
         "projects/platform/cloudflare-gateway/values.yaml",
-        "projects/platform/polylane/values.yaml",
         "projects/platform/renovate/values-gke.yaml",
         "projects/platform/renovate/values-factory.yaml",
         "projects/monolith/deploy/values.yaml",
@@ -851,31 +849,6 @@ def test_envoy_family_is_held_but_cloudflared_and_other_upstreams_are_eligible()
     assert not _dependency_is_disabled(
         config, "ghcr.io/upstream/homelab/projects/monolith"
     )
-
-
-def test_polylane_cloudflared_keeps_the_separate_digest_in_the_update():
-    config = json.loads((ROOT / "renovate.json").read_text())
-    content = (
-        "repository: docker.io/cloudflare/cloudflared\n"
-        '      tag: "2026.10.4"\n'
-        '      digest: "sha256:' + "a" * 64 + '"\n'
-    )
-    deps = _custom_extract(config, "projects/platform/polylane/values.yaml", content)
-    assert len(deps) == 1
-    assert deps[0]["currentValue"] == "2026.10.4"
-    assert deps[0]["currentDigest"] == "sha256:" + "a" * 64
-    handoff = [
-        r
-        for r in config["packageRules"]
-        if r.get("matchFileNames") == ["projects/platform/polylane/values.yaml"]
-    ]
-    assert len(handoff) == 1
-    assert handoff[0]["matchManagers"] == ["helm-values"]
-    assert handoff[0]["enabled"] is False
-    assert set(handoff[0]["matchPackageNames"]) == {
-        "cloudflare/cloudflared",
-        "docker.io/cloudflare/cloudflared",
-    }
 
 
 def test_factory_digest_pins_outside_helm_images_are_extracted_with_their_digest():

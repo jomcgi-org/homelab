@@ -2,11 +2,6 @@ load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 exports_files(
-    ["values-gke.yaml"],
-    visibility = ["//projects/platform-gke/otel-collector:__pkg__"],
-)
-
-exports_files(
     ["values-factory.yaml"],
     visibility = ["//projects/platform-factory/otel-collector:__pkg__"],
 )
@@ -30,22 +25,7 @@ helm_chart(
 filegroup(
     name = "prod_values",
     srcs = ["values-prod.yaml"],
-    visibility = [
-        "//projects/embervm/chart:__pkg__",
-        "//projects/monolith/chart:__pkg__",
-    ],
-)
-
-filegroup(
-    name = "loom_monitoring_values",
-    srcs = ["values.yaml"],
-    visibility = ["//projects/loom/deploy:__pkg__"],
-)
-
-filegroup(
-    name = "gke_values",
-    srcs = ["values-gke.yaml"],
-    visibility = ["//projects/embervm/chart:__pkg__"],
+    visibility = ["//projects/monolith/chart:__pkg__"],
 )
 
 argocd_app(
@@ -91,7 +71,6 @@ py_test(
     name = "collector_optin_test",
     srcs = ["collector_optin_test.py"],
     data = [
-        "//projects:backup_status_application",
         "Chart.lock",
         "Chart.yaml",
         "values.yaml",

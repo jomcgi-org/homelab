@@ -5,9 +5,9 @@ Shared assets used across multiple projects in this repo: the
 
 ## go/tokenbroker
 
-OAuth grant brokering, extracted from EmberVM's token broker
-(`projects/embervm/tokenbroker`) so the factory credential broker (#7817) can
-reuse it. EmberVM's binary, HTTP server and authentik adapter stay in EmberVM.
+OAuth grant brokering, extracted from EmberVM's token broker so the factory
+credential broker (#7817) can reuse it. EmberVM was deleted with the hub
+(HOME-262); tag `hub-final` keeps its binary, HTTP server and authentik adapter.
 
 | Package                  | Provides                                                                                 |
 | ------------------------ | ---------------------------------------------------------------------------------------- |
@@ -102,18 +102,15 @@ Adjust the relative path depth as needed (services nested one level deeper use
 
 ### Consumers
 
-| Project                     | Chart path                                 |
-| --------------------------- | ------------------------------------------ |
-| `mcp/context-forge-gateway` | `projects/mcp/context-forge-gateway/chart` |
-| `monolith-public`           | `projects/monolith-public/chart`           |
-| `monolith-agents`           | `projects/monolith-agents/chart`           |
+| Project           | Chart path                       |
+| ----------------- | -------------------------------- |
+| `monolith-public` | `projects/monolith-public/chart` |
 
 ### Bumping the version
 
 When changing any template, bump `version` in the library `Chart.yaml` and
 update the `version` field in each consumer's `Chart.yaml` dependency block to
-match (`projects/monolith-public/chart`, `projects/monolith-agents/chart`,
-`projects/mcp/context-forge-gateway/chart`). Then regenerate each consumer's
+match (`projects/monolith-public/chart`). Then regenerate each consumer's
 vendored artifacts: its `Chart.lock` and `charts/homelab-library-<version>.tgz`
 (`helm dependency update <chart-dir>` rebuilds both, and removes the old
 tarball so exactly one remains).
@@ -121,17 +118,7 @@ tarball so exactly one remains).
 `bazel/tools/format/sync-helm-deps.sh --check` flags version mismatches, and
 `bazel/tools/format/helm_deps/check_helm_deps.py --root .` verifies each
 committed tarball matches the library source (it compares `templates/*` and
-`values.yaml` plus the `Chart.yaml` version); CI runs the latter. Note that
-`projects/mcp/context-forge-gateway/chart` also depends on `mcp-stack` from
-`oci://ghcr.io/jomcgi/homelab/charts`, so `helm dependency update` there needs
-registry auth. Log in with your GitHub username and enter a personal access
-token (classic) with `read:packages` access to the package at the password
-prompt, then regenerate the dependencies:
-
-```bash
-helm registry login ghcr.io --username YOUR_GITHUB_USERNAME
-helm dependency update projects/mcp/context-forge-gateway/chart
-```
+`values.yaml` plus the `Chart.yaml` version); CI runs the latter.
 
 Let `helm dependency update` generate `Chart.lock`, including its dependency
 digest. Do not hand-edit the lock file.

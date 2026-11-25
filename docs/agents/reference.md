@@ -100,12 +100,6 @@ they do not launch their own planner, review or landing sequence.
 
 ## Gotchas
 
-- **For `monolith`, `monolith-agents`, `monolith-public`, `embervm` and
-  `scotland-connector`, `targetRevision` in git does not say what is deployed.** Kargo owns it on the
-  hub. The `projects/gke-apps/` pins are hand-edited floors kept as the revert lever, so
-  `git != live` is correct there. Read the live value:
-  `kubectl get application monolith -n argocd -o jsonpath='{.spec.sources[0].targetRevision}'`.
-  Every other chart deploys off the git value.
 - **Never hand-pin `@sha256:` digests for this repo's images in values
   files.** Build-time pinning replaces tags; hand pins go stale into
   `ImagePullBackOff`. Gated. Third-party digest pins are fine.
@@ -131,12 +125,11 @@ they do not launch their own planner, review or landing sequence.
   from JavaScript, never bare `@import` package specifiers inside CSS.
 - **Cluster reads** use `kubectl` against the hub context, or the monolith
   MCP's `k8s-*` tools and `verify_deployment`. The ArgoCD UI has no route;
-  Kargo's is `private.jomcgi.dev/app/kargo`. MCP topology:
-  `projects/mcp/ARCHITECTURE.md`.
+  Kargo's is `private.jomcgi.dev/app/kargo`.
 - **New service:** a chart and `deploy/` under `projects/<svc>/` (copy
-  `projects/monolith/deploy/` for the multi-source pattern), plus a hub
-  Application in `projects/gke-apps/<svc>/` listed in its `kustomization.yaml`.
-  `ci regen` does not create the hub Application.
+  `projects/trips/deploy/` for the factory pattern), plus an entry for that
+  `deploy/` directory in `projects/platform-factory/kustomization.yaml`.
+  `ci regen` does not create the Application.
 
 ## Tracker
 
@@ -414,7 +407,7 @@ when its row applies.
 
 | When | Read |
 |------|------|
-| Working under `projects/monolith/`, `projects/monolith/web/grimoire/`, `projects/embervm/`, `projects/jomcgi-site/web/` or `projects/factory-landing/web/` | that directory's `AGENTS.md` |
+| Working under `projects/monolith/`, `projects/monolith/web/grimoire/`, `projects/jomcgi-site/web/` or `projects/factory-landing/web/` | that directory's `AGENTS.md` |
 | Factory: connector, broker, reviewer, agents, chart | [factory architecture](../../projects/factory/ARCHITECTURE.md); `projects/factory/REVIEW.md` for its review rules |
 | Factory home cluster request path, authentication and storage | [Platform §1, Clusters](../../projects/platform/ARCHITECTURE.md#1-clusters) · [Factory cluster architecture](../../projects/factory-cluster/ARCHITECTURE.md) |
 | Factory home cluster bootstrap and recovery | [Operator steps](../../projects/factory-cluster/README.md) |
@@ -432,11 +425,10 @@ when its row applies.
 | Security-sensitive change | `docs/security.md`; `docs/THREAT-MODEL.md` for assets, attacker positions and trust boundaries |
 | Public tier: jomcgi.dev, monolith-public, `public_reader` data | `docs/runbooks/public-tier-checklist.md` |
 | ArgoCD OutOfSync, stuck rollout, "is my change live?" | `docs/runbooks/argocd-outofsync.md` |
-| Adding a service | "New service" in Gotchas above, `projects/platform/ARCHITECTURE.md` section 4, `projects/gke-apps/kustomization.yaml` (the live workload list) |
+| Adding a service | "New service" in Gotchas above, `projects/platform/ARCHITECTURE.md` section 4, `projects/platform-factory/kustomization.yaml` (the live workload list) |
 | Observability or alerting | `docs/observability.md` |
 | Frontend or design: tokens, palette, motion, a11y | `.impeccable.md` |
 | Any writing: docs, PRs, commits, comments, tickets, chat, site copy | `docs/writing.md` |
-| Operator changes | `projects/operators/best-practices.md` |
 | How a domain works today | `projects/<domain>/ARCHITECTURE.md`; each `**Why.**` paragraph carries the rationale |
 | Creating or restructuring a README, `ARCHITECTURE.md` or other document | `docs/writing.md` "Document types"; templates in `docs/templates/` |
 | Build, CI, tooling, hooks, Semgrep | `bazel/ARCHITECTURE.md` |

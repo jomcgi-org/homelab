@@ -256,6 +256,25 @@ def test_infer_apps_maps_project_and_hub_paths(monkeypatch):
     assert apps == ["embervm", "monolith"]
 
 
+def test_infer_apps_is_empty_when_the_hub_apps_directory_is_gone(monkeypatch):
+    def gh(*args):
+        raise pr_cmd.LandError("gh api repos/x failed: Not Found (HTTP 404)")
+
+    monkeypatch.setattr(pr_cmd, "_gh", gh)
+
+    assert pr_cmd.infer_apps(["projects/monolith/chart/values.yaml"], "x") == []
+
+
+def test_infer_apps_keeps_other_gh_failures(monkeypatch):
+    def gh(*args):
+        raise pr_cmd.LandError("gh api repos/x failed: HTTP 401")
+
+    monkeypatch.setattr(pr_cmd, "_gh", gh)
+
+    with pytest.raises(pr_cmd.LandError):
+        pr_cmd.infer_apps(["projects/monolith/chart/values.yaml"], "x")
+
+
 def test_reused_chart_receipt_still_requires_the_published_revision(monkeypatch, clock):
     receipt = {
         "commit": {

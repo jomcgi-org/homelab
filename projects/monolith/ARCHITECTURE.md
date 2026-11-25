@@ -1888,7 +1888,7 @@ on each stateless MCP message, while anonymous discovery remains allowed.
 Knowledge search applies the principal-derived retrieval policy described
 below on both the MCP and private HTTP entrypoints. The broader gateway
 architecture, identity limitations, and catalogue refresh behavior are documented in
-[MCP architecture](../mcp/ARCHITECTURE.md).
+[MCP architecture](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/mcp/ARCHITECTURE.md).
 (see: /projects/monolith/auth/middleware.py)
 (see: /projects/mcp/ARCHITECTURE.md)
 

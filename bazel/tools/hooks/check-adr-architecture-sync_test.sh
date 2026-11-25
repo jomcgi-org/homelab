@@ -62,7 +62,7 @@ run_hook() {
 
 expect_reminder() {
 	local file_path="$1"
-	local arch_doc="${2:-projects/embervm/ARCHITECTURE.md}"
+	local arch_doc="${2:-projects/platform/ARCHITECTURE.md}"
 	run_hook "$file_path"
 	if [[ "$EXIT_CODE" -ne 0 ]]; then
 		echo "FAIL: expected exit 0 for $file_path, got $EXIT_CODE" >&2
@@ -91,10 +91,7 @@ expect_silent() {
 
 # Covered config trees: most load-bearing architecture in this repo lives as
 # chart and values comments, so a mechanism edit reminds too.
-expect_reminder "/repo/projects/embervm/chart/values.yaml"
-expect_reminder "/repo/projects/embervm/deploy/values.yaml"
-expect_reminder "/repo/projects/mcp/context-forge-gateway/deploy/values.yaml" "projects/mcp/ARCHITECTURE.md"
-expect_reminder "/repo/projects/mcp/context-forge-gateway/chart/templates/httproute-scoped.yaml" "projects/mcp/ARCHITECTURE.md"
+expect_reminder "/repo/projects/platform/argocd/values.yaml"
 
 # Covered build and CI trees: the tooling rollup put the ci wrapper and the
 # BuildBuddy workflow behind bazel/ARCHITECTURE.md. buildbuddy.yaml is a file,
@@ -102,21 +99,15 @@ expect_reminder "/repo/projects/mcp/context-forge-gateway/chart/templates/httpro
 expect_reminder "/repo/bazel/tools/ci/ci" "bazel/ARCHITECTURE.md"
 expect_reminder "/repo/bazel/tools/ci/affected-targets.sh" "bazel/ARCHITECTURE.md"
 expect_reminder "/repo/buildbuddy.yaml" "bazel/ARCHITECTURE.md"
-# what the two clusters run: the shared charts plus the hub overlays.
+# the shared platform charts.
 expect_reminder "/repo/projects/platform/kargo/values.yaml" "projects/platform/ARCHITECTURE.md"
-expect_reminder "/repo/projects/platform-gke/kustomization.yaml" "projects/platform/ARCHITECTURE.md"
-expect_reminder "/repo/projects/gke-apps/monolith/application.yaml" "projects/platform/ARCHITECTURE.md"
-expect_reminder "/repo/projects/gke-cluster/root/root-application.yaml" "projects/platform/ARCHITECTURE.md"
 
 # Editing an architecture doc itself is not drift.
-expect_silent "/repo/projects/embervm/ARCHITECTURE.md"
-expect_silent "/repo/projects/mcp/ARCHITECTURE.md"
 expect_silent "/repo/bazel/ARCHITECTURE.md"
 expect_silent "/repo/projects/platform/ARCHITECTURE.md"
 
 # Unrelated paths stay silent.
-expect_silent "/repo/projects/embervm/README.md"
-expect_silent "/repo/projects/mcp/README.md"
+expect_silent "/repo/projects/trips/README.md"
 expect_silent "/repo/main.go"
 # bazel/ trees outside the covered ones stay silent.
 expect_silent "/repo/bazel/helm/chart.bzl"

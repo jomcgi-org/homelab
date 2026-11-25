@@ -244,21 +244,6 @@ actions:
             # PR and queue prove image builds without publishing.
             bazel build //bazel/images:push_all --config=ci
 
-            # Check the real push runfiles without invoking crane. Remote tests
-            # alone do not exercise the runner's minimal-download layout.
-            if git diff --name-only "$base_ref" HEAD -- bazel/tools/oci/ bazel/tools/ci/oci_push_layout.py bazel/images/push/ projects/embervm/runtimes/claude/ | grep -q .; then
-              # Restore layer files left remote by the preceding push_all build,
-              # using the same top-level materialisation as the main publisher.
-              layers=$(bazel query 'labels(tars, deps(//projects/embervm/runtimes/claude:image, 3))')
-              if [ -n "$layers" ]; then
-                mapfile -t layer_targets <<<"$layers"
-                bazel build --config=ci --stamp --experimental_check_output_files --remote_download_toplevel "${layer_targets[@]}"
-              fi
-              bazel run //projects/embervm/runtimes/claude:image.push --config=ci --stamp --experimental_check_output_files \
-                --build_runfile_links \
-                --run_under="python3 $PWD/bazel/tools/ci/oci_push_layout.py --push-script"
-            fi
-
             # Reject newly duplicated container environment names.
             ./bazel/helm/ci-diff-manifests.sh
           else
@@ -288,9 +273,6 @@ actions:
               # Run all formatters before source generation and drift writeback.
               bazel run //bazel/tools/format:format --config=ci
 
-              # Copy only the pinned generated Go stubs into tracked sources.
-              bazel run //projects/embervm/proto/embervm/node/v1:update_go_stubs --config=ci
-
               # Validate grep-based generate scripts against bazel query
               ./bazel/images/validate-generate-scripts.sh
 
@@ -318,14 +300,9 @@ actions:
 
           # Verified version-only paths cannot change generated sources. Keep
           # acceptance on every other head, including formatter-bot and queue.
-          # Download stubs even on cache hits so the runfiles check sees them.
           if [ "$WRITE_BACK_ONLY" = false ]; then
-            bazel build --config=ci --remote_download_outputs=toplevel \
-              //projects/embervm/proto/embervm/node/v1:node_go_src \
-              //projects/embervm/proto/embervm/node/v1:nodev1
             bazel test --config=ci //bazel/helm/gazelle:gazelle_test
             bazel test --config=ci //bazel/tools/python:gazelle_python_manifest.test
-            bazel run //projects/embervm/proto/embervm/node/v1:check_go_stubs --config=ci
           fi
 
           # STPA freshness remains advisory, including checker errors.

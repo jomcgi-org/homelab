@@ -144,7 +144,6 @@ WRAPPER
         tar -cf $@ -C "$$WORK" .
         rm -rf "$$WORK"
     """,
-    visibility = ["//projects/embervm/runtimes:__subpackages__"],
 )
 
 # Package the homelab CLI into the tools image.

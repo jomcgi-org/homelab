@@ -56,16 +56,14 @@ current state, its direction and the reasons.
 - [**Factory**](projects/factory/): the umbrella chart, connector, broker and reviewer above. Reusable for other repositories through a repository binding.
 - [**Capacity forecast**](projects/capacity-forecast/): shadow memory forecasts for factory reviewers, with a baseline comparison in Grafana.
 - [**Factory home cluster**](projects/factory-cluster/): node bootstrap and ArgoCD root. [platform-factory](projects/platform-factory/) holds one Application for each shared component.
-- [**Monolith**](projects/monolith/): knowledge graph, Discord bot, Grimoire and the private apps, with a [read-only public tier](projects/monolith-public/) and an [agent-facing MCP tier](projects/monolith-agents/).
+- [**Monolith**](projects/monolith/): knowledge graph, Discord bot, Grimoire and the private apps, with a [read-only public tier](projects/monolith-public/).
 - [**Knowledge pipeline**](projects/monolith/knowledge/): LLM extraction turns markdown into structured facts in pgvector, searchable through MCP tools.
 - [**Public site**](projects/jomcgi-site/): static Astryx pages on a Cloudflare Worker. It replaces the monolith's public pages section by section.
 - [**Trips**](projects/trips/) stages a Go service for private photo uploads and a daily export of approved trip points and photo derivatives.
 - [**Scotland connector**](projects/scotland-connector/): Go service that answers Scottish dark-sky and walk-weather questions over REST and MCP.
-- [**oom-inference**](projects/oom-inference/): Rust inference engine that serves a 125B mixture-of-experts model from a 24 GB GPU. See its [architecture](projects/oom-inference/docs/dev/architecture.md).
-- [**OCI Model Cache**](projects/operators/oci-model-cache/) and [**Sextant**](projects/sextant/): a Kubernetes operator that syncs HuggingFace models to OCI registries, and the generator that turns its YAML state machine into type-safe Go.
 - [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against.
 - [**Build system**](bazel/): Bazel rules for Helm and OCI images. Builds run remotely on BuildBuddy.
-- [**EmberVM**](projects/embervm/) and its [Firecracker components](projects/firecracker/): microVM orchestrator, retired on 2026-11-15 ([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6893155810)). HOME-476 removed it from the hub's GitOps tree; its code stays in the repository.
+- **Retired hub code**: EmberVM, the Firecracker guests, oom-inference, the OCI Model Cache operator, Sextant, model-bench and the GKE hub overlays were deleted with the hub (HOME-262). Tag [`hub-final`](https://github.com/jomcgi-org/homelab/tree/hub-final) keeps them.
 
 ## Applications
 
@@ -112,20 +110,8 @@ projects/               # Services, operators and sites, each with its deploy co
 ├── platform/           #   Shared charts (ArgoCD, Envoy Gateway, OTel collector, Renovate)
 ├── monolith/           #   Knowledge graph, Discord bot, Grimoire, private and public apps
 ├── monolith-public/    #   Read-only public replica of the monolith
-├── monolith-agents/    #   Agent-facing MCP tier, with no cluster RBAC
-├── mcp/                #   Context Forge gateway and MCP servers
 ├── scotland-connector/ #   Scottish dark-sky and walk-weather service
-├── inference/          #   Inference configuration and llama.cpp embeddings
-├── oom-inference/      #   Inference engine for models bigger than memory (Rust)
-├── operators/          #   Kubernetes operators
-├── sextant/            #   State-machine code generator for operators
-├── design-system/      #   Shared design tokens
-├── loom/               #   Default-off Postgres control-plane wiring
-├── gke-cluster/        #   GKE hub: ArgoCD root and parent Application
-├── gke-apps/           #   GKE hub: one Application for each workload
-├── platform-gke/       #   GKE hub: infrastructure overlays
-├── embervm/            #   Retired Firecracker microVM orchestrator
-└── firecracker/        #   Guest images and utilities that EmberVM used
+└── design-system/      #   Shared design tokens
 bazel/                  # Build rules, tools and images
 docs/                   # Cross-domain documentation and runbooks
 ```

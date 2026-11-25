@@ -40,27 +40,6 @@ Direct Go tests are also supplemental evidence. They do
 not reproduce Bazel's hermetic dependency graph, target selection, hosted
 services or full CI coverage. No global `SKIP_REMOTE` setting is added.
 
-For Ember, the Go protobuf stubs are tracked (`node.pb.go` and
-`node_grpc.pb.go`, #7066), so the tests need no generation step:
-
-```bash
-source /workspace/.cloud/local-tests/env.sh
-go test ./projects/embervm/noded/server \
-  ./projects/embervm/noded/fcvm/driver ./projects/embervm/noded/config
-```
-
-After editing `node.proto`, regenerate the two stubs for a local run:
-
-```bash
-protoc -I projects/embervm/proto \
-  --go_out=projects/embervm/proto --go_opt=paths=source_relative \
-  --go-grpc_out=projects/embervm/proto --go-grpc_opt=paths=source_relative \
-  embervm/node/v1/node.proto
-```
-
-CI's `update_go_stubs` writeback and `check_go_stubs` stay authoritative for
-the committed bytes.
-
 For a targeted factory check:
 
 ```bash

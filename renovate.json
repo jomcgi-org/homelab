@@ -128,16 +128,6 @@
     },
     {
       "customType": "regex",
-      "description": "Polylane consumes a separate digest field; update it with the cloudflared tag.",
-      "managerFilePatterns": ["/^projects/platform/polylane/values\\.yaml$/"],
-      "matchStrings": [
-        "repository: \"?(?<depName>(?:docker\\.io/)?cloudflare/cloudflared)\"?\\s+tag: \"?(?<currentValue>[^\"\\s]+)\"?\\s+digest: \"?(?<currentDigest>sha256:[a-f0-9]{64})\"?"
-      ],
-      "datasourceTemplate": "docker",
-      "versioningTemplate": "docker"
-    },
-    {
-      "customType": "regex",
       "description": "Factory 1Password Connect api image: the chart tag and digest ride on one version value (HOME-287).",
       "managerFilePatterns": [
         "/^projects/platform/onepassword/values-factory\\.yaml$/"
@@ -390,16 +380,6 @@
       "versioning": "regex:^rust-v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
     },
     {
-      "description": "The custom manager owns Polylane cloudflared tag and separate digest together.",
-      "matchManagers": ["helm-values"],
-      "matchFileNames": ["projects/platform/polylane/values.yaml"],
-      "matchPackageNames": [
-        "cloudflare/cloudflared",
-        "docker.io/cloudflare/cloudflared"
-      ],
-      "enabled": false
-    },
-    {
       "description": "Keep both cloudflared deployments on the same release.",
       "matchPackageNames": [
         "cloudflare/cloudflared",
@@ -423,14 +403,10 @@
     "managerFilePatterns": ["/(^|/)values(?:-[^/]+)?\\.ya?ml$/"]
   },
   "kubernetes": {
-    "managerFilePatterns": [
-      "/^projects/(?:platform-gke|gke-apps)/.+\\.ya?ml$/",
-      "/^projects/[^/]+/deploy/[^/]+\\.ya?ml$/"
-    ]
+    "managerFilePatterns": ["/^projects/[^/]+/deploy/[^/]+\\.ya?ml$/"]
   },
   "pip_requirements": {
     "managerFilePatterns": [
-      "/^projects/model-bench/requirements-venv\\.txt$/",
       "/^bazel/requirements/overrides\\.txt$/"
     ]
   },

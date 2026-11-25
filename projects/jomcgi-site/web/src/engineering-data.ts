@@ -90,7 +90,7 @@ export const projects: EngineeringProject[] = [
     links: [
       {
         label: "projects/firecracker",
-        href: "https://github.com/jomcgi/homelab/tree/main/projects/firecracker",
+        href: "https://github.com/jomcgi/homelab/tree/hub-final/projects/firecracker",
       },
     ],
   },
@@ -127,7 +127,7 @@ export const projects: EngineeringProject[] = [
     links: [
       {
         label: "projects/embervm",
-        href: "https://github.com/jomcgi/homelab/tree/main/projects/embervm",
+        href: "https://github.com/jomcgi/homelab/tree/hub-final/projects/embervm",
       },
     ],
   },
@@ -234,7 +234,7 @@ export const projects: EngineeringProject[] = [
     links: [
       {
         label: "projects/operators/oci-model-cache",
-        href: "https://github.com/jomcgi/homelab/tree/main/projects/operators/oci-model-cache",
+        href: "https://github.com/jomcgi/homelab/tree/hub-final/projects/operators/oci-model-cache",
       },
     ],
   },
@@ -275,7 +275,7 @@ export const projects: EngineeringProject[] = [
     links: [
       {
         label: "projects/sextant",
-        href: "https://github.com/jomcgi/homelab/tree/main/projects/sextant",
+        href: "https://github.com/jomcgi/homelab/tree/hub-final/projects/sextant",
       },
     ],
   },

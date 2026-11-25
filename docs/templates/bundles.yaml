@@ -22,9 +22,7 @@
     "collection": {
       "paths": [
         "projects/platform",
-        "projects/platform-factory",
-        "projects/platform-gke",
-        "projects/gke-apps"
+        "projects/platform-factory"
       ],
       "requires": [
         {

@@ -12,19 +12,11 @@
 # Generators covered (each self-locates via BUILD_WORKSPACE_DIRECTORY, so this
 # wrapper only cd's to the workspace and invokes them):
 #   - the push-all BUILD list, monolith routes, the posts manifest, the ADR 036
-#     orchestrator context bundle (orchestrator_bundle.md), and the guest
-#     env-readmes (ADR agents/044:
-#     environment.md per guest image, derived from that guest's
-#     apko.lock.json + env-notes.md).
+#     orchestrator context bundle (orchestrator_bundle.md).
 #
 # Deliberately NOT here: the repo-docs and public docs manifests. They are
 # build outputs of genrules (#6446), never committed, so nothing regenerates
 # or checks them in; validate-generate-scripts.sh checks their inputs instead.
-#
-# Go protobuf copies are also outside this script: BuildBuddy runs
-# //projects/embervm/proto/embervm/node/v1:update_go_stubs after the parallel
-# format batch, then :check_go_stubs on every head. That target consumes pinned
-# Bazel outputs; invoking Bazel here would nest a client inside :format.
 #
 # Deliberately NOT here: sync-helm-deps and atlas-checksum generation. They need
 # helm/atlas CLIs that are not in the CI format runner and have their own gates;
@@ -44,17 +36,6 @@ run() {
 	"$@" &
 	pids+=($!)
 }
-
-# Guest env-readmes run serially BEFORE the parallel batch, so a failing one
-# exits before the rest start. (They were ordered ahead of the doc-manifest
-# generators, which read environment.md; those are genrules now, #6446.)
-for sandbox_lang in python go rust elixir ocaml javascript; do
-	python3 ./projects/firecracker/tools/env_readme/gen_env_readme.py \
-		--lock "projects/firecracker/sandbox/${sandbox_lang}/apko.lock.json" \
-		--title "${sandbox_lang} sandbox guest environment" \
-		--notes "projects/firecracker/sandbox/${sandbox_lang}/env-notes.md" \
-		--out "projects/firecracker/sandbox/${sandbox_lang}/environment.md" || exit 1
-done
 
 run ./bazel/images/generate-push-all.sh
 run ./projects/monolith/generate-routes.sh

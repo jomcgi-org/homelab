@@ -20,7 +20,7 @@ Direct `bazel` on the Mac is blocked by a Claude hook (`bazel/tools/hooks/prefer
 
 ## 2. The Bazel graph
 
-bzlmod only (`MODULE.bazel`, no WORKSPACE). Language rulesets: `rules_go` with Gazelle and a `nogo` set (`bazel/tools/lint`), `aspect_rules_py` over a `rules_python` 3.13.9 toolchain (the stripped python-build-standalone tarballs, about a fifth of the size in every test's runfiles), `aspect_rules_js` on pnpm 10 (`rules_ts` and `rules_esbuild` were dropped in #6913 once no target loaded them), `rules_oci` and `rules_apko`, `rules_multitool`, `rules_multirun`, `aspect_rules_lint`, `rules_shell`, and `toolchains_buildbuddy` for the RBE C++ toolchain. Three in-repo rulesets: `bazel/helm`, `bazel/erlang`, `bazel/tla`. Binaries no ruleset provides (firecracker, k3s, the claude, codex and pi CLIs) are vendored by the `multiarch_http_file` and component-specific repo rules in `bazel/tools/http`, sha256-pinned per arch, with the comment on each `MODULE.bazel` entry recording why that pin and that arch set.
+bzlmod only (`MODULE.bazel`, no WORKSPACE). Language rulesets: `rules_go` with Gazelle and a `nogo` set (`bazel/tools/lint`), `aspect_rules_py` over a `rules_python` 3.13.9 toolchain (the stripped python-build-standalone tarballs, about a fifth of the size in every test's runfiles), `aspect_rules_js` on pnpm 10 (`rules_ts` and `rules_esbuild` were dropped in #6913 once no target loaded them), `rules_oci` and `rules_apko`, `rules_multitool`, `rules_multirun`, `aspect_rules_lint`, `rules_shell`, and `toolchains_buildbuddy` for the RBE C++ toolchain. Three in-repo rulesets: `bazel/helm`, `bazel/erlang`, `bazel/tla`. Binaries no ruleset provides (goose, egctl, envoy) are vendored by the `multiarch_http_file` and component-specific repo rules in `bazel/tools/http`, sha256-pinned per arch, with the comment on each `MODULE.bazel` entry recording why that pin and that arch set.
 
 Python dependencies are `@pip//<package>` from the pip hub over `bazel/requirements/all.txt`; `requirement()` syntax is wrong here. The lock is layered: `pyproject.toml` compiles to `runtime.txt`, which constrains `test.in`; `bazel run //bazel/requirements:runtime` and `:requirements.all` regenerate them (`bazel/tools/format/update-python-requirements.sh`).
 
@@ -36,17 +36,8 @@ Python dependencies are `@pip//<package>` from the pip hub over `bazel/requireme
 
 When ordinary tooling needs generated source files, check in only those
 outputs and keep their pinned Bazel generator authoritative (#7066).
-EmberVM's `node_go_src` generates under `generated/` in the Bazel output tree;
-`nodev1` consumes those outputs. The two checked-in Go copies serve plain Go.
-`update_go_stubs` copies them after the parallel format batch finishes, outside
-`run-generators.sh`. The existing PR writeback stages tracked changes with
-`git add -u` and refuses writes to main or merge-queue refs.
-
-`check_go_stubs` compares both copies byte for byte after the writeback
-decision, including on bot-authored heads that skip formatting. The Linux
-workflow explicitly builds `node_go_src` and `nodev1`, resolves their `go_deps`
-plugin repositories, and runs `//bazel/helm/gazelle:gazelle_test`. Elixir
-generation and all other build artifacts keep their existing output policy.
+Its first user, EmberVM's `node.proto` Go stubs and their CI copy and drift
+steps, was deleted with the hub (HOME-262).
 
 **Why.** Bazel-only Go protobuf files left a fresh checkout unable to run root
 `go build`, `go vet`, or `go mod tidy`. Two tracked copies support those tools
@@ -169,9 +160,9 @@ The pre-push hook runs `ci test` only under `RUN_CI_TEST=1`: every push is teste
 
 ## 6. Formatting, generators and guards
 
-`//bazel/tools/format:format` is a multirun of four commands: `run_generators`, `format_code` (gofumpt, prettier, ruff, shfmt, buildifier through `aspect_rules_lint`), `format_svelte` (the same hermetic prettier with `prettier-plugin-svelte`, since rules_lint has no Svelte dialect), and `//:gazelle`. `run-generators.sh` is the single list of committed-artifact generators, run by both CI and `ci regen`: the `push_all` BUILD, the monolith routes, the posts manifest, the orchestrator bundle, and the per-guest `environment.md` files. `sync-helm-deps.sh` and the Atlas checksum update need `helm` and `atlas`, which the CI runner lacks. Local `ci regen` syncs vendored Helm dependencies when Chart.yaml, Chart.lock or charts/*.tgz changes; for library-template-only changes, run `./bazel/tools/format/sync-helm-deps.sh` directly. The migration pre-commit hook runs `update-atlas-sum.sh`. CI enforces both invariants read-only. BUILD generation through Gazelle stays in CI's Format stage.
+`//bazel/tools/format:format` is a multirun of four commands: `run_generators`, `format_code` (gofumpt, prettier, ruff, shfmt, buildifier through `aspect_rules_lint`), `format_svelte` (the same hermetic prettier with `prettier-plugin-svelte`, since rules_lint has no Svelte dialect), and `//:gazelle`. `run-generators.sh` is the single list of committed-artifact generators, run by both CI and `ci regen`: the `push_all` BUILD, the monolith routes, the posts manifest, and the orchestrator bundle. `sync-helm-deps.sh` and the Atlas checksum update need `helm` and `atlas`, which the CI runner lacks. Local `ci regen` syncs vendored Helm dependencies when Chart.yaml, Chart.lock or charts/*.tgz changes; for library-template-only changes, run `./bazel/tools/format/sync-helm-deps.sh` directly. The migration pre-commit hook runs `update-atlas-sum.sh`. CI enforces both invariants read-only. BUILD generation through Gazelle stays in CI's Format stage.
 
-**Why.** Rust formatting belongs to `cargo fmt --all -- --check` from `projects/oom-inference`, using its `rust-toolchain.toml`. The removed direct `rules_rust` dependency and Rust 1.75 extension served only `format_code` (#7082). Omitting `rust` from `format_multirun` disables that language; `.bazelignore` alone does not exclude tracked Rust files from the formatter's Git selection. `format_code_test` exercises the generated runner with invalid tracked Rust and checks that the remaining configured formatters accept formatted files and reject drift.
+**Why.** `format_code` formats no Rust. The removed direct `rules_rust` dependency and Rust 1.75 extension served only `format_code` (#7082). Omitting `rust` from `format_multirun` disables that language; `.bazelignore` alone does not exclude tracked Rust files from the formatter's Git selection. `format_code_test` exercises the generated runner with invalid tracked Rust and checks that the remaining configured formatters accept formatted files and reject drift.
 
 CI guards each have their pure logic pinned by a bazel test. `central_build_ratchet.py` runs before tests and rejects new semantic `gazelle:exclude` directives and named-package globs in `projects/monolith/BUILD`. `chart_version_guard.py` runs beside it and rejects a PR that moves a published chart's `Chart.yaml` `version:` or raises the `targetRevision:` the bot writes for it (ADR platform/009: those lines belong to `chart-version-bot` after merge). Its scope mirrors `write-back-versions.sh`, so files the bot never writes stay hand-editable, and lowering a pin stays allowed as the revert lever. `source_ratchet.py` replaces the custom Semgrep rules removed in #4777 as a ratchet: it fails a PR that adds a new hand-pinned digest on a repo-built image, an in-cluster URL in source, sync Session I/O in `async def`, a Session passed to a thread, `session.add` in a loop, or a `kubectl` write in a script, and grandfathers what already exists. A line opts out with a `ratchet-allow: <rule> (<reason>)` comment. The format stage runs `validate-generate-scripts.sh` (the grep-based generators agree with `bazel query`, and every tracked doc the doc manifests index is in `//projects/monolith:repo_docs_srcs`), `check-migration-ordering.sh` (linear, non-duplicated Atlas versions), `check-commit-msg-ascii.sh --all` (Wrangler rejects non-ASCII commit titles), `validate-hooks-executable.sh` (every hook in `.claude/settings.json` exists and is executable), `check_readme_structure.py` (root README links resolve and every `projects/*` is mentioned or allowlisted), `check_doc_links.py` (every ADR path reference resolves, over `git ls-files`, which is what makes deleting a harvested ADR safe), and `check_helm_deps.py` (vendored chart tarballs match their `file://` source and no chart pins a build-timestamped tag).
 
@@ -207,11 +198,11 @@ The repo used to carry its own layer: `semgrep_test` / `semgrep_target_test` / `
 
 ## 9. Erlang and TLA+
 
-Both are build-time-only toolchains for EmberVM, vendored prebuilt rather than built. `bazel/erlang` fetches the hex.pm OTP build compiled for the executor's Ubuntu 22.04 (so crypto links the executor's libssl with no provisioning), Elixir, and the hex dependency tarballs as `http_file`s that the `mix_*.sh` drivers unpack into `deps/` as path deps, so mix never contacts hex.pm; the deployed control plane gets its OTP from Wolfi. `bazel/tla` fetches `tla2tools.jar` (v1.7.4, the last tag whose asset is immutable) and a Temurin 21 JRE for the TLC checks over `projects/embervm/specs`, with `tlc.sh` reporting INCOMPLETE rather than PASS when `stopAfter` truncates a run.
+Both are build-time-only toolchains, vendored prebuilt rather than built. Their only user, EmberVM, was deleted with the hub (HOME-262); tag `hub-final` keeps its control plane and specs. `bazel/erlang` fetches the hex.pm OTP build compiled for the executor's Ubuntu 22.04 (so crypto links the executor's libssl with no provisioning), Elixir, and the hex dependency tarballs as `http_file`s. `bazel/tla` fetches `tla2tools.jar` (v1.7.4, the last tag whose asset is immutable) and a Temurin 21 JRE, with `tlc.sh` reporting INCOMPLETE rather than PASS when `stopAfter` truncates a run.
 
 Their suites are genrules, not test rules, tagged `verification` so `affected-targets.sh` selects them by tag (#5538); they never appear in the `Executed N out of M` count, and a failure surfaces as a build failure. `verification_genrule_guard.py` rejects untagged suite-shaped names (`tlc_*`, `*_smoke`, `*_test`) before selection, including in new packages. Other names remain outside its heuristic.
 
-(see: `bazel/erlang/repositories.bzl`, `bazel/tla/repositories.bzl`, `projects/embervm/control/BUILD`, `projects/embervm/specs/BUILD`)
+(see: `bazel/erlang/repositories.bzl`, `bazel/tla/repositories.bzl`)
 
 **Why.** Prebuilt OTP and a vendored JRE were chosen over hermetic rules_erlang and rules_java toolchains because the executor is a known Ubuntu 22.04 image and nothing deployed depends on either artifact; the cost is a pin that moves by hand. The suites stayed genrules rather than test rules because the mix and TLC drivers own their own process lifecycle, and a tag is the cheapest way to make the affected-target walk see them.
 

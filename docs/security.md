@@ -435,12 +435,10 @@ which is why the list above states enforcement rather than intent.
 |---------|-------------|
 | Ingress allowlist | `projects/*/chart/templates/httproute*.yaml`, rendered onto `cloudflare-ingress` |
 | Cloudflare Access JWT | `projects/platform/cf-ingress-library/templates/_security-policy.tpl` |
-| authentik OIDC lanes | `projects/platform/authentik/blueprints/`, `projects/monolith/chart/templates/httproute-friends.yaml`, `projects/mcp/context-forge-gateway/chart/templates/httproute-preview.yaml` |
+| authentik OIDC lanes | `projects/platform/authentik/blueprints/`, `projects/monolith/chart/templates/httproute-friends.yaml` |
 | Identity header strip | `projects/platform/cloudflare-gateway/templates/client-traffic-policy.yaml` |
-| Bearer verification | `projects/monolith/auth/`, `projects/monolith-agents/` (`auth:` values) |
-| MCP tool visibility | `projects/mcp/context-forge-gateway/deploy/values.yaml` (`tools.visibility`, teams) |
-| Workload identity issuance | `projects/platform/spire/values.yaml` (`clusterSPIFFEIDs`) |
-| Tailnet access | `projects/platform-gke/tailscale/values.yaml` (`apiServerProxyAdmins`, `egressServices`), `projects/monolith/chart/templates/service-tailnet.yaml` |
+| Bearer verification | `projects/monolith/auth/` |
+| Tailnet access | `projects/monolith/chart/templates/service-tailnet.yaml` |
 | Pod network policy | none on the hub beyond the Context Forge redis rule; `projects/monolith/chart/templates/networkpolicy-egress.yaml` is gated off in `values-gke.yaml` |
 | Secrets | `OnePasswordItem` CRs per chart; operator is the `connect` Helm release outside git |
 | Public data isolation | `public_reader` and `public_writer` grants, `main_public_imports_test`, `public_httproute_chat_guard_test`, `chat_public_grants_test`, `check-public-reader-grant.sh` |

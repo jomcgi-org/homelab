@@ -47,7 +47,6 @@ gazelle_binary(
         "@gazelle//language/proto",
         "@rules_python_gazelle_plugin//python",
     ],
-    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
 )
 
 gazelle(
@@ -63,17 +62,6 @@ gazelle(
     },
     gazelle = ":gazelle_binary",
     visibility = ["//bazel/tools/format:__pkg__"],
-)
-
-filegroup(
-    name = "gazelle_runtime_inputs",
-    srcs = [
-        "BUILD",
-        "MODULE.bazel",
-        "go.mod",
-        "go.sum",
-    ],
-    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
 )
 
 exports_files(
@@ -101,7 +89,6 @@ sh_test(
     ],
     data = [
         "docs/agents/stpa.md",
-        "//projects:stpa_model",
         "//projects/monolith:stpa_model",
         "@jq_toolchains//:resolved_toolchain",
     ],
@@ -116,23 +103,13 @@ sh_test(
     ],
 )
 
-# The EmberVM chart test that couples hypervisorEpoch to the vendored
-# Firecracker version (#4409) reads the kata_firecracker_archive pin from here.
-# The claude guest toolchain guard (#6642) reads go.mod and MODULE.bazel to pin
-# the go, node and pnpm streams the guest ships.
+# The factory harness toolchain guards read MODULE.bazel.
 exports_files(
     ["MODULE.bazel"],
     visibility = [
-        "//projects/embervm/chart:__pkg__",
-        "//projects/embervm/runtimes/claude:__pkg__",
         "//projects/factory/harness/claude:__pkg__",
         "//projects/factory/harness/codex:__pkg__",
     ],
-)
-
-exports_files(
-    ["go.mod"],
-    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
 )
 
 # The guard tests of the Pro engine image workflow read this file (they used to

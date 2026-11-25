@@ -1,22 +1,5 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
-filegroup(
-    name = "smoke_sources",
-    srcs = glob(["*.go"]) + ["BUILD"],
-    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
-)
-
-filegroup(
-    name = "runtime_inputs",
-    srcs = [
-        "BUILD",
-        "config.go",
-        "generate.go",
-        "language.go",
-    ],
-    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
-)
-
 go_library(
     name = "gazelle",
     srcs = [
@@ -44,10 +27,6 @@ go_test(
         "generate_layout_test.go",
         "generate_test.go",
         "language_test.go",
-    ],
-    data = [
-        "//projects/mcp/context-forge-gateway/deploy:BUILD",
-        "//projects/mcp/context-forge-gateway/deploy:application.yaml",
     ],
     embed = [":gazelle"],
     deps = [

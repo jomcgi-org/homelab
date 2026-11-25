@@ -1,17 +1,14 @@
 """Tests for the EmberVM Workload CR client (faas.workload).
 
 The kubernetes_asyncio CustomObjectsApi is faked and injected via a monkeypatched
-``_custom_objects_api`` factory. Covers build_workload_spec's shape (must match
-the CRD sample), the create-then-409-patch upsert path, and wait_ready's
-condition handling (Ready True, Ready False early exit, timeout).
+``_custom_objects_api`` factory. Covers build_workload_spec's shape, the
+create-then-409-patch upsert path, and wait_ready's condition handling
+(Ready True, Ready False early exit, timeout).
 """
 
 from __future__ import annotations
 
-import os
-
 import pytest
-import yaml
 from kubernetes_asyncio.client import exceptions as k8s_exceptions
 
 from faas import workload
@@ -87,32 +84,6 @@ def test_build_workload_spec_matches_crd_sample():
         "concurrency": {"floor": 1, "cap": 4},
         "invocation": {"timeoutSeconds": 30},
     }
-
-
-def test_build_workload_spec_shape_equals_checked_in_sample():
-    # Guard against drift from the committed echo sample's spec block.
-    sample_path = "projects/embervm/crd/samples/workload-echo-fn.yaml"
-
-    # Walk up to the repo root so the test runs from the bazel runfiles too.
-    here = os.path.dirname(os.path.abspath(__file__))
-    root = here
-    for _ in range(8):
-        candidate = os.path.join(root, sample_path)
-        if os.path.exists(candidate):
-            sample = yaml.safe_load(open(candidate))
-            zip_src = sample["spec"]["source"]["zip"]
-            built = workload.build_workload_spec(
-                code_uri=zip_src["codeUri"],
-                sha256=zip_src["sha256"],
-                handler=zip_src["handler"],
-            )
-            assert built["source"]["zip"].keys() == zip_src.keys()
-            assert built["resources"] == sample["spec"]["resources"]
-            assert built["concurrency"] == sample["spec"]["concurrency"]
-            assert built["invocation"] == sample["spec"]["invocation"]
-            return
-        root = os.path.dirname(root)
-    pytest.fail(f"{sample_path} not found above {here}")
 
 
 # --------------------------------------------------------------------------- #

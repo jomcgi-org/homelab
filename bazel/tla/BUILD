@@ -1,17 +1,10 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
-# Prebuilt TLC model checker for the EmberVM TLA+ pilot (ADR embervm/006).
+# Prebuilt TLC model checker. Its only user, the EmberVM TLA+ pilot, was
+# deleted with the hub (HOME-262; tag hub-final keeps it).
 # See repositories.bzl for why a prebuilt jar + vendored JRE (not a hermetic
 # rules_java toolchain) are used here.
-
-# The tlc.sh driver is consumed by the //projects/embervm/specs TLC genrules
-# (the pilot spec checks). No smoke genrule lives here: those spec checks are the
-# smoke that exercises this toolchain end to end.
-exports_files(
-    ["tlc.sh"],
-    visibility = ["//projects/embervm:__subpackages__"],
-)
 
 bzl_library(
     name = "repositories",

@@ -1,5 +1,0 @@
-# GKE hub destination overrides, layered after deploy/values.yaml by
-# projects/gke-apps/monolith-agents/application.yaml.
-
-# No destination-specific values remain after inert policy removal (#5816).
-{}

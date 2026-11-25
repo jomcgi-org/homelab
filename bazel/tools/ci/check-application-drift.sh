@@ -34,7 +34,7 @@
 set -euo pipefail
 
 CONTEXT="${1:-$(kubectl config current-context)}"
-CLUSTER_PATH="${CLUSTER_PATH:-projects/gke-cluster}"
+CLUSTER_PATH="${CLUSTER_PATH:-projects/factory-cluster}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$repo_root"
@@ -57,12 +57,12 @@ kubectl kustomize "$CLUSTER_PATH" >"$rendered/all.yaml"
 #                           promoted app and is the one thing this check must not
 #                           shout about. Everything else in `sources` is fair
 #                           game, which is precisely the blind spot being closed.
-# The root Application and its parent `hub-root` are committed but deliberately
+# The root Application and its parent `factory-root` are committed but deliberately
 # absent from that kustomization: neither may manage itself. Without this they
-# would be the objects outside their own check, and hub-root's apply is manual,
+# would be the objects outside their own check, and factory-root's apply is manual,
 # which is exactly the way git and the cluster drift apart unnoticed.
 # Space-separated list of files.
-ROOT_APPLICATION="${ROOT_APPLICATION:-$CLUSTER_PATH/root/root-application.yaml $CLUSTER_PATH/hub-root-application.yaml}"
+ROOT_APPLICATION="${ROOT_APPLICATION:-$CLUSTER_PATH/root/root-application.yaml $CLUSTER_PATH/factory-root-application.yaml}"
 
 python3 - "$rendered/all.yaml" "$CONTEXT" "$ROOT_APPLICATION" <<'PY'
 import json

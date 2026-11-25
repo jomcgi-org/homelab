@@ -62,7 +62,7 @@ The flag requires HTTP probes and the shared OTLP receiver to be enabled, and
 is independent of the Argo CD CA mount. The rendered upstream Loom chart has no
 NetworkPolicies; reachability still needs live validation. Switch the probe
 to `/healthz` when weave-hand/loom#694 ships. See
-[Loom staged monitoring](../projects/loom/deploy/README.md#staged-monitoring-6604)
+[Loom staged monitoring](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/loom/deploy/README.md#staged-monitoring-6604)
 for the enable order and live acceptance checks.
 
 ## Collector metamonitoring
@@ -147,7 +147,7 @@ namespaces, and anything below WARN, still stay only in the pod logs.
 
 Honeycomb's free plan allows exactly one trigger. It is spent on
 `jomcgi.dev /health composite unhealthy` (`aJgkA4vC2m8`), kept as code in
-[`projects/platform/honeycomb/`](../projects/platform/honeycomb/README.md)
+[`projects/platform/honeycomb/`](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/platform/honeycomb/README.md)
 and applied with its `sync.py`, which refuses to plan more than one trigger.
 It fires when the httpcheck probe of `https://jomcgi.dev/health` is non-2xx
 for two consecutive 5-minute evaluations and notifies the Discord webhook
@@ -195,9 +195,9 @@ restart watcher, and chart lag is the advisory `cd` component.
 ## Staged Loom monitoring
 
 Loom's probe and backup-age telemetry remain default-off pending #6605 and
-the [staged monitoring checks in #6604](../projects/loom/deploy/README.md#staged-monitoring-6604).
+the [staged monitoring checks in #6604](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/loom/deploy/README.md#staged-monitoring-6604).
 There are no Loom probe, backup-age or checker-absence Honeycomb trigger specs;
-the [one-trigger policy](../projects/platform/honeycomb/README.md) reserves the
+the [one-trigger policy](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/platform/honeycomb/README.md) reserves the
 only trigger for the public health composite. The signals are available for
 investigation after enablement and do not create Loom alert notifications.
 The shared checker and private backup advisory below are enabled for the three
@@ -287,8 +287,8 @@ false through Git to disable this path; existing backup schedules are unchanged.
   `projects/platform/otel-collector/values.yaml`
 - Hub overrides, probe targets, pod-log namespaces and the Honeycomb protocol:
   `projects/platform/otel-collector/values-gke.yaml`
-- Honeycomb trigger specs and `sync.py`: `projects/platform/honeycomb/`
-- Disabled cluster-wide injection: `projects/platform/kyverno/values.yaml`
+- Honeycomb trigger specs, `sync.py` and the disabled Kyverno injection were
+  deleted with the hub (HOME-262); tag `hub-final` keeps them.
 - Monolith health components and Discord alerts:
   `projects/monolith/factory/ops_health.py`,
   `projects/monolith/factory/health_alerts.py`, chart values `healthAlerts`
