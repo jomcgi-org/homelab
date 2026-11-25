@@ -120,6 +120,7 @@ func TestOutboxKindCheckAllowsEveryKind(t *testing.T) {
 	for _, kind := range []string{
 		store.OutboxResult, store.OutboxComment, store.OutboxIssueDone, store.OutboxIssueReviewing,
 		store.OutboxDeferredStart, store.OutboxReviewFollowup, store.OutboxActivation, "retain", "assessment",
+		"manual_goal_feedback",
 	} {
 		if !strings.Contains(def, "'"+kind+"'") {
 			t.Errorf("outbox_kind_check %s does not allow %q", def, kind)

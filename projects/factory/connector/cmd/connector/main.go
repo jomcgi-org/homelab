@@ -404,12 +404,16 @@ func run(log *slog.Logger) error {
 	}
 	var statusGitHub status.GitHub
 	if cfg.BrokerURL != "" {
-		statusGitHub = &github.Client{
+		reader := &github.Client{
 			BaseURL: cfg.GitHubURL, HTTP: statusHTTP, RateLimit: githubLimits, ETags: githubETags,
 			Tokens: &github.BrokerTokens{
 				URL: cfg.BrokerURL, HTTP: statusHTTP,
 				Bearer: &kagent.TokenSource{Path: cfg.BrokerTokenFile},
 			},
+		}
+		statusGitHub = reader
+		if u := cfg.File.ReviewerGoalURL; u != "" {
+			eng.EnableManualGoalFeedback(statusPlan, reader, &dispatch.GoalReasonsClient{BaseURL: u, HTTP: statusHTTP})
 		}
 	}
 	statusSource := &status.Source{

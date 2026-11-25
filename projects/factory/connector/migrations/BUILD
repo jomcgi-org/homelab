@@ -66,6 +66,7 @@ go_library(
         "20261125120000_assessment.sql",
         "20261125130000_analysis_task_main.sql",
         "20261125130001_reviewer_task_pin.sql",
+        "20261125140000_manual_goal_feedback.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

@@ -187,6 +187,35 @@ type ActivationAssessment struct {
 	Text    string `json:"text"`
 }
 
+// GoalAssessment binds private feedback to the public review checkpoint.
+type GoalAssessment struct {
+	Head          string `json:"head"`
+	Digest        string `json:"digest"`
+	ReplyRevision int64  `json:"replyRevision,omitempty"`
+	Issue         string `json:"-"`
+}
+
+// ReviewedGoal reads an unambiguous, current checkpoint. Its caller must
+// authenticate the check's App, external ID, and head.
+func ReviewedGoal(text, head, issue string) *GoalAssessment {
+	var state struct {
+		Goal          *GoalAssessment `json:"goal"`
+		GoalKey       string          `json:"goalKey"`
+		IssueDigest   string          `json:"issueDigest"`
+		IssuesPending bool            `json:"issuesPending"`
+		Incomplete    bool            `json:"incomplete"`
+		Overflow      bool            `json:"overflow"`
+	}
+	if !decodeReviewState(text, &state) || state.Goal == nil ||
+		state.GoalKey == "" || (issue != "" && state.GoalKey != issue) ||
+		state.Goal.Head != head || state.Goal.Digest != state.IssueDigest ||
+		state.IssueDigest == "" || state.IssuesPending || state.Incomplete || state.Overflow {
+		return nil
+	}
+	state.Goal.Issue = state.GoalKey
+	return state.Goal
+}
+
 func (a *ActivationAssessment) Valid(head string) bool {
 	return a != nil && head != "" && a.HeadSHA == head && strings.TrimSpace(a.Text) != "" &&
 		strings.TrimSpace(a.Text) != "none" && len(a.Text) <= MaxActivationAssessment
