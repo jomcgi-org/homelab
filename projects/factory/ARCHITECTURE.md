@@ -1227,10 +1227,13 @@ to that head. The exporters batch spans outside check and delivery processing.
   task. It keeps that head's blocking findings and verdict
   (`reviewer/review/reuse.go`). The reviewer compares commit trees and merge
   bases through the GitHub API, and a digest of what the code review also
-  read: the binding and its runtime, the PR title and description, the
-  trusted comments and the rules. The saved State holds that digest as
-  `basis`. Anything that differs, is unreadable or is missing (a State from
-  before this change) gives the head a full review. So does an earlier
+  read: the binding and its runtime with the Agent system prompt, the kagent
+  Agent revision that serves that prompt, the reviewer's own prompt version
+  (`reviewPromptVersion`) and a fingerprint of its task text, the PR title
+  and description, the trusted comments and the rules. The saved State holds
+  that digest as `basis`. Anything that differs, is unreadable or is missing
+  (a State from before this change) gives the head a full review. A new agent
+  prompt or reviewer image therefore gets a full review. So does an earlier
   blocking finding that needs evidence or a hold, a commit message that
   answers a finding or names an Activation, and a retry attempt. The
   reviewer still checks again the goal check, the human gate and approval,

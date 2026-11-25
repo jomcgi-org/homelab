@@ -1,11 +1,13 @@
 package review
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
+	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 )
 
 var (
@@ -24,11 +26,18 @@ func reuseHarness(t *testing.T) (*harness, *issueAPI) {
 		}
 	})
 	h.cfg.ReuseUnchangedTree = true
+	withRuntime(h)
 	h.gh.withLock(func() {
 		h.gh.trees = map[string]string{shaA: "tree-1"}
 		h.gh.mergeBases = map[string]string{shaA: "base-1"}
 	})
 	return h, api
+}
+
+// withRuntime gives the binding the runtime config always sets; the basis
+// names its system prompt.
+func withRuntime(h *harness) {
+	h.cfg.Bindings[0].Runtime = &provenance.Runtime{Model: "m", ReasoningEffort: "high", Arm: "control", SystemPrompt: "Review the PR."}
 }
 
 // pushHead makes sha the PR's head with tree and merge base, and a commit.
@@ -133,7 +142,7 @@ func TestDecisionClearsThroughAFullReviewThenCarriesToReusedHeads(t *testing.T) 
 		t.Fatalf("first check = %s", c.Conclusion)
 	}
 	h.gh.withLock(func() {
-		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 42, Author: "jomcgi", Body: "Decision: accept `a.yaml:live` on the rollout log; check delivery after rollout."})
+		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 42, UpdatedAt: "2026-11-25T10:00:00Z", Author: "jomcgi", Body: "Decision: accept `a.yaml:live` on the rollout log; check delivery after rollout."})
 	})
 	// The empty commit after the decision is reviewed in full: the comment
 	// is new, and only the agent's note can link it to the finding.
@@ -164,14 +173,21 @@ func TestDecisionClearsThroughAFullReviewThenCarriesToReusedHeads(t *testing.T) 
 	if len(st.Cleared) != 1 || st.Cleared[0].ID != "a.yaml:live" || st.Cleared[0].Decision == nil {
 		t.Fatalf("the finding's clearing did not carry: %+v", st.Cleared)
 	}
+	// The decision watermark carries too, so the comment schedules no re-review.
+	if st.DecisionComment != 42 {
+		t.Fatalf("reused decision watermark = %d, want 42", st.DecisionComment)
+	}
 }
 
 // Anything that could change the code review, or cannot be shown not to, gives
 // the head a full review.
 func TestReuseFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		setup  func(h *harness)
+		name  string
+		setup func(h *harness)
+		after func(h *harness)
+		// unread: the full review cannot record a basis either.
+		unread bool
 		commit string
 		tree   string
 		base   string
@@ -187,7 +203,7 @@ func TestReuseFailsClosed(t *testing.T) {
 		{
 			name: "a new trusted comment", tree: "tree-1", base: "base-1",
 			setup: func(h *harness) {
-				h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 9, Author: "jomcgi", Body: "Decision: accept projects/factory/x.go:correctness."})
+				h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 9, UpdatedAt: "2026-11-25T10:00:00Z", Author: "jomcgi", Body: "Decision: accept projects/factory/x.go:correctness."})
 			},
 		},
 		{
@@ -197,6 +213,25 @@ func TestReuseFailsClosed(t *testing.T) {
 				h.gh.baseFiles["AGENTS.md"] = "Stricter agent rules."
 				h.gh.baseHead = "base-2"
 			},
+		},
+		{
+			// A new agent prompt reaches the binding's runtime from the chart.
+			name: "a changed system prompt", tree: "tree-1", base: "base-1",
+			setup: func(h *harness) { h.cfg.Bindings[0].Runtime.SystemPrompt = "Review the PR more strictly." },
+		},
+		{
+			name: "a new Agent prompt revision", tree: "tree-1", base: "base-1",
+			setup: func(h *harness) { h.k.mu.Lock(); h.k.revision = "rev-2"; h.k.mu.Unlock() },
+		},
+		{
+			name: "a new reviewer prompt version", tree: "tree-1", base: "base-1",
+			setup: func(h *harness) { setPromptVersion(h.t, reviewPromptVersion+"-next") },
+		},
+		{
+			name: "an unreadable prompt revision", tree: "tree-1", base: "base-1",
+			setup:  func(h *harness) { h.sessions.failAgent(errors.New("kagent unavailable")) },
+			after:  func(h *harness) { h.sessions.failAgent(nil) },
+			unread: true,
 		},
 		{
 			name: "a review response in the commit", tree: "tree-1", base: "base-1",
@@ -235,9 +270,12 @@ func TestReuseFailsClosed(t *testing.T) {
 			if task == "" || reviewTasks(h) != 2 {
 				t.Fatalf("review tasks = %d, want the head reviewed in full", reviewTasks(h))
 			}
+			if tc.after != nil {
+				tc.after(h)
+			}
 			h.k.finish(task, kagent.StateCompleted, report(t, oneBlocking))
 			eventually(t, "the full review", func() bool { return h.gh.check(shaB).Status == "completed" })
-			if st, _ := LoadState(h.gh.check(shaB).Text); st.Basis == "" || strings.Contains(h.gh.check(shaB).Summary, "no new review task ran") {
+			if st, _ := LoadState(h.gh.check(shaB).Text); (st.Basis == "") != tc.unread || strings.Contains(h.gh.check(shaB).Summary, "no new review task ran") {
 				t.Fatalf("the head's state = %+v\n%s", st, h.gh.check(shaB).Summary)
 			}
 		})
@@ -293,6 +331,7 @@ func TestReusedHeadStillNeedsItsOwnApproval(t *testing.T) {
 		{Path: "projects/factory/reviewer/review/engine.go", Status: "modified", Additions: 2},
 	}})
 	h.cfg.ReuseUnchangedTree = true
+	withRuntime(h)
 	h.gh.baseFiles["AGENTS.md"] = "Agent rules from main."
 	h.gh.trees, h.gh.mergeBases = map[string]string{shaA: "tree-1"}, map[string]string{shaA: "base-1"}
 	e, ctx, _ := h.start()
@@ -320,4 +359,51 @@ func TestReusedHeadStillNeedsItsOwnApproval(t *testing.T) {
 	h.gh.review(7, "jomcgi", "APPROVED", shaB, "")
 	e.Tick(ctx)
 	eventually(t, "the second approval", func() bool { return h.gh.check(shaB).Conclusion == ConclusionSuccess })
+}
+
+// setPromptVersion stands in for a release that raises reviewPromptVersion.
+func setPromptVersion(t *testing.T, v string) {
+	was := reviewPromptVersion
+	reviewPromptVersion = v
+	t.Cleanup(func() { reviewPromptVersion = was })
+}
+
+// The basis covers both prompts the agent reads and fails closed when it
+// cannot name the Agent revision that serves the system prompt.
+func TestReviewBasisCoversThePrompts(t *testing.T) {
+	b := &Binding{Name: "homelab", Agent: testAgent, Runtime: &provenance.Runtime{Model: "m", ReasoningEffort: "high", Arm: "control", SystemPrompt: "p"}}
+	pr := github.PullRequest{Number: 7, Title: "t", Body: "b"}
+	rules := &Rules{Commit: "c", Files: []RuleFile{{Path: "REVIEW.md", Digest: "d"}}}
+	was := reviewBasis(b, pr, nil, rules, "rev-1")
+	if was == "" || reviewBasis(b, pr, nil, rules, "rev-1") != was {
+		t.Fatalf("basis = %q is not stable", was)
+	}
+	if reviewBasis(b, pr, nil, rules, "rev-2") == was {
+		t.Error("a new Agent revision kept the basis")
+	}
+	if reviewBasis(b, pr, nil, rules, "") != "" {
+		t.Error("an unread revision gave a basis")
+	}
+	if reviewBasis(&Binding{Name: "homelab", Agent: testAgent}, pr, nil, rules, "rev-1") != "" {
+		t.Error("a binding without a runtime gave a basis")
+	}
+	other := *b.Runtime
+	other.SystemPrompt = "q"
+	if reviewBasis(&Binding{Name: "homelab", Agent: testAgent, Runtime: &other}, pr, nil, rules, "rev-1") == was {
+		t.Error("a new system prompt kept the basis")
+	}
+	setPromptVersion(t, reviewPromptVersion+"-next")
+	if reviewBasis(b, pr, nil, rules, "rev-1") == was {
+		t.Error("a new reviewer prompt version kept the basis")
+	}
+	// The binary's own prompt text, laterRule among it, is in the fingerprint.
+	if in := fingerprintInputs(); promptFingerprint() == "" || !strings.Contains(Prompt(in[1]), laterRule) {
+		t.Error("the fingerprint inputs do not reach laterRule")
+	}
+}
+
+func (s *fakeSessions) failAgent(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.promptErr = err
 }

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
@@ -36,7 +37,7 @@ const (
 	notReusedState     = "the earlier head's review state is incomplete or unreadable"
 	notReusedBasis     = "the earlier review did not record its inputs"
 	notReusedRead      = "the reviewer could not read what the code review depends on"
-	notReusedInputs    = "the title, description, trusted comments, rules or reviewer changed since the earlier review"
+	notReusedInputs    = "the title, description, trusted comments, rules, reviewer or prompts changed since the earlier review, or the agent prompt revision is unreadable"
 	notReusedTree      = "the tree differs from the earlier reviewed head's"
 	notReusedMergeBase = "the merge base differs from the earlier reviewed head's"
 	notReusedCommits   = "a commit since the earlier review answers a finding or carries an activation"
@@ -49,28 +50,81 @@ type reuse struct {
 	task *kagent.Task
 }
 
+// reviewPromptVersion names how this reviewer binary builds the review task.
+// Raise it with a change to the task or to what the agent is told that
+// promptFingerprint cannot see (a branch its fixed inputs do not reach). A new
+// value gives every PR's next head a full review.
+var reviewPromptVersion = "1"
+
+// promptFingerprint digests the task text Prompt builds for fixed inputs
+// (fingerprintInputs), so an edit to the binary's own prompt text (Prompt,
+// laterRule) changes the basis without a version change.
+var promptFingerprint = sync.OnceValue(func() string {
+	h := sha256.New()
+	for _, in := range fingerprintInputs() {
+		h.Write([]byte(Prompt(in)))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)[:16])
+})
+
+// fingerprintInputs are a first review, a later head with a scoped interdiff,
+// and that later head resumed in the earlier session.
+func fingerprintInputs() []PromptInput {
+	first := PromptInput{Repo: "o/r", Number: 1, Base: "main", SHA: "a", Title: "t", Body: "b", Rules: &Rules{Commit: "fingerprint"}, Attempt: 1, CheckName: "c"}
+	later := first
+	later.SHA, later.PreviousHead = "b", "a"
+	later.Previous = []Finding{{ID: "x.go:correctness", Severity: SeverityHigh, Path: "x.go", Title: "t"}}
+	later.Interdiff, later.Scope = &github.CommitComparison{Status: "ahead"}, &Scope{}
+	resumed := later
+	resumed.Resumed, resumed.RulesHeld = true, true
+	return []PromptInput{first, later, resumed}
+}
+
+// promptRevision is the kagent Agent revision that serves the binding's system
+// prompt, or "" when it cannot be read. An empty revision gives an empty
+// basis.
+func (e *Engine) promptRevision(ctx context.Context, b *Binding, l *slog.Logger) string {
+	if e.cfg.Sessions == nil || b.Runtime == nil {
+		return ""
+	}
+	rev, err := e.cfg.Sessions.PromptRevision(ctx, b.Agent, b.Runtime.SystemPrompt)
+	if err != nil {
+		e.kagentError(ctx, l, b, "prompt_revision", err)
+		return ""
+	}
+	return rev
+}
+
 // reviewBasis digests what the code review reads besides the tree: the
-// binding and its runtime (model, effort, prompt), the PR's title and
-// description, the trusted comments and the rules. It is empty when the rules
-// digest is, which keeps the review from being reused. The State stores it
-// with each review, so an edited description, a new or edited comment (Joe's
-// decisions among them: the agent must read one before it clears a finding,
-// REVIEW.md "Clearing a finding without a fix") or a rules change gives the
-// next head a full review.
-func reviewBasis(b *Binding, pr github.PullRequest, comments []github.Comment, rules *Rules) string {
+// binding and its runtime (model, effort, arm, system prompt), the kagent
+// Agent revision that serves that prompt, this binary's prompt version and
+// fingerprint, the PR's title and description, the trusted comments and the
+// rules. It is empty when the rules digest or the revision is, which keeps
+// the review from being reused. The State stores it with each review, so an
+// edited description, a new or edited comment (Joe's decisions among them:
+// the agent must read one before it clears a finding, REVIEW.md "Clearing a
+// finding without a fix"), a rules change, a new agent prompt or a new
+// reviewer prompt gives the next head a full review.
+func reviewBasis(b *Binding, pr github.PullRequest, comments []github.Comment, rules *Rules, revision string) string {
 	digest := rulesDigest(rules)
-	if digest == "" {
+	if digest == "" || revision == "" || b.Runtime == nil {
 		return ""
 	}
 	type comment struct {
 		ID           int64
 		Author, Body string
 	}
+	// SystemPrompt is named here: provenance.Runtime leaves it out of JSON.
 	in := struct {
 		Binding, Agent, Title, Body, Rules string
 		Runtime                            any
+		SystemPrompt, Revision, Prompt     string
 		Comments                           []comment
-	}{Binding: b.Name, Agent: agentName(b.Agent), Title: pr.Title, Body: pr.Body, Rules: digest, Runtime: b.Runtime}
+	}{
+		Binding: b.Name, Agent: agentName(b.Agent), Title: pr.Title, Body: pr.Body, Rules: digest, Runtime: b.Runtime,
+		SystemPrompt: b.Runtime.SystemPrompt, Revision: revision, Prompt: reviewPromptVersion + "/" + promptFingerprint(),
+	}
 	for _, c := range comments {
 		in.Comments = append(in.Comments, comment{c.ID, c.Author, c.Body})
 	}
@@ -113,7 +167,7 @@ func (e *Engine) reusable(ctx context.Context, b *Binding, pr github.PullRequest
 		e.ghError(ctx, l, b, "comments", err)
 		return notReusedRead
 	}
-	basis := reviewBasis(b, pr, comments, rules)
+	basis := reviewBasis(b, pr, comments, rules, e.promptRevision(ctx, b, l))
 	if basis == "" || basis != p.Basis {
 		return notReusedInputs
 	}
@@ -153,6 +207,9 @@ func (e *Engine) reusable(ctx context.Context, b *Binding, pr github.PullRequest
 	}
 	in.reuse = &reuse{head: in.priorHead, task: &kagent.Task{ID: p.TaskID, Status: kagent.TaskStatus{State: kagent.StateCompleted}}}
 	in.basis = basis
+	// The comments equal the earlier review's (basis), so the reused report
+	// carries the same decision stamps and watermark a full review would.
+	in.promptVersions, in.decisionComment = decisionPrompt(b, pr, comments)
 	return ""
 }
 

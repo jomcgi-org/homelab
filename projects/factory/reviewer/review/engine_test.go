@@ -2677,6 +2677,7 @@ func TestHoldOnAQueuedPRFailsItsMergeGroup(t *testing.T) {
 func TestStoredFindingsSurviveTheCheckRun(t *testing.T) {
 	h := newHarness(t)
 	addPR7(h)
+	withRuntime(h) // The review basis names the runtime's system prompt.
 	e, ctx, _ := h.start()
 	taskID := runReview(t, h, e, ctx, 7, shaA)
 	h.k.finish(taskID, kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
