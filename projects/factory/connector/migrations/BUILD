@@ -57,7 +57,7 @@ go_library(
         "20261124020000_pending_pr_create.sql",
         "20261124030000_reaper_atespace.sql",
         "20261124100000_leaderboard_reads.sql",
-        "20261124000000_home756_recuts.sql",
+        "20261125000000_home756_recuts.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],
