@@ -502,21 +502,13 @@ func (e *Engine) syncPlannerOutcomes(ctx context.Context) error {
 	return nil
 }
 
-// coderDelegate returns the itsaplan agent that takes coder work: task-agent,
-// else the earlier homelab-codex until its issues finish (HOME-879). Only an
-// agent user counts, never a human account with the same name.
+// coderDelegate returns the itsaplan agent that takes coder work: task-agent.
+// Only an agent user counts, never a human account with the same name.
 func coderDelegate(assignees []itsaplan.Assignee) string {
-	var fallback string
 	for _, a := range assignees {
-		if a.Kind != "agent" {
-			continue
-		}
-		switch a.Username {
-		case "task-agent":
+		if a.Kind == "agent" && a.Username == "task-agent" {
 			return a.UserID
-		case "homelab-codex":
-			fallback = a.UserID
 		}
 	}
-	return fallback
+	return ""
 }

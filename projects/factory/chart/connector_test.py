@@ -50,7 +50,7 @@ _ENABLE_VALUES = {
         "bindings": {
             "homelab": {
                 "itsaplanProject": "HOME",
-                "agents": ["task-agent", "homelab-codex"],
+                "agents": ["task-agent"],
             }
         },
         "database": {"endpoints": _DB},
@@ -424,9 +424,6 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
         "factory-itsaplan-agent-factory-coordinator": [
             {"key": "apiKey", "path": "factory-coordinator"}
         ],
-        "factory-itsaplan-agent-homelab-codex": [
-            {"key": "apiKey", "path": "homelab-codex"}
-        ],
         "factory-itsaplan-agent-task-agent": [{"key": "apiKey", "path": "task-agent"}],
     }
     # The itsaplan bootstrap declares the same Secrets.
@@ -442,11 +439,6 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
             "key": "task-agent",
             "apiKeyFile": "/var/run/secrets/factory-itsaplan/task-agent",
             "concurrency": 10,
-        },
-        {
-            "key": "homelab-codex",
-            "apiKeyFile": "/var/run/secrets/factory-itsaplan/homelab-codex",
-            "concurrency": 4,
         },
     ]
 
@@ -540,7 +532,7 @@ def test_bindings_derive_from_repositories() -> None:
                 )["spec"]["template"]["inline"]["systemPrompt"],
             },
             "itsaplanProject": "HOME",
-            "agents": ["task-agent", "homelab-codex"],
+            "agents": ["task-agent"],
             "trustedReviewers": ["reviewer-bot"],
             "requiredChecks": [
                 {"name": "pr-checks", "statusCreator": "buildbuddy-io[bot]"}
@@ -716,7 +708,7 @@ def test_peers_admit_the_connector_pod() -> None:
         ("kagent.config.server.auth.serviceAccount=null", "serviceAccount.authority"),
         ("connector.bindings=null", r"connector\.bindings\.homelab is required"),
         (
-            "connector.bindings.other.itsaplanProject=X,connector.bindings.other.agents={homelab-codex}",
+            "connector.bindings.other.itsaplanProject=X,connector.bindings.other.agents={task-agent}",
             "names no repository",
         ),
         (

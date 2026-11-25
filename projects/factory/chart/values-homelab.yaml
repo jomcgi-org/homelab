@@ -252,14 +252,11 @@ connector:
   traceEndpoint: http://otel-collector.otel-collector.svc.cluster.local:4317
   enabled: true
   # task-agent claims up to 10 runs at once, two fewer than the
-  # agents.codex.concurrency workers that hold them (see there). The earlier
-  # delegate homelab-codex keeps 4 claims for the issues still delegated to
-  # it, so a new issue never waits behind them (HOME-879).
+  # agents.codex.concurrency workers that hold them (see there). It is the
+  # only delegate; homelab-codex is retired (HOME-898).
   agents:
     - username: task-agent
       concurrency: 10
-    - username: homelab-codex
-      concurrency: 4
   # 120 s between polls of one open PR, up from 60 s. On 2026-11-22 about 45
   # open PRs at 60 s used about 5,400 GraphQL points an hour against the
   # installation's 5,000, so delivery stopped for part of every hour
@@ -297,9 +294,7 @@ connector:
   bindings:
     homelab:
       itsaplanProject: HOME
-      # The first agent is the binding's coding agent; later ones accept
-      # reassigned runs.
-      agents: [task-agent, homelab-codex]
+      agents: [task-agent]
       # The factory-reviewer's check is the review: the connector enqueues a
       # head only once `factory review` from the reviewer App passes on it,
       # and its findings start a revision round (a human-gate-only hold waits

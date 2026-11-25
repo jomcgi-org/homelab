@@ -296,7 +296,7 @@ def test_connector_mounts_the_planner_key_beside_the_others(on: list[dict]) -> N
         for s in volumes["itsaplan-keys"]["projected"]["sources"]
     }
     assert items["factory-itsaplan-agent-homelab-planner"] == "homelab-planner"
-    assert items["factory-itsaplan-agent-homelab-codex"] == "homelab-codex"
+    assert items["factory-itsaplan-agent-task-agent"] == "task-agent"
 
 
 def test_bootstrap_schedules_one_cron_per_complete_job(on: list[dict]) -> None:
