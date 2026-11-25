@@ -584,7 +584,9 @@ The connector uses separate identities to claim coding work and coordinate issue
   admin, creating it on an empty database (the first account is itsaplan's
   instance admin); sets invite-only registration and the OIDC provider; and
   creates team `factory`, project `HOME` and the external agents
-  `homelab-codex` (claims runs, assignment and mention triggers) and
+  `task-agent` (claims runs, assignment and mention triggers; the delegate
+  for coder work, whatever the provider), `homelab-codex` (the earlier
+  delegate, kept until its issues finish, HOME-879) and
   `factory-coordinator` (coordinates issue updates). The `readOnly` agents
   `factory-reviewer` and `factory-storyboard` get no triggers and only
   `work_items read` in HOME. The bootstrap proves that access with each
@@ -692,7 +694,8 @@ records how they relate and routes results and feedback between them.
     starts when the issue's delegate changes, with a fixed prompt.
     `enqueueDelegateRun` skips self-delegation; `isTriggerableBy` accepts
     another agent when the target has `runnerScope: team`. The bootstrap
-    gives `homelab-codex` that scope and `triggerOnAssign: true`, so
+    gives `task-agent` and `homelab-codex` that scope and
+    `triggerOnAssign: true`, so
     `factory-coordinator` can start it (HOME-118, also applies to HOME-106).
     Core v1.10.0 includes cron and status schedules without Pro. Its
     `agent_schedule` schema and CE `ScheduleDialog.tsx` expose them.

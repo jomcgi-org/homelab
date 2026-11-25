@@ -637,7 +637,14 @@ itsaplan:
       name: Homelab
       description: Work for the jomcgi-org/homelab repository.
     agents:
-      # Claims the project's runs (assignment and mentions).
+      # Claims the project's runs (assignment and mentions). The delegate for
+      # coder work: the provider and model come from the arm, not this name
+      # (HOME-879).
+      - username: task-agent
+        name: Task agent
+        triggerOnAssign: true
+        triggerOnMention: true
+      # The earlier delegate, kept until the issues delegated to it finish.
       - username: homelab-codex
         name: Homelab Codex
         triggerOnAssign: true

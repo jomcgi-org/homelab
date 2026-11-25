@@ -202,6 +202,7 @@ def test_generated_secrets_are_kept_and_never_rendered() -> None:
         "factory-itsaplan-admin",
         "factory-itsaplan-joe-sessions",
         "factory-itsaplan-bootstrap",
+        "factory-itsaplan-agent-task-agent",
         "factory-itsaplan-agent-homelab-codex",
         "factory-itsaplan-agent-factory-coordinator",
         "factory-itsaplan-agent-factory-storyboard",
@@ -305,6 +306,7 @@ def test_job_roles_name_only_their_secrets() -> None:
     assert bootstrap[1]["resourceNames"] == [
         "factory-itsaplan-bootstrap",
         "factory-itsaplan-joe-sessions",
+        "factory-itsaplan-agent-task-agent",
         "factory-itsaplan-agent-homelab-codex",
         "factory-itsaplan-agent-factory-coordinator",
         "factory-itsaplan-agent-factory-storyboard",
@@ -389,6 +391,7 @@ def test_bootstrap_config_lists_the_agents() -> None:
         _one(_render(), "ConfigMap", "factory-itsaplan-scripts")["data"]["config.json"]
     )
     assert [a["username"] for a in config["agents"]] == [
+        "task-agent",
         "homelab-codex",
         "factory-coordinator",
         "factory-storyboard",

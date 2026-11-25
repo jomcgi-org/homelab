@@ -76,6 +76,10 @@ spec:
       jsonPointers: [/data]
     - kind: Secret
       namespace: factory
+      name: factory-itsaplan-agent-task-agent
+      jsonPointers: [/data]
+    - kind: Secret
+      namespace: factory
       name: factory-itsaplan-agent-factory-coordinator
       jsonPointers: [/data]
     - kind: Secret
