@@ -581,6 +581,23 @@ def test_claude_token_is_mounted_only_in_broker() -> None:
     assert anthropic[0]["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
 
 
+def test_claude_allowlist_accepts_session_wildcard() -> None:
+    docs = _render(
+        [
+            "broker.enabled=true",
+            "broker.claude.enabled=true",
+            "broker.claude.modelAllowlist.actor/homelab-planner/session-*={claude-test-model}",
+        ],
+        binding=False,
+    )
+    config = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory", "factory-broker")["data"]["config.yaml"]
+    )
+    assert config["claude"]["modelAllowlist"] == {
+        "actor/homelab-planner/session-*": ["claude-test-model"]
+    }
+
+
 def test_claude_enabled_without_allowlist_denies_every_actor() -> None:
     docs = _render(["broker.enabled=true", "broker.claude.enabled=true"], binding=False)
     config = yaml.safe_load(
@@ -595,6 +612,9 @@ def test_claude_enabled_without_allowlist_denies_every_actor() -> None:
         ["broker.claude.enabled=true"],
         ["broker.config.claude.enabled=true"],
         ["broker.claude.modelAllowlist.actor/ns/*={claude}"],
+        ["broker.claude.modelAllowlist.actor/*/session-*={claude}"],
+        ["broker.claude.modelAllowlist.actor/ns/session-*-x={claude}"],
+        ["broker.claude.modelAllowlist.actor/ns/audit-*={claude}"],
         ["broker.claude.modelAllowlist.actor/ns/name={*}"],
     ],
 )

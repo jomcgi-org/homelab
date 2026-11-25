@@ -516,3 +516,47 @@ func TestClaudeUsageAfterLargeContent(t *testing.T) {
 		t.Fatal("large response or its usage was lost")
 	}
 }
+
+func TestClaudeSessionWildcardAllowlist(t *testing.T) {
+	const planner = "homelab-planner"
+	h := newClaudeHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"input_tokens":1}`)
+	})
+	h.ModelAllowlist = map[string][]string{
+		"actor/" + planner + "/session-*":       {claudeModel},
+		"actor/" + planner + "/session-pinned":  {"claude-other-model"},
+		"actor/" + planner + "/session-revoked": {},
+	}
+	for _, tc := range []struct {
+		name, atespace, actor, model string
+		status                       int
+	}{
+		{"wildcard match", planner, "session-0f8e2c", claudeModel, 200},
+		{"wildcard unlisted model", planner, "session-0f8e2c", "claude-other-model", 403},
+		{"other atespace", "factory-intsec", "session-0f8e2c", claudeModel, 403},
+		{"no session prefix", planner, "audit", claudeModel, 403},
+		{"prefix only", planner, "session-", claudeModel, 403},
+		{"prefix without dash", planner, "sessionx", claudeModel, 403},
+		{"exact beats wildcard", planner, "session-pinned", "claude-other-model", 200},
+		{"exact denies wildcard model", planner, "session-pinned", claudeModel, 403},
+		{"empty exact denies", planner, "session-revoked", claudeModel, 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := h.request(t, "/anthropic/v1/messages/count_tokens", `{"model":"`+tc.model+`"}`)
+			r.Header.Set("X-Api-Key", h.signer.Sign(t, fakes.ActorClaims(h.idp.URL, audience, tc.atespace, tc.actor, time.Now())))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, r)
+			if tc.status == 200 {
+				if rec.Code != 200 {
+					t.Fatalf("response = %d %s, want 200", rec.Code, rec.Body)
+				}
+				return
+			}
+			claudeError(t, rec, tc.status, ErrClaudeModelDenied)
+		})
+	}
+	if got := h.calls.Load(); got != 2 {
+		t.Fatalf("upstream calls = %d, want 2", got)
+	}
+}

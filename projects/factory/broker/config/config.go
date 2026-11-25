@@ -365,9 +365,8 @@ func (c Config) Validate() error {
 			errs = append(errs, errors.New("claude request limits and streamIdleTimeout must be positive"))
 		}
 		for subject, models := range c.Claude.ModelAllowlist {
-			parts := strings.Split(subject, "/")
-			if len(parts) != 3 || parts[0] != "actor" || parts[1] == "" || parts[2] == "" || strings.ContainsAny(subject, "*? \t\r\n") {
-				errs = append(errs, errors.New("claude.modelAllowlist keys must be exact actor/<atespace>/<actorName> subjects"))
+			if err := validateClaudeSubject(subject); err != nil {
+				errs = append(errs, err)
 			}
 			for _, model := range models {
 				if model == "" || strings.ContainsAny(model, "*? \t\r\n") {
@@ -481,4 +480,18 @@ func (c Config) validateReview() []error {
 		}
 	}
 	return errs
+}
+
+// validateClaudeSubject accepts an exact actor/<atespace>/<actorName> subject
+// or actor/<atespace>/session-*, which covers every kagent session actor of
+// one atespace. No other wildcard is accepted.
+func validateClaudeSubject(subject string) error {
+	parts := strings.Split(subject, "/")
+	if len(parts) != 3 || parts[0] != "actor" || parts[1] == "" || parts[2] == "" || strings.ContainsAny(subject, "? \t\r\n") {
+		return fmt.Errorf("claude.modelAllowlist key %q must be an actor/<atespace>/<actorName> subject", subject)
+	}
+	if strings.Contains(parts[1], "*") || (strings.Contains(parts[2], "*") && parts[2] != "session-*") {
+		return fmt.Errorf("claude.modelAllowlist key %q: the only wildcard is a trailing * in actor/<atespace>/session-*", subject)
+	}
+	return nil
 }

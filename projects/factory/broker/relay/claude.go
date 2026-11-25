@@ -34,8 +34,9 @@ const (
 )
 
 // Claude relays only Claude Code Messages calls. ModelAllowlist keys are exact
-// verified JWT subjects (actor/<atespace>/<actorName>); an absent actor or model
-// is denied. TokenFile is the broker-only 1Password Secret's token projection.
+// verified JWT subjects (actor/<atespace>/<actorName>), or
+// actor/<atespace>/session-* for every kagent session actor of one atespace.
+// An exact key wins over the wildcard; an absent actor or model is denied. TokenFile is the broker-only 1Password Secret's token projection.
 // It is read for each permitted call so Secret rotation needs no restart.
 type Claude struct {
 	Verifier          Verifier
@@ -71,6 +72,22 @@ func (c *Claude) init() {
 		}
 		c.slots = make(chan struct{}, min(c.MaxConcurrent, DefaultMaxConcurrent))
 	})
+}
+
+// SessionWildcard is the only wildcard actor name ModelAllowlist accepts.
+const SessionWildcard = "session-*"
+
+// allowedModels returns the models for a verified identity. An exact subject
+// key wins, even when its list is empty. Otherwise a session actor
+// (session-<ID>) uses its atespace's actor/<atespace>/session-* entry.
+func (c *Claude) allowedModels(id actorjwt.Identity) []string {
+	if models, ok := c.ModelAllowlist[id.Subject]; ok {
+		return models
+	}
+	if id.SessionID() == "" || id.Atespace == "" || id.Subject != "actor/"+id.Atespace+"/"+id.ActorName {
+		return nil
+	}
+	return c.ModelAllowlist["actor/"+id.Atespace+"/"+SessionWildcard]
 }
 
 func (c *Claude) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -116,7 +133,8 @@ func (c *Claude) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 	if !strings.HasPrefix(r.UserAgent(), "claude-cli/") || r.Header.Get("X-App") != "cli" {
 		return writeError(w, http.StatusForbidden, ErrClaudeClientRequired, "client_denied", nil)
 	}
-	if len(c.ModelAllowlist[id.Subject]) == 0 {
+	allowed := c.allowedModels(*id)
+	if len(allowed) == 0 {
 		return writeError(w, http.StatusForbidden, ErrClaudeModelDenied, "model_denied", nil)
 	}
 	select {
@@ -160,14 +178,14 @@ func (c *Claude) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 		return writeError(w, http.StatusBadRequest, "bad_request", "bad_request", nil)
 	}
 	body = body[:n]
-	model, denied := claudeRequestModel(body, c.ModelAllowlist[id.Subject])
+	model, denied := claudeRequestModel(body, allowed)
 	if denied {
 		return writeError(w, http.StatusForbidden, ErrClaudeModelDenied, "model_denied", nil)
 	}
 	if model == "" {
 		return writeError(w, http.StatusBadRequest, "bad_request", "bad_request", nil)
 	}
-	if !slices.Contains(c.ModelAllowlist[id.Subject], model) {
+	if !slices.Contains(allowed, model) {
 		return writeError(w, http.StatusForbidden, ErrClaudeModelDenied, "model_denied", nil)
 	}
 	trace.SpanFromContext(r.Context()).SetAttributes(attribute.String("gen_ai.request.model", model))

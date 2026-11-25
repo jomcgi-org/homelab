@@ -773,15 +773,17 @@ reuse state, even after a prolonged persistence failure.
   injection label or actor binding. This relay supports no API keys, refresh
   flow or quota reading.
 
-  `broker.claude.modelAllowlist` maps exact verified JWT subjects,
+  `broker.claude.modelAllowlist` maps verified JWT subjects,
   `actor/<atespace>/<actorName>`, to exact model IDs. An empty map, missing
   actor or unlisted model denies the request with 403 `claude_model_denied`.
   Configure only Claude Code actors; requests also need `User-Agent:
   claude-cli/...` and `x-app: cli`. These client markers do not replace JWT
   verification or the allowlist. kagent's
   [actor name](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/substrate/client.go#L284)
-  is `session-<lowercase-session-ID>`. Allowlist entries must name the actual
-  actors, including each new session.
+  is `session-<lowercase-session-ID>`. The key `actor/<atespace>/session-*`
+  matches every session actor of that atespace, such as each run of a
+  scheduled planner. It is the only wildcard; config validation refuses
+  every other `*`. An exact key wins over the wildcard for its subject.
   The existing `actorJwt.allowedAtespaces` restriction also applies.
   JSON bodies are bounded, inspected and re-encoded before forwarding;
   compressed bodies are refused. Limits default to 32 MiB, 64 concurrent

@@ -122,6 +122,28 @@ func TestClaudeConfigDefaultsAndValidation(t *testing.T) {
 	if err != nil || !cfg.Claude.Enabled || len(cfg.Claude.ModelAllowlist["actor/factory-intsec/audit"]) != 1 {
 		t.Fatalf("Claude config not loaded: %v", err)
 	}
+	wildcard := base + "  modelAllowlist:\n    actor/homelab-planner/session-*: [claude-test-model]\n    actor/homelab-planner/session-pinned: [claude-test-model]\n"
+	if cfg, err := Load(write(t, "wildcard.yaml", wildcard), func(string) string { return "" }); err != nil || len(cfg.Claude.ModelAllowlist["actor/homelab-planner/session-*"]) != 1 {
+		t.Fatalf("session wildcard not loaded: %v", err)
+	}
+	for _, key := range []string{
+		"actor/factory-intsec/*",
+		"actor/*/session-*",
+		"actor/factory-*/session-*",
+		"actor/factory-intsec/session-*-x",
+		"actor/factory-intsec/audit-*",
+		"actor/factory-intsec/session*",
+		"actor/factory-intsec/session-**",
+		"actor/factory-intsec/*session-",
+	} {
+		t.Run("wildcard "+key, func(t *testing.T) {
+			body := base + "  modelAllowlist: {'" + key + "': [claude]}\n"
+			_, err := Load(write(t, "wildcard.yaml", body), func(string) string { return "" })
+			if err == nil || !strings.Contains(err.Error(), "the only wildcard is a trailing * in actor/<atespace>/session-*") {
+				t.Fatalf("wildcard error = %v", err)
+			}
+		})
+	}
 	// Enabled with no allowlist is valid, but grants no access.
 	if _, err := Load(write(t, "deny.yaml", base), func(string) string { return "" }); err != nil {
 		t.Fatal(err)
@@ -129,7 +151,8 @@ func TestClaudeConfigDefaultsAndValidation(t *testing.T) {
 	for name, body := range map[string]string{
 		"no token file":     "namespace: factory\nclaude: {enabled: true}\n",
 		"wrong audience":    base + "actorJwt: {audience: other}\n",
-		"wildcard actor":    base + "  modelAllowlist: {'actor/factory-intsec/*': [claude]}\n",
+		"question mark":     base + "  modelAllowlist: {'actor/factory-intsec/session-?': [claude]}\n",
+		"extra segment":     base + "  modelAllowlist: {'actor/factory-intsec/session-*/x': [claude]}\n",
 		"short subject":     base + "  modelAllowlist: {audit: [claude]}\n",
 		"wildcard model":    base + "  modelAllowlist: {'actor/factory-intsec/audit': ['*']}\n",
 		"empty model":       base + "  modelAllowlist: {'actor/factory-intsec/audit': ['']}\n",
