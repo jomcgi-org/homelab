@@ -1745,10 +1745,12 @@ _HOMELAB = [
 
 
 def test_discord_server_agent_ships_off_in_the_chart() -> None:
-    # Off in the chart defaults. The deploy values turn it on only after a
-    # published chart holds the templates.
+    # Off in the chart defaults; the deploy values turn the homelab one on.
     defaults = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
     assert defaults["discord"]["serverAgents"]["homelab"]["enabled"] is False
+    deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    assert deploy["discord"]["serverAgents"]["homelab"]["enabled"] is True
+    assert _HOMELAB_NS in deploy["kagent"]["rbac"]["namespaces"]
     docs = _render()
     assert not [
         d
