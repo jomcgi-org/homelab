@@ -75,7 +75,7 @@ def _render(
             "--set",
             "discord.bridge.enabled=false",
             "--set",
-            "discord.import.enabled=false",
+            "discord.backfill.enabled=false",
             "--set",
             "discord.operator.enabled=false",
             "--set",
@@ -1563,64 +1563,40 @@ def test_discord_is_off_by_default_and_checks_its_wiring() -> None:
     assert "factory-discord" not in yaml.safe_dump(controller)
 
 
-def test_discord_import_runs_once_per_run_id_with_the_bridge_boundary() -> None:
+def _bridge_env(docs: list[dict[str, Any]]) -> dict[str, str]:
+    bridge = _in(docs, "Deployment", "factory-discord", "discord-bridge")
+    (c,) = bridge["spec"]["template"]["spec"]["containers"]
+    return {e["name"]: e.get("value") for e in c["env"]}
+
+
+def test_discord_backfill_runs_in_the_bridge_without_a_job() -> None:
+    # HOME-836: the bridge backfills history; no import Job renders.
     docs = _render(
         _DISCORD
         + [
-            "discord.import.enabled=true",
-            "discord.import.runId=7",
-            "discord.import.maxDocuments=500",
-            "discord.import.deadlineSeconds=21600",
+            "discord.backfill.enabled=true",
+            "discord.backfill.interval=3h",
+            "discord.backfill.rate=0.5",
         ]
     )
-    job = _in(docs, "Job", "factory-discord", "discord-import-7")
-    pod = job["spec"]["template"]
-    # The bridge's label: hindsight-discord admits it and the bridge's egress
-    # policy covers it.
-    assert (
-        pod["metadata"]["labels"]["app.kubernetes.io/name"] == "factory-discord-bridge"
-    )
-    (c,) = pod["spec"]["containers"]
-    assert c["command"] == ["/usr/local/bin/discord-bridge", "import"]
-    env = {e["name"]: e["value"] for e in c["env"]}
-    assert env["IMPORT_MAX_DOCUMENTS"] == "500"
-    assert {v["name"] for v in pod["spec"]["volumes"]} == {
-        "discord",
-        "hindsight",
-        "policy",
-    }
-    assert pod["spec"]["automountServiceAccountToken"] is False
-    assert job["spec"]["activeDeadlineSeconds"] == 21600
-    # Only a new runId starts a run: no sync option recreates the Job.
-    assert "argocd.argoproj.io/sync-options" not in (
-        job["metadata"].get("annotations") or {}
-    )
-    with pytest.raises(RuntimeError, match="discord.import needs discord.bridge"):
-        _render(_DISCORD[:1] + _DISCORD[2:3] + ["discord.import.enabled=true"])
+    assert not [
+        d for d in docs if d["kind"] == "Job" and "discord" in d["metadata"]["name"]
+    ]
+    env = _bridge_env(docs)
+    assert env["BACKFILL_ENABLED"] == "true"
+    assert env["BACKFILL_INTERVAL"] == "3h"
+    assert env["BACKFILL_RATE"] == "0.5"
+    assert env["BACKFILL_INCLUDE_BOTS"] == "false"
+    # Off by default: the bridge gets no backfill environment.
+    assert not [k for k in _bridge_env(_render(_DISCORD)) if k.startswith("BACKFILL_")]
+    with pytest.raises(RuntimeError, match="discord.backfill needs discord.bridge"):
+        _render(_DISCORD[:1] + _DISCORD[2:3] + ["discord.backfill.enabled=true"])
 
 
-def test_discord_import_job_is_the_same_in_every_release() -> None:
-    # HOME-836: a changed Job fails ArgoCD's server-side diff dry run and stops
-    # the whole sync, so a new connector digest must not change the import Job,
-    # and the Job carries no chart-version label.
-    base = _DISCORD + [
-        "discord.import.enabled=true",
-        "discord.import.runId=1",
-        "discord.import.image=example.com/import@sha256:" + "a" * 64,
-    ]
-    jobs = [
-        _in(
-            _render(base + [f"connector.image.digest=sha256:{d * 64}"]),
-            "Job",
-            "factory-discord",
-            "discord-import-1",
-        )
-        for d in "bc"
-    ]
-    assert jobs[0] == jobs[1]
-    assert "helm.sh/chart" not in jobs[0]["metadata"]["labels"]
-    (c,) = jobs[0]["spec"]["template"]["spec"]["containers"]
-    assert c["image"] == "example.com/import@sha256:" + "a" * 64
+def test_discord_backfill_is_on_in_the_deploy_values() -> None:
+    values = yaml.safe_load(_DEPLOY_VALUES.read_text())["discord"]
+    assert values["backfill"] == {"enabled": True}
+    assert "import" not in values
 
 
 _OPERATOR = [

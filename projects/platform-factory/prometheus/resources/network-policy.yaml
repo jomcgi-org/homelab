@@ -137,6 +137,14 @@ spec:
               protocol: TCP
     - toEndpoints:
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: factory-discord-bridge
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
             k8s:io.kubernetes.pod.namespace: ate-system
             app: egress-scan
       toPorts:

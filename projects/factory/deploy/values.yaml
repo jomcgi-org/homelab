@@ -391,7 +391,7 @@ discord:
     enforceAgentPath: true
     policy:
       # Every server Bosun is in (Joe, HOME-162 comment 1942). history marks
-      # each for the history import (HOME-164). ingest stores every human
+      # each for the history backfill (HOME-164). ingest stores every human
       # message in each (Joe, 2026-11-25, HOME-833); it needs the Message
       # Content intent enabled for the application (HOME-834).
       guilds:
@@ -403,20 +403,10 @@ discord:
       guildLimit: {count: 60, window: 1h}
       globalLimit: {count: 300, window: 24h}
       queueDepth: 3
-  # The history import (HOME-164): one Job per runId reads every server's
-  # history into its bank, up to maxDocuments channel-days per run (Joe,
-  # 2026-11-25). A new runId continues where the last one stopped.
-  import:
+  # The bridge backfills each server's history (HOME-164), in place of the
+  # import Job (Joe, 2026-11-26, HOME-836).
+  backfill:
     enabled: true
-    runId: "5"
-    # No document cap and a 24 h deadline (Joe, 2026-11-26: "ingest
-    # everything"). A run that fails or ends resumes on the next runId,
-    # because stored channel-days are skipped.
-    maxDocuments: 0
-    deadlineSeconds: 86400
-    # The connector build of #8725 (retain retries). A fixed digest keeps the
-    # kept Job's template the same across releases.
-    image: ghcr.io/jomcgi/homelab/projects/factory/connector@sha256:a419c71123c3144a03b66034ea3fed139087bd2f9ae13ac7ddcdd1f6b62393aa # ratchet-allow: image-digest (the import Job must not follow the connector's digest; bump it by PR)
   # Joe's operator session (HOME-314 step 1): a persistent session per thread
   # under #factory in the homelab server, for Joe's messages only. His user ID
   # is the `operator-user-id` field of the bot's 1Password item.

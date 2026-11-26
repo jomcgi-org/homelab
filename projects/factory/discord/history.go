@@ -187,6 +187,15 @@ type Importer struct {
 	Now           func() time.Time
 	// Sleep waits between retries; tests replace it.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Pace, when set, runs before each Discord history read and each
+	// Hindsight call, so a rate limit keeps the import from starving live
+	// turns that share them.
+	Pace func(ctx context.Context) error
+	// SkipIngested skips a channel-day of a server with `ingest` when the
+	// live document for that day exists: the ingestor stored its messages.
+	SkipIngested bool
+	// Observe, when set, sees each channel-day as it is retained or skipped.
+	Observe func(guildID string, retained bool)
 
 	mu       sync.Mutex
 	retained int
@@ -201,28 +210,54 @@ type ImportStats struct {
 // ErrCapped is a run that reached MaxDocuments; the next run continues.
 var ErrCapped = errors.New("discord: import reached its document cap")
 
+// HistoryGuilds lists the allowlisted servers marked for history, in order.
+func (c Config) HistoryGuilds() []string {
+	var out []string
+	for id, g := range c.Guilds {
+		if g.History {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Run imports every allowlisted server marked for history.
 func (im *Importer) Run(ctx context.Context) (ImportStats, error) {
+	return im.run(ctx, im.Config.HistoryGuilds())
+}
+
+// RunGuild imports one allowlisted server marked for history.
+func (im *Importer) RunGuild(ctx context.Context, guildID string) (ImportStats, error) {
+	if g, ok := im.Config.Guilds[guildID]; !ok || !g.History {
+		return ImportStats{}, fmt.Errorf("guild %s is not marked for history", guildID)
+	}
+	return im.run(ctx, []string{guildID})
+}
+
+// run imports guilds. MaxDocuments bounds each run.
+func (im *Importer) run(ctx context.Context, guilds []string) (ImportStats, error) {
 	var stats ImportStats
+	im.mu.Lock()
+	im.retained = 0
+	im.mu.Unlock()
 	today := im.now().UTC().Truncate(24 * time.Hour)
 	type job struct {
 		guildID string
 		channel Channel
 	}
 	var jobs []job
-	guilds := make([]string, 0, len(im.Config.Guilds))
-	for id := range im.Config.Guilds {
-		guilds = append(guilds, id)
-	}
-	sort.Strings(guilds)
 	for _, gid := range guilds {
 		g := im.Config.Guilds[gid]
-		if !g.History {
-			continue
+		if err := im.pace(ctx); err != nil {
+			return stats, err
 		}
 		channels, err := im.Source.GuildChannels(ctx, gid)
 		if err != nil {
 			return stats, fmt.Errorf("guild %s channels: %w", gid, err)
+		}
+		if err := im.pace(ctx); err != nil {
+			return stats, err
 		}
 		threads, err := im.Source.Threads(ctx, gid, channels)
 		if err != nil {
@@ -298,10 +333,16 @@ func (im *Importer) channel(ctx context.Context, guildID string, c Channel, toda
 		} else {
 			skipped++
 		}
+		if im.Observe != nil {
+			im.Observe(guildID, ok)
+		}
 		return nil
 	}
 	before := ""
 	for {
+		if err := im.pace(ctx); err != nil {
+			return retained, skipped, err
+		}
 		page, err := im.Source.MessagesBefore(ctx, c.ID, before)
 		var he *HTTPError
 		if errors.As(err, &he) && he.Status == http.StatusForbidden {
@@ -346,12 +387,15 @@ func (im *Importer) keep(m HistoryMessage) bool {
 // newest first, as Discord returns them.
 func (im *Importer) store(ctx context.Context, guildID string, c Channel, day time.Time, lines []HistoryMessage) (bool, error) {
 	id := HistoryDocumentID(c.ID, day)
-	exists, err := im.Store.DocumentExists(ctx, guildID, id)
-	if err != nil {
+	exists, err := im.exists(ctx, guildID, id)
+	if err != nil || exists {
 		return false, err
 	}
-	if exists {
-		return false, nil
+	if im.SkipIngested && im.Config.Guilds[guildID].Ingest {
+		exists, err := im.exists(ctx, guildID, DocumentID(c.ID, day))
+		if err != nil || exists {
+			return false, err
+		}
 	}
 	im.mu.Lock()
 	if im.MaxDocuments > 0 && im.retained >= im.MaxDocuments {
@@ -384,6 +428,9 @@ func (im *Importer) store(ctx context.Context, guildID string, c Channel, day ti
 // server, so each retry first checks whether the document is there. The
 // retain replaces the document by ID, so a second write adds no duplicate.
 func (im *Importer) retain(ctx context.Context, guildID string, item RetainItem) error {
+	if err := im.pace(ctx); err != nil {
+		return err
+	}
 	err := im.Store.RetainDocument(ctx, guildID, item)
 	wait := im.Backoff
 	for attempt := 1; attempt <= im.RetainRetries && err != nil && transient(ctx, err); attempt++ {
@@ -395,13 +442,30 @@ func (im *Importer) retain(ctx context.Context, guildID string, item RetainItem)
 			return err
 		}
 		wait *= 2
-		exists, xerr := im.Store.DocumentExists(ctx, guildID, item.DocumentID)
+		exists, xerr := im.exists(ctx, guildID, item.DocumentID)
 		if xerr == nil && exists {
 			return nil
+		}
+		if perr := im.pace(ctx); perr != nil {
+			return err
 		}
 		err = im.Store.RetainDocument(ctx, guildID, item)
 	}
 	return err
+}
+
+func (im *Importer) exists(ctx context.Context, guildID, documentID string) (bool, error) {
+	if err := im.pace(ctx); err != nil {
+		return false, err
+	}
+	return im.Store.DocumentExists(ctx, guildID, documentID)
+}
+
+func (im *Importer) pace(ctx context.Context) error {
+	if im.Pace == nil {
+		return ctx.Err()
+	}
+	return im.Pace(ctx)
 }
 
 // transient reports whether a retain failure may pass on its own. A

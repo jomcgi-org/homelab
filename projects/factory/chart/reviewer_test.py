@@ -79,7 +79,7 @@ def _helm(
         "--set",
         "discord.bridge.enabled=false",
         "--set",
-        "discord.import.enabled=false",
+        "discord.backfill.enabled=false",
         "--set",
         "discord.operator.enabled=false",
         "--set",

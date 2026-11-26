@@ -21,7 +21,7 @@ type Limit struct {
 }
 
 // Guild is an allowlisted server. Channels, when set, limits it to those
-// channels. History marks it for the history import (HOME-164). Ingest
+// channels. History marks it for the history backfill (HOME-164). Ingest
 // stores every human message there, tagged or not (Joe, 2026-11-24,
 // HOME-833); it needs the privileged Message Content intent.
 type Guild struct {
