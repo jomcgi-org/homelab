@@ -1518,7 +1518,15 @@ def test_discord_is_off_by_default_and_checks_its_wiring() -> None:
 
 
 def test_discord_import_runs_once_per_run_id_with_the_bridge_boundary() -> None:
-    docs = _render(_DISCORD + ["discord.import.enabled=true", "discord.import.runId=7"])
+    docs = _render(
+        _DISCORD
+        + [
+            "discord.import.enabled=true",
+            "discord.import.runId=7",
+            "discord.import.maxDocuments=500",
+            "discord.import.deadlineSeconds=21600",
+        ]
+    )
     job = _in(docs, "Job", "factory-discord", "discord-import-7")
     pod = job["spec"]["template"]
     # The bridge's label: hindsight-discord admits it and the bridge's egress

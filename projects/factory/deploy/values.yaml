@@ -404,6 +404,11 @@ discord:
   import:
     enabled: true
     runId: "5"
+    # No document cap and a 24 h deadline (Joe, 2026-11-26: "ingest
+    # everything"). A run that fails or ends resumes on the next runId,
+    # because stored channel-days are skipped.
+    maxDocuments: 0
+    deadlineSeconds: 86400
     # The connector build of #8725 (retain retries). A fixed digest keeps the
     # kept Job's template the same across releases.
     image: ghcr.io/jomcgi/homelab/projects/factory/connector@sha256:a419c71123c3144a03b66034ea3fed139087bd2f9ae13ac7ddcdd1f6b62393aa # ratchet-allow: image-digest (the import Job must not follow the connector's digest; bump it by PR)
