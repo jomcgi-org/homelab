@@ -66,7 +66,8 @@ LOGINS = [
         "factory-storyboard-db",
     ),
     ("factory-db-reaper-login", "factory_reaper", "factory", "factory-reaper-db"),
-    ("factory-db-trips-login", "factory_trips", "trips", "trips-postgres"),
+    # Trips is not deployed (Joe, 2026-11-26): its login Secret, role and
+    # database stay in factory-db, but no trips Role admits this Job.
     (
         "factory-db-leaderboard-login",
         "factory_leaderboard",

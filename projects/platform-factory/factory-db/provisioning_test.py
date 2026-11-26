@@ -41,7 +41,6 @@ LOGINS = [
         "factory-storyboard-db",
     ),
     ("factory-db-reaper-login", "factory_reaper", "factory", "factory-reaper-db"),
-    ("factory-db-trips-login", "factory_trips", "trips", "trips-postgres"),
     (
         "factory-db-leaderboard-login",
         "factory_leaderboard",
@@ -63,7 +62,6 @@ CLIENT_SECRETS = [
     "factory/secrets.yaml",
     "../hindsight/resources/secrets.yaml",
     "../hindsight-discord/resources/secrets.yaml",
-    "../../trips/chart/templates/db-secret.yaml",
 ]
 
 
