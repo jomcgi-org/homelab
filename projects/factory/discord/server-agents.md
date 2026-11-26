@@ -98,8 +98,8 @@ connector, but the actor still holds an open WebSocket to it
 ([relay](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/messaging/relay.md)).
 
 Hermes does not need its Discord adapter. The adapter calls the API
-server's non-streaming `/v1/responses` with `X-Hermes-Session-Key` set to
-the server's session. With `unattended_mode: deny`, a `/v1/runs` or
+server's non-streaming `/v1/responses` with `X-Hermes-Session-Key` and
+`conversation` both set to the server's session. With `unattended_mode: deny`, a `/v1/runs` or
 streaming client still gets approval requests and the run parks in
 `waiting_for_approval`; an MCP tool with `trust: untrusted` parks the same
 way. So the adapter also answers every approval request with deny, and a
@@ -358,7 +358,6 @@ Read on 2026-11-26 from the repository's `main` branch
 - A Discord server (guild) allowlist in the Hermes adapter.
 - A per-server placeholder in Hindsight's `bank_id_template` (`{chat}` and
   `{platform}` exist). The design sets `bank_id` per actor instead.
-- Whether Hermes' A2A endpoint matches kagent's harness contract.
 - A per-turn input-token cap.
 - Which kagent resource binds the hindsight-discord origin to an actor JWT
   (only ModelConfig has `actorJwt` here).
@@ -366,3 +365,12 @@ Read on 2026-11-26 from the repository's `main` branch
   minimum, 2 to 4 GB and 2 cores recommended).
 - Whether the `discord` toolsets work without the native adapter.
 - How large `state.db` grows per month of turns, which sets checkpoint time.
+
+Slice 1 (HOME-906) found two facts in the v0.23.4 source:
+
+- Hermes' A2A endpoint is JSON-RPC over HTTP. kagent's BYO contract is
+  private A2A gRPC with the control-plane TaskStore and a bootstrap bundle,
+  so the two do not match.
+- On `/v1/responses`, `X-Hermes-Session-Key` alone does not replay earlier
+  turns (`history_from_session` stays false). A `conversation` name chains
+  each turn to the last stored response.
