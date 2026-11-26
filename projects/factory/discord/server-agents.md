@@ -38,8 +38,9 @@ flowchart LR
 ## Today
 
 Bosun runs one kagent Agent for all four servers. Each tagged message
-creates a fresh session actor `session-<id>`, restores it from a checkpoint
-(fidelity "volumes"), runs one turn, checkpoints it and deletes the session
+creates a fresh session actor `session-<id>` and restores it from a
+checkpoint. The Bosun worker log shows `Restore timing breakdown` with
+`ate.snapshot.fidelity: volumes` (2026-11-24 and 25). The actor runs one turn, checkpoints it and deletes the session
 (`agent.go`, HOME-162 "Short sessions"). The bridge recalls before the turn
 and retains after it; the agent has no tools except `:online` web search.
 
@@ -64,12 +65,12 @@ v0.23.4 was published on 2026-11-24. Each fact below links its source; the
 | Need | Hermes | Source |
 | --- | --- | --- |
 | Take turns from another service | API server (`/v1/runs`, `/v1/responses`), A2A, ACP over stdio, webhooks, one-shot CLI | [api-server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md), [a2a](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/messaging/a2a.md), [integration](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md) |
-| Persistent session | `X-Hermes-Session-Id` picks the transcript; sessions in SQLite `state.db` | [api-server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md), [memory](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/memory.md) |
+| Persistent session | `/v1/runs` and `/v1/responses` keep a conversation by `X-Hermes-Session-Key`; Chat Completions uses `X-Hermes-Session-Id`; sessions in SQLite `state.db` | [api-server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md), [memory](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/memory.md) |
 | Memory | `MEMORY.md` and `USER.md`, loaded at session start; one external provider, Hindsight among them | [memory](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/memory.md), [providers](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/memory-providers.md) |
 | Compaction | Summarises at `compression.threshold` (default 0.50 of the window) with `auxiliary.compression` | [compression](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/context-compression-and-caching.md) |
 | MCP client | `mcp_servers`, stdio or Streamable HTTP, `tools.include` per server | [mcp config](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/reference/mcp-config-reference.md) |
 | Model | `provider: custom` with `base_url`; OpenRouter via `OPENROUTER_API_KEY` | [providers](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/integrations/providers.md) |
-| Tool limits | `agent.disabled_toolsets`, `platform_toolsets`; API sessions deny unattended approvals | [configuration](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/configuration.md), [security](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/security.md) |
+| Tool limits | `agent.disabled_toolsets`, `platform_toolsets`; `approvals.mode` and `unattended_mode` | [configuration](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/configuration.md), [security](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/security.md) |
 | Long-lived process | `hermes gateway`; state in `HERMES_HOME`; image `nousresearch/hermes-agent` | [docker](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/docker.md) |
 
 Hermes fits: it runs headless behind an API, keeps sessions on disk and has
@@ -96,8 +97,13 @@ one cannot suspend. Hermes' relay mode moves the bot token to a separate
 connector, but the actor still holds an open WebSocket to it
 ([relay](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/messaging/relay.md)).
 
-Hermes does not need its Discord adapter. Its API server takes a turn
-with a session ID, and API sessions deny commands that need approval. The
+Hermes does not need its Discord adapter. The adapter calls the API
+server's non-streaming `/v1/responses` with `X-Hermes-Session-Key` set to
+the server's session. With `unattended_mode: deny`, a `/v1/runs` or
+streaming client still gets approval requests and the run parks in
+`waiting_for_approval`; an MCP tool with `trust: untrusted` parks the same
+way. So the adapter also answers every approval request with deny, and a
+turn never waits on a person. The
 Hermes Discord adapter documents user, role and channel allowlists but no
 server allowlist ([discord](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/messaging/discord.md)).
 
@@ -106,8 +112,8 @@ server allowlist ([discord](https://github.com/NousResearch/hermes-agent/blob/ma
 **Recommendation.** Each server has one kagent Agent on a Hermes harness,
 in its own namespace and WorkerPool. The harness is a kagent BYO image: the
 pinned Hermes image plus a small adapter that speaks kagent's A2A harness
-contract and sends each turn to the Hermes API server on loopback, with
-the server's session ID. Hermes' own A2A endpoint may match kagent's
+contract and sends each turn to the Hermes API server on loopback
+(section 1). Hermes' own A2A endpoint may match kagent's
 contract; that is not confirmed, so slice 1 tries it first. The adapter
 starts `hermes gateway` with `API_SERVER_ENABLED=true`, the API on
 loopback, and no messaging platform.
@@ -168,15 +174,25 @@ identity at the gateway, never from the prompt.
   spend on its own.
 - **Hindsight.** Today the tenant key opens every bank, so it never enters
   an actor. Hermes' Hindsight provider runs in `local_external` mode with
-  `bank_id: discord-<guild>` and a placeholder `api_key`
+  `bank_id: discord-<guild>` and `memory_mode: context`. Its config has no
+  key field; the placeholder goes in env `HINDSIGHT_API_KEY`
   ([provider](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/memory-providers.md),
   [keys](https://hindsight.vectorize.io/sdks/integrations/hermes)). The
   gateway replaces the placeholder with an actor JWT (audience
   `hindsight-discord`). A Hindsight extension, like the factory's
-  `/ext/connector/retain`, verifies the JWT, maps
-  `actor/discord-<guild>/session-*` to bank `discord-<guild>` and refuses
-  every other bank. The bank in the config is a convenience; the JWT check
-  is the control. Slice 3 opens recall only.
+  `/ext/connector/retain`, verifies the JWT with the broker's rules
+  (`ARCHITECTURE.md`, "Codex relay"): signature, `iss`, `aud`, `exp` and
+  `nbf`; subject exactly `actor/discord-<guild>/session-*` with the
+  `actor.ate.dev` claim; no `worker-for-actor` token; atespace in an
+  `allowedAtespaces` list. It maps the subject to bank `discord-<guild>`
+  and refuses every other bank. It refuses retain and reflect for actor
+  tokens, so only recall is open. The bank in the config is a convenience;
+  the JWT check is the control.
+- **JWT binding.** In this repository `actorJwt` exists only on ModelConfig
+  (`chart/templates/_binding.tpl`, `discord-operator.yaml`). Which kagent
+  resource binds the hindsight-discord origin to an actor JWT is not
+  confirmed. The fallback is a per-guild injectable token that the
+  extension maps to one bank.
 - **Network.** The `hindsight-discord` ingress policy admits the egress
   gateway for that route only. The bridge keeps its own path.
 - **Writes.** The bridge stays the only writer of Discord messages
@@ -208,10 +224,19 @@ discord:
   and the `discord` and `discord_admin` toolsets
   ([toolsets](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/reference/toolsets-reference.md)). Web search stays in the
   model call (`:online`).
-- **Homelab agent.** People other than Joe can post in the homelab server.
-  Its agent gets only factory MCP read tools: issue and run status, PR and
-  check state, and alert state. It gets no tool that files, dispatches,
-  approves or merges. factory-mcp (HOME-900) is a Joe-only OAuth server, so
+- **Homelab agent.** People other than Joe can post in the homelab server,
+  and an answer shows them what a tool returned. So the allowlist names
+  read tools by the data they return:
+
+  | Data class | Example | Slice 5 |
+  | --- | --- | --- |
+  | Public repository state | PR state, check results, merged commits | Allowed |
+  | Status fields | Issue key, column and title; run state and times | Allowed |
+  | Alert state | Firing alert names and severity | Allowed |
+  | Issue and run text | Descriptions, comments, agent output, logs | Refused: can hold private data |
+  | Decisions and credentials | Joe's comments, secrets, tokens | Refused |
+
+  It gets no tool that files, dispatches, approves or merges. factory-mcp (HOME-900) is a Joe-only OAuth server, so
   the agent needs its own read-only service identity there.
 - Other servers get no MCP tools in the first slices.
 
@@ -241,9 +266,12 @@ turn, and one memory owner per kind of fact.
 
 - **No double memory.** For a server with an agent, the bridge stops putting
   recalled memories into the prompt. Hermes' Hindsight provider recalls
-  instead (`auto_recall: true`, `recall_budget` bounds it), and
-  `auto_retain: false` stops Hermes writing a second copy of Discord
-  history. Compaction keeps recent turns; Hindsight answers about anything
+  instead (`auto_recall: true`, `recall_budget` bounds it).
+  `memory_mode: context` keeps the `hindsight_retain`, `hindsight_recall`
+  and `hindsight_reflect` tools out of the model's tool list; the default
+  `hybrid` exposes them, and `auto_retain: false` alone leaves retain. The
+  extension refusing retain is the control, so Hermes never writes a
+  second copy of Discord history. Compaction keeps recent turns; Hindsight answers about anything
   older.
 - **Agent notes.** `MEMORY.md` loads into every session's system prompt
   ([memory](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/memory.md)), and people other than Joe
@@ -267,7 +295,7 @@ the operator exception in `operator.go`; Joe checks it against HOME-162.
 | 2 | One dedicated model key for Bosun | One dedicated key per server agent, each with its own limit |
 | 3 | The agent has no tools; the bridge is the only Hindsight client | Per-server MCP allowlist, read-only by default; the agent recalls its own bank through the gateway |
 | 4 | A turn's context is the tagged message and its channel's memory | The server's persistent session also carries earlier turns in that server |
-| 5 | Recall reads one channel's tag (ingest already amended retain, HOME-833) | Recall is server-wide inside the server's bank (HOME-904) |
+| 5 | Recall reads one channel's tag (ingest already amended retain, HOME-833) | Recall is server-wide inside the server's bank (HOME-904). Decided: Joe chose this on 2026-11-26, told that it can show private-channel text to members who cannot see that channel |
 | 6 | Replies ping nobody | Same |
 | 7 | User, guild and global turn limits | Same, plus a token and tool-call budget per turn |
 | 8 | Server allowlist; one bank per server | Same, plus one atespace and identity per server |
@@ -301,7 +329,7 @@ the homelab server only.
 | --- | --- | --- |
 | 1 | Build a Hermes harness image for kagent | An A2A turn through kagent gets a Hermes answer in CI, with Discord and local tools off |
 | 2 | Run a persistent homelab agent on ATE | The homelab session suspends when idle, writes an object to `ate-snapshots` and restores on the next turn |
-| 3 | Scope Hindsight recall to the actor's server | The homelab actor recalls bank `discord-1501965852042330302` and a request for another bank fails |
+| 3 | Scope Hindsight recall to the actor's server | The homelab actor recalls bank `discord-1501965852042330302`; another bank, retain and reflect fail; the actor JWT binds the origin, or else a per-guild injectable token does |
 | 4 | Route homelab turns to its agent | A tag in the homelab server answers from the agent; the other three servers still answer from Bosun |
 | 5 | Give the homelab agent factory MCP read tools | The agent answers a run-status question; a write tool call fails |
 | 6 | Measure the homelab agent against Bosun | p50, p90, tokens and the question-set score are recorded on HOME-905 for 7 days |
@@ -318,6 +346,7 @@ Each decision names the rule that needs Joe.
 | Homelab agent's factory access | factory-mcp is Joe-only (HOME-900) | Read-only service identity for the agent; no factory tools |
 | Model key per server | HOME-162 rule 2 | One OpenRouter key and limit per server; one shared key with bridge limits only |
 | Hermes `MEMORY.md` writes | HOME-162 rule 1 | Off; on for the homelab server only; on everywhere |
+| Private channels in recall (follow-up) | HOME-904 | Tag non-public channels at ingest and leave them out of server-wide recall; keep server-wide recall as decided |
 | Session scope | HOME-162 rule 4 | One session per server; one session per channel (one actor each) |
 | First server | HOME-905 scope | homelab only; homelab and Loom together |
 
@@ -331,6 +360,8 @@ Read on 2026-11-26 from the repository's `main` branch
   `{platform}` exist). The design sets `bank_id` per actor instead.
 - Whether Hermes' A2A endpoint matches kagent's harness contract.
 - A per-turn input-token cap.
+- Which kagent resource binds the hindsight-discord origin to an actor JWT
+  (only ModelConfig has `actorJwt` here).
 - Resource needs outside Docker (the Docker page states 1 GB and 1 core
   minimum, 2 to 4 GB and 2 cores recommended).
 - Whether the `discord` toolsets work without the native adapter.
