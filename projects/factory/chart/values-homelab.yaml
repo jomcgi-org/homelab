@@ -64,7 +64,7 @@ kagent:
   # Agents and the controller's watch: kagent's own namespace plus each
   # repository binding's.
   rbac:
-    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-r-homelab-planner, factory-discord-agent, factory-discord-operator]
+    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-r-homelab-planner, factory-discord-agent, factory-discord-operator, discord-1501965852042330302]
   # The controller's metrics for Prometheus
   # (projects/platform-factory/prometheus): HTTPS on 8443, admitting a token
   # whose subject may GET /metrics.
@@ -422,6 +422,11 @@ discord:
     enabled: true
     guild: "1501965852042330302"
     channels: ["1575140752776757368"]
+  # The homelab server's Hermes agent (HOME-907): a persistent session that
+  # suspends when idle. The bridge sends it no turns yet (HOME-905 slice 4).
+  serverAgents:
+    homelab:
+      enabled: true
 
 semgrepSync:
   enabled: false

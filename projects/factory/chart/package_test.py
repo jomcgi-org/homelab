@@ -165,3 +165,15 @@ def test_packaged_render_matches_the_lock_with_published_images(
             assert deployment["spec"]["template"]["spec"]["imagePullSecrets"] == [
                 {"name": published["imagePullSecret"]["name"]}
             ]
+    # The homelab server agent's Hermes Harness runs the published digest,
+    # the only form the Harness CRD admits.
+    (harness,) = [
+        doc
+        for doc in docs
+        if doc["kind"] == "Harness"
+        and doc["metadata"]["namespace"] == "discord-1501965852042330302"
+    ]
+    image = published["discord"]["hermesImage"]
+    assert harness["spec"]["workload"]["image"] == (
+        f"{image['repository']}@{image['digest']}"
+    )
