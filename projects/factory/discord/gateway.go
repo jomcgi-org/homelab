@@ -70,7 +70,9 @@ type Gateway struct {
 	Token     func() (string, error)
 	OnReady   func(User)
 	OnMessage func(Message)
-	Log       *slog.Logger
+	// Places caches servers and channels from guild events; nil caches none.
+	Places *Places
+	Log    *slog.Logger
 	// Intents is the identify intents; the package constant Intents when zero.
 	Intents int
 	// Dial opens the connection; websocket.Dial when nil (tests replace it).
@@ -283,6 +285,10 @@ func (g *Gateway) dispatch(ctx context.Context, s *session, p payload) {
 		}
 		if g.OnMessage != nil {
 			g.OnMessage(m)
+		}
+	default:
+		if g.Places != nil {
+			g.Places.Apply(p.T, p.D)
 		}
 	}
 }

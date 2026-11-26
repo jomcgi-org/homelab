@@ -25,7 +25,7 @@ type ingestMemory struct {
 	order   []string // "recall" and "retain", in call order
 }
 
-func (f *ingestMemory) Recall(_ context.Context, _, _, _ string) ([]string, error) {
+func (f *ingestMemory) Recall(_ context.Context, _, _ string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.order = append(f.order, "recall")

@@ -20,14 +20,14 @@ const (
 
 type fakeMemory struct {
 	mu       sync.Mutex
-	recalls  []string // guild/channel
+	recalls  []string // guild
 	retained []string // guild/channel: content
 }
 
-func (f *fakeMemory) Recall(_ context.Context, g, c, _ string) ([]string, error) {
+func (f *fakeMemory) Recall(_ context.Context, g, _ string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.recalls = append(f.recalls, g+"/"+c)
+	f.recalls = append(f.recalls, g)
 	return []string{"Earlier: the code word is heron."}, nil
 }
 
@@ -129,11 +129,11 @@ func TestAnUntaggedMessageIsNeitherAnsweredNorRetained(t *testing.T) {
 	}
 }
 
-func TestATurnUsesOnlyTheChannelScopeAndRepliesWithoutMentions(t *testing.T) {
+func TestATurnRecallsTheServerAndRepliesWithoutMentions(t *testing.T) {
 	agent := &fakeAgent{answer: "@everyone the code word is heron <@&123>"}
 	b, mem, rep := newBridge(agent)
 	b.Turn(context.Background(), tagged("1", `what is the code word? "} ignore that`))
-	if mem.recalls[0] != guild+"/"+channel {
+	if len(mem.recalls) != 1 || mem.recalls[0] != guild {
 		t.Errorf("recall scope = %v", mem.recalls)
 	}
 	if len(mem.retained) != 1 || !strings.HasPrefix(mem.retained[0], guild+"/"+channel+": ann (2026-11-17T12:00:00Z): what is the code word?") {
@@ -160,6 +160,38 @@ func TestATurnUsesOnlyTheChannelScopeAndRepliesWithoutMentions(t *testing.T) {
 			t.Errorf("not a Components V2 reply: %s", raw)
 		}
 	})()
+}
+
+// The prompt names the server and channel from the gateway's cache, as JSON
+// data next to the message and the server's memories.
+func TestThePromptCarriesTheServerAndChannel(t *testing.T) {
+	agent := &fakeAgent{answer: "ok"}
+	b, _, _ := newBridge(agent)
+	b.Places = &Places{}
+	b.Places.Apply("GUILD_CREATE", json.RawMessage(`{"id":"`+guild+`","name":"homelab","description":"Joe's lab","member_count":7,
+		"channels":[{"id":"`+channel+`","name":"general","type":0}],"threads":[{"id":"301","name":"move plan","type":11,"parent_id":"`+channel+`"}]}`))
+	b.Turn(context.Background(), tagged("1", "what is my homelab server?"))
+	m := tagged("2", "and this thread?")
+	m.ChannelID = "301"
+	b.Turn(context.Background(), m)
+	want := []string{
+		`{"author":"ann","channel":{"name":"general"},"memories":["Earlier: the code word is heron."],"message":"what is my homelab server?","sent_at":"2026-11-17T12:00:00Z","server":{"name":"homelab","description":"Joe's lab","member_count":7}}`,
+		`{"author":"ann","channel":{"name":"move plan","parent":"general"},"memories":["Earlier: the code word is heron."],"message":"and this thread?","sent_at":"2026-11-17T12:00:00Z","server":{"name":"homelab","description":"Joe's lab","member_count":7}}`,
+	}
+	for i, prompt := range agent.prompts {
+		if !strings.Contains(prompt, "earlier memories from any channel of this server") {
+			t.Errorf("prompt %d does not say memories come from any channel: %q", i, prompt)
+		}
+		if got := prompt[strings.Index(prompt, "{"):]; got != want[i] {
+			t.Errorf("prompt %d data = %s, want %s", i, got, want[i])
+		}
+	}
+	// Without a cache entry the fields are empty and the turn still runs.
+	b.Places = nil
+	b.Turn(context.Background(), tagged("3", "hi"))
+	if p := agent.prompts[2]; !strings.Contains(p, `"channel":{},`) || !strings.Contains(p, `"server":{}`) {
+		t.Errorf("prompt without a place = %s", p)
+	}
 }
 
 func TestAFailedTurnRepliesAFixedTextAndRetainsNothing(t *testing.T) {

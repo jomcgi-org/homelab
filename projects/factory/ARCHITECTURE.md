@@ -538,7 +538,15 @@ the boundary and rollout checks.
 
 ### Discord bot
 
-Bosun answers mentions in the configured Discord servers. The bridge scopes memory to the guild and channel and passes messages to a separate kagent agent. The agent uses a dedicated model credential and has no coding tools. [Isolation decision](https://github.com/jomcgi-org/homelab/pull/8188#issuecomment-6960669519)
+Bosun answers mentions in the configured Discord servers. The bridge passes messages to a separate kagent agent. The agent uses a dedicated model credential and has no coding tools. [Isolation decision](https://github.com/jomcgi-org/homelab/pull/8188#issuecomment-6960669519)
+
+Each server has its own Hindsight bank. A recall reads the whole bank, every
+channel of the server, with no tag filter. A retain keeps the channel's tag
+and observation scope. The turn's JSON prompt names the server, its
+description and member count, and the channel, from the gateway's
+`GUILD_CREATE` and channel events. The model has no `:online` web search.
+Joe chose server-wide recall and no web search for faster turns
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-162#comment-12817)).
 
 ### itsaplan
 
