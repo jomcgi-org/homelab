@@ -395,11 +395,13 @@ discord:
       # message in each (Joe, 2026-11-25, HOME-833); it needs the Message
       # Content intent enabled for the application (HOME-834). ingestSince is
       # the first full ingested UTC day; the backfill imports earlier days.
+      # 2026-11-26 was the last day of bridge restarts during the Bosun and
+      # Hermes rollout, so its live documents are incomplete.
       guilds:
-        "185442367703220224": {history: true, ingest: true, ingestSince: "2026-11-26"} # NOT DEM BOYZ
-        "1290668195249917964": {history: true, ingest: true, ingestSince: "2026-11-26"} # The gang...
-        "1501965852042330302": {history: true, ingest: true, ingestSince: "2026-11-26"} # homelab
-        "1512814732392927463": {history: true, ingest: true, ingestSince: "2026-11-26"} # Loom
+        "185442367703220224": {history: true, ingest: true, ingestSince: "2026-11-27"} # NOT DEM BOYZ
+        "1290668195249917964": {history: true, ingest: true, ingestSince: "2026-11-27"} # The gang...
+        "1501965852042330302": {history: true, ingest: true, ingestSince: "2026-11-27"} # homelab
+        "1512814732392927463": {history: true, ingest: true, ingestSince: "2026-11-27"} # Loom
       userLimit: {count: 10, window: 1h}
       guildLimit: {count: 60, window: 1h}
       globalLimit: {count: 300, window: 24h}
