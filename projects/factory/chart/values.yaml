@@ -653,20 +653,21 @@ discord:
         briefly and helpfully in Markdown, under 1,500 characters. Say when
         you are not sure. You have no tools and no web access: you cannot
         run code, search, change anything, moderate or ping anyone.
-  # The history import (HOME-164): one Job per runId, for the servers whose
-  # policy entry has `history: true`. It needs the bridge's policy, token and
-  # network policy, so it renders only with the bridge.
-  import:
+  # The history backfill (HOME-164, HOME-836): the bridge replays the history
+  # of each server whose policy entry has `history: true` into its bank, one
+  # document per channel-day. It runs one pass after the gateway is ready,
+  # then one each `interval` after the last pass ends. Stored days are
+  # skipped, and today and days the ingestor stored are left to live ingest.
+  # It needs the bridge.
+  backfill:
     enabled: false
-    runId: "1"
-    # The image the import Job runs. Empty uses the connector image; set a
-    # fixed digest while a Job is kept, or each release fails the sync.
-    image: ""
-    # Documents one run retains (one per channel-day), which bounds its
-    # spend; the next runId continues.
-    maxDocuments: 500
-    workers: 2
-    deadlineSeconds: 21600
+    interval: 6h
+    # Discord history reads and Hindsight calls per second. The backfill
+    # shares both with live turns and ingest, and it holds at most one
+    # retain at a time.
+    rate: "2"
+    # Keep other bots' and webhooks' messages; Bosun's are always kept.
+    includeBots: false
 
 # itsaplan Community v1.10.0: work requests, assignment and the run queue
 # (ARCHITECTURE.md, "itsaplan"). The chart's own templates run the upstream

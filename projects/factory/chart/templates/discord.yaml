@@ -331,6 +331,18 @@ spec:
               value: {{ printf "%s/%s" $d.agent.namespace $d.agent.name | quote }}
             - name: HEALTH_ADDR
               value: ":8080"
+            {{- if $d.backfill.enabled }}
+            # The history backfill (HOME-836): one pass after the gateway is
+            # ready, then one each interval, for each server with `history`.
+            - name: BACKFILL_ENABLED
+              value: "true"
+            - name: BACKFILL_INTERVAL
+              value: {{ $d.backfill.interval | quote }}
+            - name: BACKFILL_RATE
+              value: {{ $d.backfill.rate | quote }}
+            - name: BACKFILL_INCLUDE_BOTS
+              value: {{ $d.backfill.includeBots | quote }}
+            {{- end }}
             {{- if $o.enabled }}
             - name: DISCORD_OPERATOR_AGENT
               value: {{ printf "%s/%s" $o.namespace $o.name | quote }}
@@ -503,99 +515,4 @@ spec:
               {{- end }}
           {{- end }}
 {{- end }}
-{{- end }}
-{{- if and $d.bridge.enabled $d.import.enabled }}
-{{- $b := $d.bridge }}
----
-# One history import run (HOME-164): `discord-bridge import` replays each
-# server with `history: true` into its bank, one document per channel-day.
-# A new runId starts a new run; days already stored are skipped. The bridge's
-# label gives it the bridge's egress and hindsight-discord's admission.
-# The Job must render the same in every release: a Job's template is
-# immutable, and a changed Job fails ArgoCD's server-side diff dry run, which
-# stops the whole sync. So `import.image` pins its image apart from the
-# connector's, and its labels leave out helm.sh/chart.
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: {{ printf "discord-import-%s" (toString $d.import.runId) }}
-  namespace: {{ $b.namespace }}
-  labels:
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/part-of: factory
-spec:
-  backoffLimit: 2
-  activeDeadlineSeconds: {{ $d.import.deadlineSeconds }}
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: factory-discord-bridge
-        app.kubernetes.io/component: import
-    spec:
-      serviceAccountName: discord-bridge
-      automountServiceAccountToken: false
-      enableServiceLinks: false
-      restartPolicy: Never
-      {{- if .Values.imagePullSecret.enabled }}
-      imagePullSecrets:
-        - name: {{ .Values.imagePullSecret.name }}
-      {{- end }}
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: import
-          image: {{ $d.import.image | default (include "factory.connectorImage" .) | quote }}
-          imagePullPolicy: {{ .Values.connector.image.pullPolicy }}
-          command: [/usr/local/bin/discord-bridge, import]
-          env:
-            - name: DISCORD_POLICY_FILE
-              value: /etc/discord-bridge/policy.json
-            - name: DISCORD_TOKEN_FILE
-              value: /var/run/secrets/discord/token
-            - name: HINDSIGHT_URL
-              value: {{ $b.hindsightURL | quote }}
-            - name: HINDSIGHT_KEY_FILE
-              value: /var/run/secrets/hindsight/tenant-api-key
-            - name: IMPORT_MAX_DOCUMENTS
-              value: {{ $d.import.maxDocuments | quote }}
-            - name: IMPORT_WORKERS
-              value: {{ $d.import.workers | quote }}
-          resources:
-            {{- toYaml $b.resources | nindent 12 }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
-          volumeMounts:
-            - name: discord
-              mountPath: /var/run/secrets/discord
-              readOnly: true
-            - name: hindsight
-              mountPath: /var/run/secrets/hindsight
-              readOnly: true
-            - name: policy
-              mountPath: /etc/discord-bridge
-              readOnly: true
-      volumes:
-        - name: discord
-          secret:
-            secretName: discord-bot
-            items:
-              - key: token
-                path: token
-        - name: hindsight
-          secret:
-            secretName: {{ $b.hindsightKeySecret }}
-            items:
-              - key: tenant-api-key
-                path: tenant-api-key
-        - name: policy
-          configMap:
-            name: discord-bridge-policy
 {{- end }}
