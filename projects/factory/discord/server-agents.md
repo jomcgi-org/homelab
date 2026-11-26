@@ -4,8 +4,9 @@ Design for [HOME-905](https://factory-plan.jomcgi.dev/factory/issue/HOME-905).
 Each allowlisted Discord server gets its own persistent Hermes agent on ATE.
 The agent wakes when the bridge sends it a turn and suspends when idle. It
 reads and writes only its own server's Hindsight bank, and it gets only the
-MCP tools that its server's values list. Nothing here is built yet: every
-control below is `designed`.
+MCP tools that its server's values list. The homelab agent's image and
+chart exist (slice 2); no control below is seen live yet, so each one is
+`designed`.
 
 Joe's decisions are on
 [HOME-162 comment 12817](https://factory-plan.jomcgi.dev/factory/issue/HOME-162#comment-12817)
@@ -31,7 +32,7 @@ flowchart LR
 | Component | Role | Code | Untrusted input | Credentials held |
 | --- | --- | --- | --- | --- |
 | bridge | The one Discord gateway and policy point | `discord/` | Every Discord message | Bot token, Hindsight tenant key, kagent invocation token |
-| Hermes actor | Answers one server's turns with a persistent session | Harness image (new) | Tagged messages, recalled memories, tool output | Placeholders only |
+| Hermes actor | Answers one server's turns with a persistent session | `../harness/hermes/`, `../chart/templates/discord-server-agents.yaml` | Tagged messages, recalled memories, tool output | Placeholders only |
 | egress gateway | Injects the model key, tool tokens and actor JWT | `../../platform-factory/substrate/` | Actor requests | Per-atespace injectable Secrets |
 | hindsight-discord | Stores and recalls each server's memory | `../../platform-factory/hindsight-discord/` | Retained text | Database login, OpenRouter key |
 
@@ -109,14 +110,15 @@ server allowlist ([discord](https://github.com/NousResearch/hermes-agent/blob/ma
 
 ## 2. Runtime on ATE
 
-**Recommendation.** Each server has one kagent Agent on a Hermes harness,
-in its own namespace and WorkerPool. The harness is a kagent BYO image: the
-pinned Hermes image plus a small adapter that speaks kagent's A2A harness
-contract and sends each turn to the Hermes API server on loopback
-(section 1). Hermes' own A2A endpoint may match kagent's
-contract; that is not confirmed, so slice 1 tries it first. The adapter
-starts `hermes gateway` with `API_SERVER_ENABLED=true`, the API on
-loopback, and no messaging platform.
+**Recommendation.** Each server has one kagent Agent on a `spec.hermes`
+Harness, in its own namespace and WorkerPool. The kagent fork's
+`kagent-hermes` runner speaks kagent's private A2A contract and sends each
+turn to the Hermes API server on loopback (section 1). It starts
+`hermes gateway` on the first turn, with the API on loopback and no
+messaging platform. The harness image
+(`../harness/hermes/`) holds the runner and the pinned Hermes Agent without
+its browser, media, Node.js and compiler parts. The chart renders the
+agent from `discord.serverAgents` (`chart/templates/discord-server-agents.yaml`).
 
 The bridge keeps one persistent kagent session per server, the same way the operator session keeps one per thread
 (`operator.go`). The session request ID derives from the guild ID, so a

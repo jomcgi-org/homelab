@@ -1,0 +1,201 @@
+{{- /*
+Per-server Hermes agents (HOME-905, projects/factory/discord/server-agents.md).
+Each enabled server gets its own namespace and atespace,
+discord-<guild>, with a gVisor WorkerPool, a Hermes Harness and an Agent with
+no tools. The actor holds placeholders only: the egress gateway injects the
+OpenRouter key for this atespace. Slice 2 (HOME-907) renders the agent only:
+the bridge sends it no turns (slice 4) and it has no Hindsight (slice 3).
+*/}}
+{{- $d := .Values.discord }}
+{{- range $server := keys $d.serverAgents | sortAlpha }}
+{{- $a := index $d.serverAgents $server }}
+{{- if $a.enabled }}
+{{- $ns := printf "discord-%s" $a.guild }}
+{{- $worker := printf "%s-worker" $a.name }}
+{{- $image := $d.hermesImage }}
+---
+# Kept: deleting it would take the WorkerPool and the session's snapshots.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    # Substrate's worker egress policy selects worker pods only in namespaces
+    # with this label (projects/platform-factory/substrate).
+    factory.jomcgi.dev/substrate-workers: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.keep" $ | nindent 4 }}
+---
+# Worker pods run as this account, with no API token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $worker }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+automountServiceAccountToken: false
+---
+# The OpenRouter key. The label lets Substrate's credential provider inject
+# api-key at the egress gateway for this atespace only.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: discord-llm
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    substrate.ate.dev/injectable: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ $a.llmItemPath | quote }}
+{{- if $.Values.substrate.credentialProvider.secretReaderBinding }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: substrate-credential-provider
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $.Values.substrate.credentialProvider.clusterRole }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $.Values.substrate.credentialProvider.serviceAccount }}
+    namespace: {{ $.Values.substrate.namespace }}
+{{- end }}
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: {{ $a.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    kagent.dev/worker-pool-name: {{ $a.name }}
+    kagent.dev/worker-pool-namespace: {{ $ns }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: {{ $a.concurrency }}
+  workerImage: {{ $.Values.workers.image | quote }}
+  sandboxClasses:
+    - name: gvisor
+      configRef:
+        name: {{ $.Values.workers.sandboxConfig }}
+  template:
+    serviceAccountName: {{ $worker }}
+    resources:
+      {{- toYaml $a.worker.resources | nindent 6 }}
+---
+# kagent swaps the Secret for a placeholder in the actor and binds it to the
+# base URL at the egress gateway.
+apiVersion: api.kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: {{ $a.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  provider: OpenAI
+  model: {{ $a.model | quote }}
+  apiKeySecret: discord-llm
+  apiKeySecretKey: api-key
+  openAI:
+    baseUrl: {{ $a.baseUrl | quote }}
+---
+# Hermes Agent with the kagent fork's runner (projects/factory/harness/hermes).
+# The runner turns every Hermes toolset, memory and lazy install off, and
+# denies every approval. The Harness CRD admits only a digest reference,
+# which helm_chart(images) writes into the published chart.
+apiVersion: api.kagent.dev/v1alpha3
+kind: Harness
+metadata:
+  name: hermes
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  hermes: {}
+  workload:
+    image: {{ ternary (printf "%s@%s" $image.repository $image.digest) (printf "%s:%s" $image.repository $image.tag) (not (empty $image.digest)) | quote }}
+  substrate:
+    workerPoolRef:
+      name: {{ $a.name }}
+    snapshotPolicy:
+      location: {{ printf "%s%s/" $.Values.workers.snapshotLocationPrefix $ns | quote }}
+---
+# No tools and no egress grants: the actor reaches only the model origin.
+apiVersion: api.kagent.dev/v1alpha3
+kind: Agent
+metadata:
+  name: {{ $a.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  template:
+    inline:
+      description: {{ printf "The %s Discord server's agent (HOME-905)" $server | quote }}
+      modelConfig:
+        name: {{ $a.name }}
+      systemPrompt: {{ $a.systemPrompt | quote }}
+  harnessRef:
+    name: hermes
+{{- if $.Values.networkPolicy.cilium }}
+---
+# Worker pods: kagent's A2A calls reach the actor only through Substrate's
+# router, and actor traffic leaves only through its egress gateway. The
+# gateway admits only the ModelConfig's origin for this actor.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: substrate-workers
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: ate.dev/worker-pool
+        operator: Exists
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $.Values.substrate.namespace }}
+            app: atenet-router
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $.Values.substrate.namespace }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+{{- end }}
+{{- end }}
+{{- end }}

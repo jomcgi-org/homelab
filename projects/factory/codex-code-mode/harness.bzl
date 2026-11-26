@@ -1,11 +1,12 @@
-"""Import the executables from the deployed amd64 kagent adapter."""
+"""Import executables from an amd64 kagent harness image, such as the deployed
+Codex adapter or the fork's hermes-runner."""
 
 def _import(ctx):
     index = ctx.path(ctx.attr.index)
     blobs = index.dirname.get_child("blobs").get_child("sha256")
     manifest = json.decode(ctx.read(index))["manifests"][0]
     layers = json.decode(ctx.read(blobs.get_child(manifest["digest"].split(":")[1])))["layers"]
-    binaries = ["codex", "codex-code-mode-host", "codex-exec-server", "kagent-codex"]
+    binaries = ctx.attr.binaries
     for layer in layers:
         blob = blobs.get_child(layer["digest"].split(":")[1])
         listing = ctx.execute(["tar", "tf", blob])
@@ -20,5 +21,10 @@ def _import(ctx):
 
 import_harness = repository_rule(
     implementation = _import,
-    attrs = {"index": attr.label(mandatory = True)},
+    attrs = {
+        "binaries": attr.string_list(
+            default = ["codex", "codex-code-mode-host", "codex-exec-server", "kagent-codex"],
+        ),
+        "index": attr.label(mandatory = True),
+    },
 )

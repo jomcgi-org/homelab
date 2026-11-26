@@ -99,3 +99,10 @@ credentialProvider:
       secretSelector:
         matchLabels:
           substrate.ate.dev/injectable: "true"
+    # The homelab Discord server's Hermes agent (projects/factory/chart,
+    # discord.serverAgents.homelab): the shared OpenRouter key only.
+    - atespace: discord-1501965852042330302
+      allowedNamespaces: [discord-1501965852042330302]
+      secretSelector:
+        matchLabels:
+          substrate.ate.dev/injectable: "true"

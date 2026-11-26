@@ -82,6 +82,8 @@ def _helm(
         "discord.import.enabled=false",
         "--set",
         "discord.operator.enabled=false",
+        "--set",
+        "discord.serverAgents.homelab.enabled=false",
         # Goal reasons need the connector, which many renders turn off; the
         # tests that cover them opt in with an override.
         "--set",

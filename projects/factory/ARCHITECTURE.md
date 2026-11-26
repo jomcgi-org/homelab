@@ -46,7 +46,7 @@ flowchart LR
 | Hindsight | Stores reusable coding lessons | `../platform-factory/hindsight/` | Image 1.2.1, embeddings `mongodb/voyage-4-large`, decision model `typesafe/jev-1.14` | Recalled and retained text | Database and model credentials |
 | discord | Routes mentions to Bosun | `discord/` | Built from this repo | Discord messages | Bot token and Discord memory access |
 | alert-relay | Forwards Alertmanager notifications to Discord | `alert-relay/` | Built from this repo | Alertmanager webhooks | Discord webhook URL |
-| harness | Private Codex and Claude harness images with Semgrep Mandoline; a Hermes Agent harness image, not deployed (HOME-906) | `harness/` | Built from this repo on the pinned Codex and Claude harness images and Hermes Agent 0.23.4 | Task and checkout; Hermes gets A2A turn text | Gateway placeholders |
+| harness | Private Codex and Claude harness images with Semgrep Mandoline; a slim Hermes Agent image with the kagent fork's runner, for the homelab Discord agent (HOME-907) | `harness/` | Built from this repo on the pinned Codex and Claude harness images, Hermes Agent 0.23.4 and the fork's hermes-runner | Task and checkout; Hermes gets A2A turn text | Gateway placeholders |
 | mandoline | Runs bounded analysis on a pinned, clean checkout | `mandoline/` | Static command in the private Codex and Claude harnesses only | Tool output and checkout | None |
 
 ## Current state
