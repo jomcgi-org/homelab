@@ -65,18 +65,13 @@ def test_application_keeps_git_values_until_a_compatible_release_exists() -> Non
     assert _DEPLOY.is_file()
 
 
-def test_application_keeps_finished_discord_imports_as_they_ran() -> None:
-    # HOME-164: a Discord import Job runs once per runId. Without this entry a
-    # new image or chart version changes its immutable template: the sync
-    # fails, or a recreated Job starts an unplanned run with a fresh cap.
+def test_application_does_not_ignore_the_discord_import_job() -> None:
+    # HOME-836: an ignored Job /spec, with RespectIgnoreDifferences, makes a
+    # sync apply the live spec. ArgoCD then owns the apiserver's selector and
+    # each later server-side diff dry run fails, which stops the whole sync.
     app = yaml.safe_load(_APPLICATION.read_text())
-    assert {
-        "group": "batch",
-        "kind": "Job",
-        "namespace": "factory-discord",
-        "jsonPointers": ["/spec"],
-    } in app["spec"]["ignoreDifferences"]
-    assert "RespectIgnoreDifferences=true" in app["spec"]["syncPolicy"]["syncOptions"]
+    for entry in app["spec"].get("ignoreDifferences", []):
+        assert entry.get("kind") != "Job", entry
 
 
 def _render(chart: Path, values: Path, *overrides: str) -> str:

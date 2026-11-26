@@ -511,17 +511,15 @@ spec:
 # server with `history: true` into its bank, one document per channel-day.
 # A new runId starts a new run; days already stored are skipped. The bridge's
 # label gives it the bridge's egress and hindsight-discord's admission.
-# A Job's template is immutable, and ArgoCD's server-side diff dry-runs it,
-# so a template change fails the whole sync. `import.image` pins the Job's
-# image apart from the connector's, so a release does not change the Job.
+# The Job must render the same in every release: a Job's template is
+# immutable, and a changed Job fails ArgoCD's server-side diff dry run, which
+# stops the whole sync. So `import.image` pins its image apart from the
+# connector's, and its labels leave out helm.sh/chart.
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: {{ printf "discord-import-%s" (toString $d.import.runId) }}
   namespace: {{ $b.namespace }}
-  # No helm.sh/chart label: a kept Job must render the same in every
-  # release. Any change makes ArgoCD's server-side diff dry-run it, and that
-  # dry run fails on a Job, which stops the whole sync.
   labels:
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
