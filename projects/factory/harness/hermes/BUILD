@@ -16,36 +16,39 @@ py_binary(
     srcs = ["slim.py"],
 )
 
-# The upstream Debian layer, and Hermes with its Python and virtualenv. The
-# browser, FFmpeg, Node.js, the C toolchain and the UIs stay out (slim.py).
+# The upstream Debian layer, Hermes with its Python and virtualenv, and the
+# fork's runner layer. The browser, FFmpeg, Node.js, the C toolchain and the
+# UIs stay out (slim.py).
 run_binary(
     name = "slim_layers",
-    srcs = ["@hermes_agent_linux_amd64"],
+    srcs = [
+        "@hermes_agent_linux_amd64",
+        "@hermes_runner_linux_amd64",
+    ],
     outs = [
-        "base.tar",
-        "hermes.tar",
+        "base.tar.gz",
+        "hermes.tar.gz",
+        "runner.tar.gz",
     ],
     args = [
         "--layout",
         "$(execpath @hermes_agent_linux_amd64)",
+        "--runner-layout",
+        "$(execpath @hermes_runner_linux_amd64)",
         "--base",
-        "$(execpath base.tar)",
+        "$(execpath base.tar.gz)",
         "--hermes",
-        "$(execpath hermes.tar)",
+        "$(execpath hermes.tar.gz)",
+        "--runner",
+        "$(execpath runner.tar.gz)",
     ],
     tool = ":slim",
 )
 
-_RUNNER = "@hermes_runner_binaries//:usr/local/bin/kagent-hermes"
-
-# The runner and the durable /data directory it writes HERMES_HOME into.
+# The durable /data directory the runner writes HERMES_HOME into.
 tar(
-    name = "runner_layer",
-    srcs = [_RUNNER],
-    mtree = [
-        "./usr/local/bin/kagent-hermes type=file content=$(execpath " + _RUNNER + ") mode=0555 uid=0 gid=0",
-        "./data type=dir mode=0755 uid=65532 gid=65532",
-    ],
+    name = "data_layer",
+    mtree = ["./data type=dir mode=0755 uid=65532 gid=65532"],
 )
 
 oci_image(
@@ -61,9 +64,10 @@ oci_image(
     },
     os = "linux",
     tars = [
-        "base.tar",
-        "hermes.tar",
-        ":runner_layer",
+        "base.tar.gz",
+        "hermes.tar.gz",
+        "runner.tar.gz",
+        ":data_layer",
     ],
     user = "65532:65532",
     workdir = "/data",

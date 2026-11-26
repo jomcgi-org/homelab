@@ -1846,14 +1846,11 @@ def test_discord_server_agent_actor_is_reached_only_through_substrate() -> None:
 
 def test_discord_server_agent_image_needs_the_published_digest() -> None:
     # The source chart has no digest. The Harness CRD admits only a digest
-    # reference, which the published chart carries (helm_chart images).
+    # reference, which the published chart carries (helm_chart images;
+    # package_test.py checks it).
     docs = _render(_HOMELAB[:-1])
     image = _in(docs, "Harness", _HOMELAB_NS, "hermes")["spec"]["workload"]["image"]
     assert image == "ghcr.io/jomcgi/homelab/projects/factory/harness/hermes:main"
-    build = (_CHART_DIR / "BUILD").read_text()
-    assert (
-        '"discord.hermesImage": "//projects/factory/harness/hermes:image.info"' in build
-    )
 
 
 def test_discord_server_agent_checks_its_wiring() -> None:
