@@ -102,6 +102,27 @@ instead of silently rendering nothing.
 {{- end }}
 {{- end }}
 {{- end }}
+{{- range $server, $a := .Values.discord.serverAgents }}
+{{- if $a.enabled }}
+{{- if or (not (kindIs "string" $a.guild)) (not (regexMatch "^[0-9]+$" $a.guild)) }}
+{{- fail (printf "discord.serverAgents.%s.guild: quote the server ID; Helm reads a bare number as a float and loses digits" $server) }}
+{{- end }}
+{{- $ns := printf "discord-%s" $a.guild }}
+{{- if not (has $ns $watched) }}
+{{- fail (printf "discord.serverAgents.%s: add namespace %s to kagent.rbac.namespaces so the controller watches it" $server $ns) }}
+{{- end }}
+{{- if or (hasKey $seen $ns) (has $ns (list $.Values.discord.agent.namespace $.Values.discord.operator.namespace $.Values.discord.bridge.namespace)) }}
+{{- fail (printf "discord.serverAgents.%s: namespace %s must be the server Agent's alone" $server $ns) }}
+{{- end }}
+{{- $_ := set $seen $ns true }}
+{{- if or (ne (toString $a.resources.cpu) (toString $runtime.cpu)) (ne (toString $a.resources.memory) (toString $runtime.memory)) }}
+{{- fail (printf "discord.serverAgents.%s: resources must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $server $runtime.cpu $runtime.memory) }}
+{{- end }}
+{{- if not $a.llmItemPath }}
+{{- fail (printf "discord.serverAgents.%s.llmItemPath: name the OpenRouter key's 1Password item" $server) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if and .Values.discord.import.enabled (not .Values.discord.bridge.enabled) }}
 {{- fail "discord.import needs discord.bridge: the Job uses the bridge's policy, token and network policy" }}
 {{- end }}

@@ -1451,6 +1451,7 @@ def test_factory_node_agent_pipelines():
             "factory-r-homelab-review",
             "factory-discord-agent",
             "factory-discord",
+            "discord-1501965852042330302",
         )
     ]
     # Sanitize before parsing; redact and dedup after filtering and before

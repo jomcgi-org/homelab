@@ -1,15 +1,23 @@
-"""The Hermes harness image answers an A2A turn through the real Hermes gateway.
+"""The slim Hermes harness image holds the fork's runner and a working Hermes.
 
-The test unpacks the built image, starts its kagent-hermes adapter and the
-pinned Hermes gateway against a fake OpenAI-compatible model on loopback, and
-sends A2A SendMessage turns. It needs no network and no model credential.
+The test reads the built image's OCI layout. It checks the layers, the runner
+binary and the Hermes version stamp. It unpacks the image and starts its
+Hermes gateway the way kagent-hermes does, against a fake OpenAI-compatible
+model on loopback, and sends the runner's /v1/responses calls. Where the host
+allows an unprivileged user namespace, the gateway and `kagent-hermes --check`
+run chrooted in the image as UID 65532. The test needs no network and no
+model credential.
 """
 
 from __future__ import annotations
 
 import glob
+import gzip
+import hashlib
 import json
 import os
+import secrets
+import shutil
 import socket
 import stat
 import subprocess
@@ -25,21 +33,31 @@ from pathlib import Path
 import pytest
 import yaml
 
-ADAPTER = "usr/local/bin/kagent-hermes"
+RUNNER = "usr/local/bin/kagent-hermes"
+GATEWAY = "/opt/hermes/.venv/bin/hermes"
 HERMES_VERSION = "0.23.4"
 # The v0.23.4 tag's commit in NousResearch/hermes-agent.
 HERMES_COMMIT = "8fc0374447313e276f6b9a2764bfc750190c966a"
 MODEL = "fake/model"
-# Large image parts the gateway never loads with every toolset off.
-_SKIP = (
+# Upstream parts the slim image leaves out (slim.py DROP, and the apt layer).
+_LEFT_OUT = (
     "opt/hermes/tools/chromium-",
     "opt/hermes/tools/ffmpeg-",
     "opt/hermes/tools/node-",
     "opt/hermes/apps/",
     "opt/hermes/node_modules/",
-    "opt/hermes/ui-tui/",
-    "opt/hermes/uv-cache/",
+    "usr/bin/gcc",
+    "usr/bin/docker",
+    "usr/lib/x86_64-linux-gnu/libLLVM",
 )
+# kagent-hermes' disabled toolset list (driver.DisabledToolsets at the fork pin).
+_DISABLED_TOOLSETS = [
+    "a2a", "browser", "catalog", "clarify", "code_execution", "computer_use",
+    "connections", "cronjob", "delegation", "desktop_ui", "discord",
+    "discord_admin", "feishu_doc", "feishu_drive", "file", "image_gen",
+    "kanban", "memory", "project", "search", "session_search", "skills",
+    "terminal", "todo", "tts", "video", "video_gen", "vision", "web", "x_search",
+]  # fmt: skip
 
 
 def _blob(layout: Path, digest: str) -> Path:
@@ -61,49 +79,85 @@ def _config(layout: Path) -> dict:
     return json.loads(_blob(layout, _manifest(layout)["config"]["digest"]).read_text())
 
 
-def _layers(layout: Path) -> list[str]:
-    return [layer["digest"] for layer in _manifest(layout)["layers"]]
+def _layers(layout: Path) -> list[Path]:
+    return [_blob(layout, layer["digest"]) for layer in _manifest(layout)["layers"]]
 
 
-def _wanted(member: tarfile.TarInfo) -> bool:
-    name = member.name.removeprefix("./")
-    if "/.wh." in "/" + name or not (
-        name.startswith("opt/hermes/")
-        or name.startswith("etc/hermes/")
-        or name == ADAPTER
-    ):
-        return False
-    if name.startswith(_SKIP):
-        return False
-    # Absolute links point into the image root, which the test does not own.
-    if member.issym() and member.linkname.startswith("/"):
-        return False
-    return member.isfile() or member.isdir() or member.issym()
+def _image() -> Path:
+    return Path(os.environ["IMAGE_LAYOUT"])
 
 
-def _unpack(layout: Path, dest: Path) -> None:
-    for digest in _layers(layout):
-        with tarfile.open(_blob(layout, digest), "r|*") as layer:
+def _member_digest(layout: Path, name: str) -> str:
+    for blob in _layers(layout):
+        with tarfile.open(blob, "r|*") as layer:
             for member in layer:
-                if _wanted(member):
-                    member.uid = member.gid = os.getuid()
-                    layer.extract(member, dest, filter="tar")
+                if member.name.removeprefix("./") == name and member.isfile():
+                    return hashlib.sha256(layer.extractfile(member).read()).hexdigest()
+    raise AssertionError(f"{name} not in {layout}")
+
+
+def _userns() -> bool:
+    if not shutil.which("unshare"):
+        return False
+    probe = subprocess.run(
+        ["unshare", "-U", "--map-user=65532", "--map-group=65532", "true"],
+        capture_output=True,
+        check=False,
+    )
+    return probe.returncode == 0
+
+
+USERNS = _userns()
 
 
 @pytest.fixture(scope="module")
 def rootfs():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        _unpack(Path(os.environ["IMAGE_LAYOUT"]), root)
-        # The image runs as UID 65532 and cannot write its own tree: make the
-        # unpacked copy read-only so the gateway gets the same constraint.
+        for blob in _layers(_image()):
+            with tarfile.open(blob, "r|*") as layer:
+                for member in layer:
+                    if member.isdev() or "/.wh." in "/" + member.name:
+                        continue
+                    member.uid = member.gid = os.getuid()
+                    layer.extract(member, root, filter="fully_trusted")
+        # UID 65532 cannot write the image's own tree. Outside the image the
+        # test user owns every file, so make the tree read-only to match;
+        # /data (the runner's durable directory) and /tmp stay writable.
         for path in sorted(root.rglob("*"), reverse=True):
             if path.is_dir() and not path.is_symlink():
-                path.chmod(stat.S_IRUSR | stat.S_IXUSR)
+                rel = path.relative_to(root).as_posix()
+                if rel not in ("data", "tmp") and not rel.startswith("data/"):
+                    path.chmod(stat.S_IRUSR | stat.S_IXUSR)
         yield root
         for path in root.rglob("*"):
             if path.is_dir() and not path.is_symlink():
                 path.chmod(stat.S_IRWXU)
+
+
+def _in_image(root: Path, argv: list[str], env: dict[str, str]) -> list[str]:
+    """Return argv to run a command chrooted in the image as UID 65532."""
+    pairs = [f"{k}={v}" for k, v in env.items()]
+    return [
+        "unshare",
+        "-U",
+        "--map-user=65532",
+        "--map-group=65532",
+        "-R",
+        str(root),
+        "/usr/bin/env",
+        "-i",
+        *pairs,
+        *argv,
+    ]
+
+
+def _image_env() -> dict[str, str]:
+    env = {}
+    for entry in _config(_image())["config"]["Env"]:
+        name, _, value = entry.partition("=")
+        env[name] = value
+    return env
 
 
 class _FakeModel(BaseHTTPRequestHandler):
@@ -205,108 +259,167 @@ def _get(url: str) -> int:
         return 0
 
 
-def _send_message(url: str, message_id: str, context_id: str, text: str) -> dict:
-    body = {
-        "jsonrpc": "2.0",
-        "id": message_id,
-        "method": "SendMessage",
-        "params": {
-            "message": {
-                "messageId": message_id,
-                "contextId": context_id,
-                "role": "ROLE_USER",
-                "parts": [{"text": text}],
-            }
+def _hermes_config(base_url: str) -> dict:
+    """config.yaml as kagent-hermes renders it (driver.RenderConfig)."""
+    return {
+        "model": {
+            "default": MODEL,
+            "provider": "custom",
+            "base_url": base_url,
+            "api_key": "kagent-credential-injected",
         },
+        "toolsets": [],
+        "platform_toolsets": {"api_server": []},
+        "agent": {"disabled_toolsets": _DISABLED_TOOLSETS},
+        "memory": {
+            "memory_enabled": False,
+            "user_profile_enabled": False,
+            "provider": "",
+        },
+        "approvals": {
+            "mode": "manual",
+            "timeout": 10,
+            "cron_mode": "deny",
+            "single_query_mode": "deny",
+            "unattended_mode": "deny",
+        },
+        "security": {"allow_lazy_installs": False},
+        "auxiliary": {"title_generation": {"enabled": False}},
+    }
+
+
+@pytest.fixture(scope="module")
+def gateway(rootfs):
+    _FakeModel.calls.clear()
+    model = ThreadingHTTPServer(("127.0.0.1", 0), _FakeModel)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    port, key = _free_port(), secrets.token_hex(32)
+    base_url = f"http://127.0.0.1:{model.server_address[1]}/v1"
+    # /tmp, so the --check cases can own /data.
+    data = Path(tempfile.mkdtemp(dir=rootfs / "tmp"))
+    home = data / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump(_hermes_config(base_url)))
+    api = {
+        "API_SERVER_ENABLED": "true",
+        "API_SERVER_HOST": "127.0.0.1",
+        "API_SERVER_PORT": str(port),
+        "API_SERVER_KEY": key,
+    }
+    if USERNS:
+        inner = "/" + data.relative_to(rootfs).as_posix()
+        env = {**_image_env(), "HOME": inner, "HERMES_HOME": f"{inner}/hermes", **api}
+        argv = _in_image(rootfs, [GATEWAY, "gateway"], env)
+        run_env = None
+    else:
+        # No user namespace: run the image's interpreter on the host, with
+        # the same bootstrap as the image's launcher script.
+        (python,) = glob.glob(str(rootfs / "opt/hermes/tools/python-*/bin/python3"))
+        site = rootfs / "opt/hermes/.venv/lib/python3.14/site-packages"
+        bootstrap = (
+            "import os, site, sys; sys.argv[0] = 'hermes'; site.addsitedir(os.environ['HERMES_SITE']); "
+            "from hermes_cli.main import main; sys.exit(main())"
+        )
+        argv = [python, "-P", "-c", bootstrap, "gateway"]
+        run_env = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(data),
+            "TMPDIR": str(data),
+            "HERMES_HOME": str(home),
+            "PYTHONPATH": f"{rootfs / 'opt/hermes'}:{site}",
+            "HERMES_SITE": str(site),
+            **api,
+        }
+    log = open(data / "gateway.log", "w+b")
+    proc = subprocess.Popen(
+        argv, env=run_env, cwd=home, stdout=log, stderr=subprocess.STDOUT
+    )
+    try:
+        deadline = time.monotonic() + 240
+        while _get(f"http://127.0.0.1:{port}/health") != 200:
+            if proc.poll() is not None or time.monotonic() > deadline:
+                log.seek(0)
+                pytest.fail(
+                    "gateway never became healthy:\n"
+                    + log.read().decode(errors="replace")[-4000:]
+                )
+            time.sleep(1)
+        yield {"url": f"http://127.0.0.1:{port}", "key": key, "home": home}
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        model.shutdown()
+        log.close()
+
+
+def _respond(gw: dict, session: str, text: str) -> dict:
+    """Send one turn the way kagent-hermes does (driver client.respond)."""
+    body = {
+        "input": text,
+        "instructions": "You answer for the homelab server.",
+        "store": True,
+        "conversation": session,
     }
     req = urllib.request.Request(
-        url,
+        gw["url"] + "/v1/responses",
         data=json.dumps(body).encode(),
         method="POST",
-        headers={"Content-Type": "application/json", "A2A-Version": "1.0"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + gw["key"],
+            "X-Hermes-Session-Key": session,
+            "Idempotency-Key": "kagent-task-" + secrets.token_hex(8),
+        },
     )
     with urllib.request.urlopen(req, timeout=120) as resp:
         return json.loads(resp.read())
 
 
-@pytest.fixture(scope="module")
-def harness(rootfs):
-    _FakeModel.calls.clear()
-    model = ThreadingHTTPServer(("127.0.0.1", 0), _FakeModel)
-    threading.Thread(target=model.serve_forever, daemon=True).start()
-    a2a_port, ready_port, hermes_port = _free_port(), _free_port(), _free_port()
-    (python,) = glob.glob(str(rootfs / "opt/hermes/tools/python-*/bin/python3"))
-    site = rootfs / "opt/hermes/.venv/lib/python3.14/site-packages"
-    with tempfile.TemporaryDirectory() as data:
-        home = Path(data) / "hermes"
-        env = {
-            "PATH": "/usr/bin:/bin",
-            "HOME": data,
-            "TMPDIR": data,
-            "XDG_RUNTIME_DIR": data,
-            "PYTHONPATH": f"{rootfs / 'opt/hermes'}:{site}",
-            "HERMES_SITE": str(site),
-            "HERMES_MODEL": MODEL,
-            "HERMES_BASE_URL": f"http://127.0.0.1:{model.server_address[1]}/v1",
-            # Dropped by the adapter: a messaging token must not start a platform.
-            "DISCORD_BOT_TOKEN": "not-a-token",
-        }
-        # The image's launcher resolves an absolute interpreter link, so the
-        # test runs the same bootstrap with the unpacked interpreter.
-        bootstrap = (
-            "import os, site, sys; sys.argv[0] = 'hermes'; site.addsitedir(os.environ['HERMES_SITE']); "
-            "from hermes_cli.main import main; sys.exit(main())"
-        )
-        log = open(Path(data) / "adapter.log", "w+b")
-        proc = subprocess.Popen(
-            [
-                str(rootfs / ADAPTER),
-                f"-listen=127.0.0.1:{a2a_port}",
-                f"-ready=127.0.0.1:{ready_port}",
-                f"-home={home}",
-                f"-hermes-port={hermes_port}",
-                "--",
-                python,
-                "-P",
-                "-c",
-                bootstrap,
-                "gateway",
-            ],
-            env=env,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-        )
-        try:
-            deadline = time.monotonic() + 240
-            while _get(f"http://127.0.0.1:{ready_port}/readyz") != 200:
-                if proc.poll() is not None or time.monotonic() > deadline:
-                    log.seek(0)
-                    pytest.fail(
-                        "harness never became ready:\n"
-                        + log.read().decode(errors="replace")[-4000:]
-                    )
-                time.sleep(1)
-            yield {"url": f"http://127.0.0.1:{a2a_port}/", "home": home, "log": log}
-        finally:
-            proc.terminate()
-            try:
-                proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            model.shutdown()
-            log.close()
+def _answer(out: dict) -> str:
+    assert out["status"] in ("completed", "incomplete"), out
+    return "".join(
+        part["text"]
+        for item in out["output"]
+        if item.get("type") == "message"
+        and item.get("role") == "assistant"
+        and item.get("phase") != "commentary"
+        for part in item["content"]
+        if part.get("type") == "output_text"
+    )
 
 
-def test_image_keeps_the_pinned_hermes_and_adds_the_adapter() -> None:
-    base = _layers(Path(os.environ["BASE_LAYOUT"]))
-    image = _layers(Path(os.environ["IMAGE_LAYOUT"]))
-    assert image[: len(base)] == base
-    assert len(image) == len(base) + 1
-    config = _config(Path(os.environ["IMAGE_LAYOUT"]))["config"]
-    assert config["Entrypoint"] == ["/usr/local/bin/kagent-hermes"]
+def test_image_is_slim_and_runs_the_runner() -> None:
+    layout = _image()
+    layers = _manifest(layout)["layers"]
+    assert len(layers) == 3, "Debian, Hermes, runner"
+    config = _config(layout)["config"]
+    assert config["Entrypoint"] == ["/" + RUNNER]
     assert not config.get("Cmd")
     assert config["User"] == "65532:65532"
+    assert config["WorkingDir"] == "/data"
     assert "HERMES_HOME=/data/hermes" in config["Env"]
+    assert "HOME=/data" in config["Env"]
+    # The upstream image is about 1149 MB compressed.
+    assert sum(layer["size"] for layer in layers) < 400 * 10**6
+    for blob in _layers(layout):
+        with tarfile.open(blob, "r|*") as layer:
+            for member in layer:
+                assert not member.name.removeprefix("./").startswith(_LEFT_OUT)
+
+
+def test_base_layer_is_the_upstream_debian_layer() -> None:
+    upstream = _layers(Path(os.environ["BASE_LAYOUT"]))[0]
+    image = _layers(_image())[0]
+    with gzip.open(upstream) as a, gzip.open(image) as b:
+        assert hashlib.sha256(a.read()).digest() == hashlib.sha256(b.read()).digest()
+
+
+def test_runner_is_the_fork_hermes_runner() -> None:
+    fork = _member_digest(Path(os.environ["RUNNER_LAYOUT"]), RUNNER)
+    assert _member_digest(_image(), RUNNER) == fork
 
 
 def test_image_is_hermes_v0_23_4(rootfs) -> None:
@@ -314,21 +427,97 @@ def test_image_is_hermes_v0_23_4(rootfs) -> None:
     assert stamp["baseVersion"] == HERMES_VERSION
     assert stamp["commit"] == HERMES_COMMIT
     assert stamp["dirty"] is False
+    assert (rootfs / GATEWAY.lstrip("/")).is_symlink()
 
 
-def test_a2a_turn_gets_a_hermes_answer(harness) -> None:
-    first = _send_message(harness["url"], "m-1", "ctx-homelab", "Who runs the factory?")
-    task = first["result"]["task"]
-    assert task["status"]["state"] == "TASK_STATE_COMPLETED", first
-    assert task["contextId"] == "ctx-homelab"
-    assert task["status"]["message"]["parts"][0]["text"] == "Hermes answer 1"
+def _varint(n: int) -> bytes:
+    out = b""
+    while True:
+        byte, n = n & 0x7F, n >> 7
+        out += bytes([byte | (0x80 if n else 0)])
+        if not n:
+            return out
 
-    # The second turn in the same context carries the first one.
-    second = _send_message(harness["url"], "m-2", "ctx-homelab", "And who reviews it?")
-    assert (
-        second["result"]["task"]["status"]["message"]["parts"][0]["text"]
-        == "Hermes answer 2"
-    ), second
+
+def _write_bundle(data: Path, config: dict) -> str:
+    """Write kagent's bootstrap bundle; return its descriptor JSON."""
+    revision = hashlib.sha256(b"homelab-hermes-test").hexdigest()
+    config_json = json.dumps(config).encode()
+    card_json = json.dumps({"name": "homelab", "url": "http://127.0.0.1/"}).encode()
+    digest = hashlib.sha256((1).to_bytes(4, "big"))
+    for field in (revision.encode(), config_json, card_json):
+        digest.update(len(field).to_bytes(8, "big") + field)
+    sha = digest.hexdigest()
+    bundle = b"\x08\x01"
+    for tag, value in (
+        (0x12, revision.encode()),
+        (0x1A, config_json),
+        (0x22, card_json),
+        (0x2A, sha.encode()),
+    ):
+        bundle += bytes([tag]) + _varint(len(value)) + value
+    directory = data / "kagent" / "bootstrap"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "bundle.pb").write_bytes(bundle)
+    return json.dumps(
+        {
+            "format_version": 1,
+            "control_plane_url": "http://127.0.0.1:1",
+            "revision": revision,
+            "sha256": sha,
+        }
+    )
+
+
+def _runner_config(gateway_command: list[str]) -> dict:
+    """The compiler's configuration for a homelab Agent (config.Production)."""
+    return {
+        "control_plane_url": "http://127.0.0.1:1",
+        "version": 1,
+        "gateway_command": gateway_command,
+        "model": "deepseek/deepseek-v4.1-flash-1017",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_server_port": 8642,
+        "startup_timeout_millis": 120000,
+        "turn_timeout_millis": 600000,
+        "stop_grace_millis": 20000,
+        "max_response_bytes": 8 << 20,
+    }
+
+
+@pytest.mark.skipif(not USERNS, reason="needs an unprivileged user namespace")
+@pytest.mark.parametrize(
+    ("command", "ok"),
+    [([GATEWAY, "gateway"], True), (["/opt/hermes/.venv/bin/absent"], False)],
+)
+def test_runner_check_finds_hermes_in_the_image(rootfs, command, ok) -> None:
+    # kagent-hermes reads its bundle from /data/kagent/bootstrap, so each
+    # case starts from an empty /data.
+    data = rootfs / "data"
+    for child in data.iterdir():
+        shutil.rmtree(child) if child.is_dir() else child.unlink()
+    descriptor = _write_bundle(data, _runner_config(command))
+    env = {**_image_env(), "KAGENT_BOOTSTRAP_JSON": descriptor}
+    out = subprocess.run(
+        _in_image(rootfs, ["/" + RUNNER, "--check"], env),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert (out.returncode == 0) == ok, out.stderr
+    if not ok:
+        assert "find Hermes gateway executable" in out.stderr
+
+
+def test_gateway_answers_the_runner_turns(gateway) -> None:
+    session = "kagent-" + secrets.token_hex(16)
+    first = _respond(gateway, session, "Who runs the factory?")
+    assert _answer(first) == "Hermes answer 1"
+
+    # The next turn on the same session key and conversation carries the first.
+    second = _respond(gateway, session, "And who reviews it?")
+    assert _answer(second) == "Hermes answer 2"
     turns = [c for c in _FakeModel.calls if c["path"].endswith("/chat/completions")]
     assert len(turns) == 2, "one model call per turn and no title call"
     history = [
@@ -341,18 +530,16 @@ def test_a2a_turn_gets_a_hermes_answer(harness) -> None:
         "Hermes answer 1",
         "And who reviews it?",
     ]
+    assert turns[1]["auth"] == "Bearer kagent-credential-injected"
 
-    # A different context is a different conversation.
-    other = _send_message(harness["url"], "m-3", "ctx-other", "Hello?")
-    assert (
-        other["result"]["task"]["status"]["message"]["parts"][0]["text"]
-        == "Hermes answer 1"
-    )
+    # A different session is a different conversation.
+    other = _respond(gateway, "kagent-" + secrets.token_hex(16), "Hello?")
+    assert _answer(other) == "Hermes answer 1"
 
 
-def test_model_calls_carry_no_tools(harness) -> None:
+def test_model_calls_carry_no_tools(gateway) -> None:
     if not _FakeModel.calls:
-        _send_message(harness["url"], "m-tools", "ctx-tools", "What tools do you have?")
+        _respond(gateway, "kagent-" + secrets.token_hex(16), "What tools do you have?")
     for call in _FakeModel.calls:
         body = call["body"]
         assert not body.get("tools"), (
@@ -360,15 +547,3 @@ def test_model_calls_carry_no_tools(harness) -> None:
         )
         system = body["messages"][0]["content"]
         assert "Platform: api_server" in system
-
-
-def test_gateway_runs_with_the_rendered_config(harness) -> None:
-    cfg = yaml.safe_load((harness["home"] / "config.yaml").read_text())
-    assert cfg["platform_toolsets"] == {"api_server": []}
-    assert cfg["approvals"]["unattended_mode"] == "deny"
-    hindsight = json.loads((harness["home"] / "hindsight" / "config.json").read_text())
-    assert hindsight["memory_mode"] == "context"
-    harness["log"].flush()
-    harness["log"].seek(0)
-    log = harness["log"].read().decode(errors="replace")
-    assert "hermes gateway healthy" in log

@@ -535,9 +535,10 @@ oci.pull(
 )
 use_repo(oci, "claude_harness", "claude_harness_linux_amd64")
 
-# Base of the Hermes Agent harness image (projects/factory/harness/hermes):
-# nousresearch/hermes-agent v0.23.4 (commit 8fc03744), MIT. harness_image_test
-# checks the version stamp.
+# Source of the Hermes Agent harness image (projects/factory/harness/hermes):
+# nousresearch/hermes-agent v0.23.4 (commit 8fc03744), MIT. slim.py keeps its
+# Debian layer, Hermes and its Python; harness_image_test checks the version
+# stamp.
 oci.pull(
     name = "hermes_agent",
     digest = "sha256:ef0650d523ee1b5ab32c779acabc446d9936869a9932591553688a62bcf0c42f",
@@ -545,6 +546,24 @@ oci.pull(
     platforms = ["linux/amd64"],
 )
 use_repo(oci, "hermes_agent", "hermes_agent_linux_amd64")
+
+# The kagent-hermes runner from the kagent fork build the controller runs
+# (kagent.controller.image in projects/factory/deploy/values.yaml): a scratch
+# image that holds only /usr/local/bin/kagent-hermes. Move it with the
+# controller.
+oci.pull(
+    name = "hermes_runner",
+    digest = "sha256:abc06bbfbe5621f83d10fd17309010ea6dcc60eaf953f3a5361f2c0d032a253c",
+    image = "ghcr.io/jomcgi-org/kagent/hermes-runner",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "hermes_runner_linux_amd64")
+
+import_harness(
+    name = "hermes_runner_binaries",
+    binaries = ["kagent-hermes"],
+    index = "@hermes_runner_linux_amd64//:index.json",
+)
 
 #########################
 # PostgreSQL test fixtures — extract PG16 + pgvector binaries from OCI

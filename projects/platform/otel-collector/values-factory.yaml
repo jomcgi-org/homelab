@@ -98,6 +98,7 @@ logs:
     - factory-r-homelab-review
     - factory-discord-agent
     - factory-discord
+    - discord-1501965852042330302
   # Kyverno logs coloured zerolog console lines; sanitize makes them parse.
   sanitize: true
   redact: true

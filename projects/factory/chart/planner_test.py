@@ -26,6 +26,7 @@ _NAMESPACES = [
     "factory-r-homelab-review",
     "factory-discord-agent",
     "factory-discord-operator",
+    "discord-1501965852042330302",
     _NS,
 ]
 _SCHEDULES = [
