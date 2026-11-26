@@ -116,6 +116,9 @@ py_test(
         "IMAGE_LAYOUT": "$(rootpath :image)",
         "RUNNER_LAYOUT": "$(rootpath @hermes_runner_linux_amd64)",
     },
+    # With CI set, the chrooted cases fail instead of skip when the host
+    # has no unprivileged user namespace.
+    env_inherit = ["CI"],
     target_compatible_with = [
         "@platforms//os:linux",
         "@platforms//cpu:x86_64",
