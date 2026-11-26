@@ -1,5 +1,5 @@
 """Pins for the factory chart: the CRDs in crds/ are the vendored kagent-crds
-chart's, the controller's identity and namespace are kept, the namespace may
+chart's, except the fork's Harness CRD, the controller's identity and namespace are kept, the namespace may
 call Substrate, the controller admits only its bearer paths, the credential
 broker holds every provider credential with only the access ARCHITECTURE.md
 lists, each repository binding's workspace gets placeholders only, and later
@@ -7,6 +7,7 @@ steps of the delivery plan fail the render instead of doing nothing."""
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import subprocess
@@ -128,6 +129,14 @@ def test_binding_codex_code_mode_image() -> None:
         assert {"name": "FACTORY_CODE_MODE", "value": mode} in spec["env"]
 
 
+# CRDs that the kagent fork controller (deploy values) changes, by the sha256
+# of the fork's helm/kagent-crds/templates file. jomcgi-org/kagent commit
+# 5bff0419a464 adds `spec.hermes` to the Harness CRD; the rest stay upstream's.
+_FORK_CRDS = {
+    "api.kagent.dev_harnesses.yaml": "566b3a3983dc5bdd42ee62e269e3724ad61f1d439144d039a43200238170bea6",
+}
+
+
 def test_crds_match_vendored_chart() -> None:
     with tarfile.open(_CHART_DIR / "charts" / "kagent-crds-1.0.1.tgz") as tgz:
         vendored = {
@@ -136,7 +145,42 @@ def test_crds_match_vendored_chart() -> None:
             if m.isfile() and "/templates/" in m.name
         }
     local = {p.name: p.read_bytes() for p in (_CHART_DIR / "crds").glob("*.yaml")}
+    assert local.keys() == vendored.keys()
+    for name, digest in _FORK_CRDS.items():
+        assert hashlib.sha256(local.pop(name)).hexdigest() == digest
+        vendored.pop(name)
     assert local == vendored
+
+
+def test_fork_harness_crd_only_adds_hermes() -> None:
+    # The fork CRD is upstream's plus `spec.hermes` and its CEL rules, so
+    # every existing kagent, codex and claude Harness stays valid.
+    with tarfile.open(_CHART_DIR / "charts" / "kagent-crds-1.0.1.tgz") as tgz:
+        member = next(
+            m
+            for m in tgz.getmembers()
+            if m.name.endswith("api.kagent.dev_harnesses.yaml")
+        )
+        upstream = yaml.safe_load(tgz.extractfile(member))  # type: ignore[arg-type]
+    fork = yaml.safe_load(
+        (_CHART_DIR / "crds" / "api.kagent.dev_harnesses.yaml").read_text()
+    )
+
+    def spec(crd: dict[str, Any]) -> dict[str, Any]:
+        (version,) = crd["spec"]["versions"]
+        return version["schema"]["openAPIV3Schema"]["properties"]["spec"]
+
+    old, new = spec(upstream), spec(fork)
+    assert new["properties"].keys() - old["properties"].keys() == {"hermes"}
+    assert new["properties"]["hermes"]["type"] == "object"
+    rules = {r["rule"] for r in new["x-kubernetes-validations"]}
+    assert (
+        "!has(self.hermes) || (has(self.workload) && has(self.workload.image))" in rules
+    )
+    assert (
+        "(has(self.kagent)?1:0)+(has(self.codex)?1:0)+(has(self.claude)?1:0)"
+        "+(has(self.hermes)?1:0)+(has(self.byo)?1:0) == 1"
+    ) in rules
 
 
 def test_crd_hook_applies_every_crd() -> None:

@@ -12,7 +12,8 @@ dependencies:
     condition: kagent.enabled
   # Vendored for its pinned digest only. Its CRDs ship in crds/ and through
   # the CRD hook Job instead (templates/crd-hook.yaml), so the subchart never
-  # renders; chart_test.py keeps crds/ identical to it.
+  # renders; chart_test.py keeps crds/ identical to it, except the kagent
+  # fork's Harness CRD (spec.hermes).
   - name: kagent-crds
     version: 1.0.1
     repository: oci://ghcr.io/kagent-dev/kagent/helm
