@@ -3,14 +3,18 @@
 The upstream image carries Chromium, FFmpeg, Node.js, a C toolchain and the
 desktop and terminal UIs. With every Hermes toolset off, the gateway loads only
 its Python package, its virtualenv and its Python interpreter. This tool reads
-the image's OCI layout and writes two layer tars:
+the Hermes image's and the kagent fork's hermes-runner image's OCI layouts
+and writes three gzipped layer tars:
 
-- base.tar: the image's first layer (the Debian root filesystem), unchanged.
-- hermes.tar: the merged later layers, with whiteouts applied, cut to KEEP
-  minus DROP.
+- base.tar.gz: the Hermes image's first layer (the Debian root filesystem),
+  byte for byte.
+- hermes.tar.gz: the Hermes image's merged later layers, with whiteouts
+  applied, cut to KEEP minus DROP.
+- runner.tar.gz: the hermes-runner image's one layer, byte for byte. It
+  holds only /usr/local/bin/kagent-hermes.
 
-Both tars list members in input order, so the same layout gives the same
-bytes.
+hermes.tar.gz lists members in input order with a fixed gzip header, so the
+same layouts give the same bytes.
 """
 
 from __future__ import annotations
@@ -114,7 +118,13 @@ def write_hermes(blobs: list[Path], out: Path) -> int:
     """Write the kept paths of the later layers; return the member count."""
     winners = {k: v for k, v in _winners(blobs).items() if wanted(k)}
     written: set[str] = set()
-    with tarfile.open(out, "w", format=tarfile.PAX_FORMAT) as tar:
+    with (
+        out.open("wb") as raw,
+        gzip.GzipFile(
+            filename="", mode="wb", fileobj=raw, compresslevel=6, mtime=0
+        ) as zipped,
+        tarfile.open(fileobj=zipped, mode="w", format=tarfile.PAX_FORMAT) as tar,
+    ):
         for index, blob in enumerate(blobs):
             with tarfile.open(blob, "r|*") as layer:
                 for member in layer:
@@ -136,24 +146,36 @@ def write_hermes(blobs: list[Path], out: Path) -> int:
     return len(written)
 
 
-def write_base(blob: Path, out: Path) -> None:
-    """Write the first layer as an uncompressed tar."""
+def copy_layer(blob: Path, out: Path) -> None:
+    """Copy a gzipped layer blob unchanged."""
     with blob.open("rb") as raw:
-        gzipped = raw.read(2) == b"\x1f\x8b"
-    opener = gzip.open if gzipped else open
-    with opener(blob, "rb") as src, out.open("wb") as dest:
-        shutil.copyfileobj(src, dest)
+        if raw.read(2) != b"\x1f\x8b":
+            sys.exit(f"{blob}: layer is not gzipped")
+    shutil.copyfile(blob, out)
+
+
+def runner_layer(layout: Path) -> Path:
+    """Return the hermes-runner image's one layer, checking what it holds."""
+    (blob,) = layers(layout)
+    with tarfile.open(blob, "r|*") as layer:
+        files = [_name(m) for m in layer if not m.isdir()]
+    if files != ["usr/local/bin/kagent-hermes"]:
+        sys.exit(f"{blob}: hermes-runner layer holds {files}")
+    return blob
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--layout", type=Path, required=True)
+    parser.add_argument("--runner-layout", type=Path, required=True)
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--hermes", type=Path, required=True)
+    parser.add_argument("--runner", type=Path, required=True)
     args = parser.parse_args()
     blobs = layers(args.layout)
-    write_base(blobs[0], args.base)
+    copy_layer(blobs[0], args.base)
     write_hermes(blobs[1:], args.hermes)
+    copy_layer(runner_layer(args.runner_layout), args.runner)
 
 
 if __name__ == "__main__":

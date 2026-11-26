@@ -92,7 +92,8 @@ def _member_digest(layout: Path, name: str) -> str:
         with tarfile.open(blob, "r|*") as layer:
             for member in layer:
                 if member.name.removeprefix("./") == name and member.isfile():
-                    return hashlib.sha256(layer.extractfile(member).read()).hexdigest()
+                    data = layer.extractfile(member).read()  # type: ignore[union-attr]
+                    return hashlib.sha256(data).hexdigest()
     raise AssertionError(f"{name} not in {layout}")
 
 
@@ -394,7 +395,7 @@ def _answer(out: dict) -> str:
 def test_image_is_slim_and_runs_the_runner() -> None:
     layout = _image()
     layers = _manifest(layout)["layers"]
-    assert len(layers) == 3, "Debian, Hermes, runner"
+    assert len(layers) == 4, "Debian, Hermes, runner, /data"
     config = _config(layout)["config"]
     assert config["Entrypoint"] == ["/" + RUNNER]
     assert not config.get("Cmd")
@@ -402,7 +403,7 @@ def test_image_is_slim_and_runs_the_runner() -> None:
     assert config["WorkingDir"] == "/data"
     assert "HERMES_HOME=/data/hermes" in config["Env"]
     assert "HOME=/data" in config["Env"]
-    # The upstream image is about 1149 MB compressed.
+    # The upstream image is 1149 MB as pushed; the slim one about 333 MB.
     assert sum(layer["size"] for layer in layers) < 400 * 10**6
     for blob in _layers(layout):
         with tarfile.open(blob, "r|*") as layer:
@@ -410,11 +411,23 @@ def test_image_is_slim_and_runs_the_runner() -> None:
                 assert not member.name.removeprefix("./").startswith(_LEFT_OUT)
 
 
-def test_base_layer_is_the_upstream_debian_layer() -> None:
-    upstream = _layers(Path(os.environ["BASE_LAYOUT"]))[0]
-    image = _layers(_image())[0]
-    with gzip.open(upstream) as a, gzip.open(image) as b:
-        assert hashlib.sha256(a.read()).digest() == hashlib.sha256(b.read()).digest()
+def _content_digest(blob: Path) -> str:
+    """Return the sha256 of a layer's uncompressed tar."""
+    with blob.open("rb") as raw:
+        gzipped = raw.read(2) == b"\x1f\x8b"
+    digest = hashlib.sha256()
+    with gzip.open(blob) if gzipped else blob.open("rb") as src:
+        for chunk in iter(lambda: src.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def test_base_and_runner_layers_are_the_upstream_layers() -> None:
+    image = _layers(_image())
+    (runner,) = _layers(Path(os.environ["RUNNER_LAYOUT"]))
+    debian = _layers(Path(os.environ["BASE_LAYOUT"]))[0]
+    assert _content_digest(image[0]) == _content_digest(debian)
+    assert _content_digest(image[2]) == _content_digest(runner)
 
 
 def test_runner_is_the_fork_hermes_runner() -> None:
