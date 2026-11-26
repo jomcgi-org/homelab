@@ -97,18 +97,43 @@ def _member_digest(layout: Path, name: str) -> str:
     raise AssertionError(f"{name} not in {layout}")
 
 
-def _userns() -> bool:
+def _userns() -> tuple[bool, str]:
     if not shutil.which("unshare"):
-        return False
+        return False, "no unshare binary on the test host"
     probe = subprocess.run(
         ["unshare", "-U", "--map-user=65532", "--map-group=65532", "true"],
         capture_output=True,
+        text=True,
         check=False,
     )
-    return probe.returncode == 0
+    return probe.returncode == 0, probe.stderr.strip()
 
 
-USERNS = _userns()
+USERNS, USERNS_ERROR = _userns()
+# In CI the chrooted cases must run: a missing user namespace fails there
+# instead of skipping. BUILD passes CI in through env_inherit.
+IN_CI = bool(os.environ.get("CI"))
+
+
+def _need_userns() -> None:
+    if USERNS:
+        return
+    if IN_CI:
+        pytest.fail(
+            "the CI test host has no unprivileged user namespace, so the "
+            f"chrooted image cases cannot run: {USERNS_ERROR}"
+        )
+    pytest.skip(f"needs an unprivileged user namespace: {USERNS_ERROR}")
+
+
+def test_ci_runs_the_chrooted_cases() -> None:
+    if IN_CI:
+        _need_userns()
+
+
+def test_temp_ci_env_reaches_the_test() -> None:
+    # TEMPORARY: checks that BUILD's env_inherit gives this test CI.
+    assert IN_CI, "CI is not set in the test environment"
 
 
 @pytest.fixture(scope="module")
@@ -498,12 +523,12 @@ def _runner_config(gateway_command: list[str]) -> dict:
     }
 
 
-@pytest.mark.skipif(not USERNS, reason="needs an unprivileged user namespace")
 @pytest.mark.parametrize(
     ("command", "ok"),
     [([GATEWAY, "gateway"], True), (["/opt/hermes/.venv/bin/absent"], False)],
 )
 def test_runner_check_finds_hermes_in_the_image(rootfs, command, ok) -> None:
+    _need_userns()
     # kagent-hermes reads its bundle from /data/kagent/bootstrap, so each
     # case starts from an empty /data.
     data = rootfs / "data"
