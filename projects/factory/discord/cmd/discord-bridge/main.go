@@ -212,14 +212,21 @@ func runImport(log *slog.Logger) error {
 		return fmt.Errorf("bot user: %w", err)
 	}
 	im := &discord.Importer{
-		Source:       rest,
-		Store:        &discord.Hindsight{BaseURL: strings.TrimSuffix(cfg.hindsightURL, "/"), Key: fileValue(cfg.hindsightKey)},
-		Config:       policy,
-		BotID:        me.ID,
-		IncludeBots:  os.Getenv("IMPORT_INCLUDE_BOTS") == "true",
-		MaxDocuments: maxDocs,
-		Workers:      workers,
-		Log:          log,
+		Source: rest,
+		// A synchronous retain runs the LLM's extraction, which retries
+		// on its own; one call took over 3 minutes on 2026-11-25.
+		Store: &discord.Hindsight{
+			BaseURL: strings.TrimSuffix(cfg.hindsightURL, "/"), Key: fileValue(cfg.hindsightKey),
+			HTTP: &http.Client{Timeout: 10 * time.Minute},
+		},
+		Config:        policy,
+		BotID:         me.ID,
+		IncludeBots:   os.Getenv("IMPORT_INCLUDE_BOTS") == "true",
+		MaxDocuments:  maxDocs,
+		Workers:       workers,
+		RetainRetries: 4,
+		Backoff:       30 * time.Second,
+		Log:           log,
 	}
 	stats, err := im.Run(ctx)
 	log.Info("history import finished", "channels", stats.Channels, "retained", stats.Retained,

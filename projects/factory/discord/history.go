@@ -178,8 +178,15 @@ type Importer struct {
 	MaxDocuments int
 	// Workers is how many channels import at once.
 	Workers int
-	Log     *slog.Logger
-	Now     func() time.Time
+	// RetainRetries is how many more times a failed retain is tried when
+	// the failure is transient: a timeout, a network error, HTTP 408, 429
+	// or 5xx. Backoff is the first wait; each later wait doubles it.
+	RetainRetries int
+	Backoff       time.Duration
+	Log           *slog.Logger
+	Now           func() time.Time
+	// Sleep waits between retries; tests replace it.
+	Sleep func(ctx context.Context, d time.Duration) error
 
 	mu       sync.Mutex
 	retained int
@@ -366,10 +373,63 @@ func (im *Importer) store(ctx context.Context, guildID string, c Channel, day ti
 	item.DocumentID = id
 	item.UpdateMode = "replace"
 	item.Context = "Discord #" + c.Name
-	if err := im.Store.RetainDocument(ctx, guildID, item); err != nil {
+	if err := im.retain(ctx, guildID, item); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// retain stores one document and tries again after a transient failure. A
+// synchronous retain that timed out on the client can still finish on the
+// server, so each retry first checks whether the document is there. The
+// retain replaces the document by ID, so a second write adds no duplicate.
+func (im *Importer) retain(ctx context.Context, guildID string, item RetainItem) error {
+	err := im.Store.RetainDocument(ctx, guildID, item)
+	wait := im.Backoff
+	for attempt := 1; attempt <= im.RetainRetries && err != nil && transient(ctx, err); attempt++ {
+		if im.Log != nil {
+			im.Log.Warn("retain failed, trying again", "document", item.DocumentID,
+				"attempt", attempt, "wait", wait.String(), "error", err)
+		}
+		if serr := im.sleep(ctx, wait); serr != nil {
+			return err
+		}
+		wait *= 2
+		exists, xerr := im.Store.DocumentExists(ctx, guildID, item.DocumentID)
+		if xerr == nil && exists {
+			return nil
+		}
+		err = im.Store.RetainDocument(ctx, guildID, item)
+	}
+	return err
+}
+
+// transient reports whether a retain failure may pass on its own. A
+// cancelled run is not transient.
+func transient(ctx context.Context, err error) bool {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Status == http.StatusRequestTimeout || se.Status == http.StatusTooManyRequests || se.Status >= 500
+	}
+	// Client timeouts and network errors.
+	return true
+}
+
+func (im *Importer) sleep(ctx context.Context, d time.Duration) error {
+	if im.Sleep != nil {
+		return im.Sleep(ctx, d)
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 func (im *Importer) now() time.Time {
