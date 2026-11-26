@@ -32,20 +32,7 @@ project README.
 | Runbook | When |
 |---------|------|
 | [argocd-outofsync.md](argocd-outofsync.md) | ArgoCD OutOfSync / "is my change live?" |
-| [public-tier-checklist.md](public-tier-checklist.md) | Public tier / jomcgi.dev / `public_reader`, including the shared response cache contract |
-| [private-action-synthetics.md](private-action-synthetics.md) | Verify the deployed factory status reader with `POST /api/swarm/factory/synthetics` |
 | [threat-model-maintenance.md](threat-model-maintenance.md) | Record or close a security finding, change `docs/THREAT-MODEL.md`, per-domain security lenses in each `STPA.md`, model review |
-
-### Improve loops (explicit)
-
-Ask for these procedures by name or read the linked runbook when explicitly
-requested. The slash commands are Joe's local Claude Code commands; this
-repository does not install them.
-
-| Runbook | When |
-|---------|------|
-| [improve-ambient/](improve-ambient/runbook.md) | `/improve-ambient`; a directory holding `runbook.md` and `scripts/improve_ambient_tool.py` |
-| [improve-safeguards/](improve-safeguards/runbook.md) | `/improve-safeguards`; a directory holding `runbook.md` and `scripts/improve_safeguards_tool.py` |
 
 ### Repo / agents
 

@@ -554,9 +554,6 @@ def test_first_party_chart_exclusions_match_extracted_oci_names():
     config = json.loads((ROOT / "renovate.json").read_text())
     charts = (
         "embervm",
-        "monolith",
-        "monolith-public",
-        "monolith-agents",
         "scotland-connector",
         "context-forge",
         "inference",
@@ -785,7 +782,6 @@ def test_overlays_are_scanned_and_python_regeneration_is_root_only(values_files)
         "projects/platform/cloudflare-gateway/values.yaml",
         "projects/platform/renovate/values-gke.yaml",
         "projects/platform/renovate/values-factory.yaml",
-        "projects/monolith/deploy/values.yaml",
     ):
         assert any(
             re.search(p[1:-1], path)

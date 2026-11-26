@@ -53,7 +53,7 @@ _No physical control structure modeled._
 | ID | View | Control action | Controller → Process | Maturity | Evidence |
 |----|----|----|----|----|----|
 | `apko.refresh-lock` | logical | Propose refreshed base-image locks | `apko` → `pr` | built | projects/platform/renovate/values-gke.yaml:6 |
-| `intake.assess` | logical | Assess changed files, dependency comparison and advisories | `intake` → `pr` | built | projects/monolith/factory/orchestration/dependency_prs.py:398 |
+| `intake.assess` | logical | Assess changed files, dependency comparison and advisories | `intake` → `pr` | built | hub-final:projects/monolith/factory/orchestration/dependency_prs.py:398 |
 | `pr.validate` | logical | Submit the PR head for BuildBuddy checks | `pr` → `runner` | built | buildbuddy.yaml:16 |
 | `queue.merge` | logical | Admit the validated queue candidate to main | `queue` → `main` | built | projects/factory/connector/github/client.go:695 |
 | `renovate.request-automerge` | logical | Request native auto-merge as jomcgi-factory-renovate | `renovate` → `pr` | built | renovate.json:216-234 |
@@ -88,7 +88,7 @@ _No physical control structure modeled._
 | ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Status | Issue | Evidence |
 |----|----|----|----|----|----|----|----|----|----|
 | `apko.refresh-lock.provided` | logical | `apko.refresh-lock` | provided | An unattended refresh could change image inputs during retirement. The hub CronWorkflow consumes the suspend flag and automatic merge is disabled. | high | unvalidated-release | shipped-off | #7945 | projects/platform/renovate/values-gke.yaml:6 |
-| `intake.assess.provided` | logical | `intake.assess` | provided | Accepting a partial dependency graph would hide transitive changes. The intake parser refuses missing or truncated evidence. | high | unvalidated-release | enforced-dev | HOME-89 | projects/monolith/factory/orchestration/dependency_prs.py:398 |
+| `intake.assess.provided` | logical | `intake.assess` | provided | Accepting a partial dependency graph would hide transitive changes. The intake parser refuses missing or truncated evidence. | high | unvalidated-release | enforced-dev | HOME-89 | hub-final:projects/monolith/factory/orchestration/dependency_prs.py:398 |
 | `pr.validate.provided` | logical | `pr.validate` | provided | A success for a different tree could admit an untested build. PR checks use the PR head and queue pushes trigger a separate candidate build. Same-repository jobs cross the runner credential boundary (buildbuddy.yaml:44). | high | unvalidated-release | enforced-prod | HOME-89 | buildbuddy.yaml:16 |
 | `queue.merge.provided` | logical | `queue.merge` | provided | Enqueue after the reviewed head moves would change the candidate. The connector supplies expectedHeadOid and the ruleset requires pr-checks and factory review. | high | unvalidated-release | enforced-prod | HOME-89 | projects/factory/connector/github/client.go:695 |
 | `renovate.request-automerge.provided` | logical | `renovate.request-automerge` | provided | Requesting auto-merge for a protected path or major update would remove the manual decision. Renovate restricts eligible update classes and overrides eligibility for protected paths. | high | unvalidated-release | enforced-prod | HOME-14, HOME-61 | renovate.json:216-234 |

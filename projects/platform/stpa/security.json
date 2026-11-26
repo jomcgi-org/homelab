@@ -59,7 +59,7 @@
       "control_action": "intake.assess",
       "guideword": "provided",
       "condition": "Accepting a partial dependency graph would hide transitive changes. The intake parser refuses missing or truncated evidence.",
-      "evidence": "projects/monolith/factory/orchestration/dependency_prs.py:398",
+      "evidence": "hub-final:projects/monolith/factory/orchestration/dependency_prs.py:398",
       "view": "logical",
       "severity": "high",
       "hazards": [

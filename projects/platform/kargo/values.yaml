@@ -107,11 +107,10 @@ promotion:
   # without Argo Rollouts. The step's construction is the conformance step's,
   # minus the verdict; see templates/promotion.yaml.
   #
-  # Off because the monolith's /healthz does not carry chart_version yet.
-  # Turning this on before that field ships makes every promotion poll a body
-  # without it until verdictTimeout, then fail. The flip belongs in the change
-  # that confirms the live /healthz returns the field. The step is rendered
-  # nowhere while this is false, so wiring revisionURL below is inert.
+  # Off, and no pipeline below sets revisionURL since the hub monolith was
+  # deleted (HOME-262). Turn it on only with a workload whose /healthz carries
+  # chart_version; otherwise every promotion polls until verdictTimeout, then
+  # fails. The step is rendered nowhere while this is false.
   revisionGate:
     enabled: false
   # One entry per workload whose chart version Kargo owns. Adding a workload
@@ -124,133 +123,6 @@ promotion:
   # teaches the operator that red means nothing. Any new pipeline needs its
   # own measurement, not this default.
   pipelines:
-    - name: monolith
-      # The Warehouse's own name, referenced by every Stage's requestedFreight.
-      warehouse: monolith-chart
-      # How long a Promotion may wait for its Application to go Synced +
-      # Healthy before the Promotion fails. A failed Promotion never marks its
-      # Freight verified, which is exactly what stops a bad chart at dev.
-      #
-      # 10m is deliberately longer than any healthy rollout here (dev's
-      # measured at 10s) because this bound is not the detector. ArgoCD's own
-      # progressDeadlineSeconds trips the Application to Degraded first, and
-      # argocd-wait fails fast on that transition, so this only catches a
-      # workload that never reaches a terminal state at all.
-      # WRITTEN AS 10m0s, NOT 10m, and that is not a style choice. The API
-      # server normalizes these duration strings to the Go `0s`-suffixed form,
-      # so a chart rendering `10m` against a stored `10m0s` is a diff ArgoCD can
-      # never close. Same reasoning as warehouseInterval above, and the same
-      # failure it caused: selfHeal syncs only the DRIFTED resources, so one
-      # unconvergeable resource emits a continuous stream of targeted
-      # single-resource syncs that preempt the full sync and starve every other
-      # resource in the Application, green the whole time.
-      waitTimeout: 10m0s
-      # NOT "monolith" or "monolith-dev": a Kargo Project owns a namespace of that
-      # name and both already exist with live workloads in them.
-      project: kargo-monolith
-      chartRepo: oci://ghcr.io/jomcgi/homelab/charts/monolith
-      # Floor at the version dev was pinned to when this was built, so the first
-      # promotion is forward-only and cannot walk an environment backwards onto an
-      # older chart.
-      semverConstraint: ">=0.293.0"
-      discoveryLimit: 20
-      # How the Applications spell their source. Helm wants registry + chart name
-      # separately here, unlike the Warehouse above. Both environments run the SAME
-      # chart, which is the whole point of the dev environment, so one pair covers
-      # them.
-      appSourceRepo: ghcr.io/jomcgi/homelab/charts
-      appSourceChart: monolith
-      # KARGO expression, not Helm. Kept here because ${{ }} collides with Helm's
-      # delimiters and would be evaluated by the wrong engine if written inline.
-      # SINGLE quotes inside the expression, not double. Helm's `quote` wraps the
-      # value in double quotes and ESCAPES any inner ones, so a double-quoted
-      # argument renders as chartFrom(\"oci://...\") and Kargo's expression parser
-      # receives literal backslashes. expr accepts either quote style, so using
-      # single quotes here means nothing needs escaping.
-      desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith').Version }}"
-      # Prod only: this pipeline has no registered dev Application or upstream
-      # Stage. Adding a monolith dev lane is a separate decision.
-      #
-      # argocd-update and argocd-wait check sync completion and point-in-time
-      # readiness. There is no upstream soak or functional assertion here.
-      # Assertions live in promotion steps; Argo Rollouts and the separate
-      # Kargo verification block are unused. Freight becomes verified when the
-      # Promotion succeeds, which alone is insufficient rollout evidence.
-      # revisionURL below is inert while promotion.revisionGate.enabled is
-      # false; #4745 tracks revision-aware and functional verification.
-      stages:
-        - name: prod
-          application: monolith
-          # Subscribes directly to the Warehouse. No upstream Stage means
-          # there is no requiredSoakTime for this pipeline.
-          upstream: []
-          # Operator removed the recovery drill from the factory launch path.
-          # Resume automatic promotion through the existing rollout checks.
-          autoPromotion: true
-          # Revision gate target (#4745), INERT until promotion.revisionGate
-          # is enabled. The backend Service is named by the release
-          # (`monolith`, projects/gke-apps/monolith/application.yaml
-          # releaseName) in namespace `monolith` (same file, destination),
-          # and its `api` port (service.apiPort 8000 in the monolith chart) is
-          # the one whose /healthz the readiness probe already hits. The gate
-          # needs that body to carry `chart_version`, which the monolith chart
-          # does not add yet; ship that first.
-          revisionURL: http://monolith.monolith.svc.cluster.local:8000/healthz
-          # Rollout is about ten seconds and this is the same 10m0s bound the
-          # pipeline's waitTimeout uses; the http step defaults to it anyway,
-          # written out so the value is read here rather than in the template.
-          verdictTimeout: 10m0s
-    - name: monolith-agents
-      warehouse: monolith-agents-chart
-      project: kargo-monolith-agents
-      chartRepo: oci://ghcr.io/jomcgi/homelab/charts/monolith-agents
-      # Reuse the managed GHCR login. The item's additional repoURL field is
-      # exactly this chart URL, limiting Kargo credential selection to it.
-      credentialItemPath: vaults/k8s-homelab/items/argocd-ghcr-repo-creds
-      # This published version includes the agents-safe report write path.
-      # The live tier was still on 0.7.36 because nothing owned promotion.
-      semverConstraint: ">=0.103.24"
-      discoveryLimit: 20
-      appSourceRepo: ghcr.io/jomcgi/homelab/charts
-      appSourceChart: monolith-agents
-      desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith-agents').Version }}"
-      # Initial bound for this single Deployment, pending rollout measurements.
-      # The existing argocd-wait gate requires healthy, synced, completed rollout.
-      waitTimeout: 10m0s
-      stages:
-        - name: prod
-          application: monolith-agents
-          upstream: []
-          autoPromotion: true
-    - name: monolith-public
-      warehouse: monolith-public-chart
-      project: kargo-monolith-public
-      chartRepo: oci://ghcr.io/jomcgi/homelab/charts/monolith-public
-      # Floor at the version deployed when this pipeline was written, so the
-      # first promotion is forward-only and cannot walk the public tier back
-      # onto an older chart.
-      semverConstraint: ">=0.401.29"
-      discoveryLimit: 20
-      appSourceRepo: ghcr.io/jomcgi/homelab/charts
-      appSourceChart: monolith-public
-      desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith-public').Version }}"
-      # UNMEASURED, unlike the other two, and deliberately generous rather than
-      # tight. The repo's own rule for this value is that undershooting fails a
-      # HEALTHY roll, which teaches the operator that red means nothing, while
-      # overshooting only delays the report of a roll that was never going to
-      # finish. ArgoCD's progressDeadlineSeconds remains the real detector.
-      # Replace this with a measured number once a few promotions have run;
-      # do not tighten it by feel.
-      waitTimeout: 10m0s
-      stages:
-        # Prod only, for the same reason as the pipelines above: no dev
-        # Application exists on this cluster. The public tier has never had a
-        # pipeline at all, so this is a straight improvement on a pin that has
-        # only ever moved by hand.
-        - name: prod
-          application: monolith-public
-          upstream: []
-          autoPromotion: true
     - name: scotland-connector
       warehouse: scotland-connector-chart
       project: kargo-scotland-connector
@@ -262,11 +134,13 @@ promotion:
       appSourceRepo: ghcr.io/jomcgi/homelab/charts
       appSourceChart: scotland-connector
       desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/scotland-connector').Version }}"
-      # UNMEASURED, like monolith-public's, and generous for the same reason:
-      # undershooting fails a healthy roll. A pod is ready after two R2 GETs and
+      # UNMEASURED and deliberately generous: undershooting fails a healthy
+      # roll. A pod is ready after two R2 GETs and
       # the rollout surges one pod at a time over a floor of two, so a healthy
       # roll should take well under a minute. Replace with a measured number
-      # once a few promotions have run.
+      # once a few promotions have run. Written as 10m0s, not 10m: the API
+      # server stores the 0s-suffixed form, and `10m` is a diff Argo CD never
+      # closes.
       waitTimeout: 10m0s
       stages:
         # Prod only: no dev Application exists on this cluster.

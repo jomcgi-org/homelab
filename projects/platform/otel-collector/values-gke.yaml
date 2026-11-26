@@ -16,9 +16,6 @@ backupCheck:
 allowedServices:
   - embervm-control
   - embervm-noded
-  - monolith-backend
-  - monolith-jobs
-  - monolith-public
 
 httpcheck:
   # Live public probes plus the live in-cluster Argo CD target. The two string
@@ -89,14 +86,9 @@ logs:
   enabled: true
   namespaces:
     - embervm
-    - monolith
     - kargo
     - "kargo-*"
-  # monolith-public OOMKilled at its limit after 15h of light traffic with
-  # no metric to show the climb. Measure before resizing again.
   containerMetrics:
     enabled: true
     namespaces:
       - embervm
-      - monolith
-      - monolith-public

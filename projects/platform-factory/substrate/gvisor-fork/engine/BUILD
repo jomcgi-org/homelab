@@ -20,14 +20,6 @@ py_test(
     ],
 )
 
-# Markdown read by the monolith doc-manifest genrules. See
-# //projects/monolith:repo_docs_srcs.
-filegroup(
-    name = "repo_docs",
-    srcs = ["README.md"],
-    visibility = ["//projects/monolith:__pkg__"],
-)
-
 # The sources the Pro engine image (../engine-pro) builds from and tests with:
 # the server, the pins and the client scripts are shared, not copied.
 filegroup(

@@ -159,11 +159,10 @@ change of bucket or token. Record the result without credential values:
 4. The mirrors of this chart are the only writers to R2 bucket
    `factory-public`. Every key has one writer: the root mirror, or the
    source mirror that owns the key's prefix. Another job that writes to the
-   R2 bucket directly loses its objects at the next sync. The trips export
-   (`projects/monolith/trips/export`) writes `trips/photos/`
-   to R2 `factory-public` directly when `TRIPS_EXPORT_PUBLIC_ENABLED` is
-   `true`. Check that `projects/monolith/chart/values.yaml` sets it to
-   `false`, and keep it `false` while the mirror runs.
+   R2 bucket directly loses its objects at the next sync. The hub trips
+   export wrote `trips/photos/` to R2 `factory-public` directly when
+   `TRIPS_EXPORT_PUBLIC_ENABLED` was `true`. The hub is retired (HOME-262),
+   so it no longer runs.
 
 Then set `public.suspend: false` in a PR. To stop the mirror, set it to
 `true`: R2 keeps what it has.

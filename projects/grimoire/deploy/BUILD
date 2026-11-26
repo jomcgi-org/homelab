@@ -28,16 +28,6 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
-# The hub dump job's chart test pins its copy of inventory.sql and its
-# pg_dump image to these.
-exports_files(
-    [
-        "inventory.sql",
-        "restore-cronjob.yaml",
-    ],
-    visibility = ["//projects/monolith/chart:__pkg__"],
-)
-
 filegroup(
     name = "manifests",
     srcs = [
@@ -54,10 +44,4 @@ filegroup(
         "//projects/platform-factory/grimoire-data:__pkg__",
         "//projects/platform-factory/image-audit:__pkg__",
     ],
-)
-
-filegroup(
-    name = "repo_docs",
-    srcs = ["README.md"],
-    visibility = ["//projects/monolith:__pkg__"],
 )

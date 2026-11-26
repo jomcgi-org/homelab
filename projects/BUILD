@@ -15,6 +15,16 @@ exports_files(
     visibility = ["//projects/platform-factory/cloudnative-pg/tests:__pkg__"],
 )
 
+# //:stpa_validator_test checks the published platform STPA model.
+exports_files(
+    [
+        "platform/STPA.md",
+        "platform/stpa/security.json",
+        "platform/stpa/structure.json",
+    ],
+    visibility = ["//:__pkg__"],
+)
+
 py_library(
     name = "projects",
     srcs = ["__init__.py"],
@@ -39,18 +49,6 @@ filegroup(
         "platform-factory/kustomization.yaml",
     ],
     visibility = ["//projects/platform/renovate:__pkg__"],
-)
-
-# Markdown read by the monolith doc-manifest genrules (#6446). See
-# //projects/monolith:repo_docs_srcs.
-filegroup(
-    name = "repo_docs",
-    srcs = glob(
-        ["**/*.md"],
-        allow_empty = True,
-        exclude = ["**/node_modules/**"],
-    ) + ["//projects/factory/browser-comparison:repo_docs"],
-    visibility = ["//projects/monolith:__pkg__"],
 )
 
 sh_test(

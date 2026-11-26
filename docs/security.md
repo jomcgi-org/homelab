@@ -7,9 +7,8 @@ observations are distinct; repository configuration alone proves no rollout.
 Findings are recorded privately. The [threat model](THREAT-MODEL.md) lists assets and controls.
 
 Read this first for any security-sensitive change. For anything that
-serves data on the public apex, read
-[`docs/runbooks/public-tier-checklist.md`](runbooks/public-tier-checklist.md)
-next. Platform mechanics (ingress library, delivery, storage) are in
+serves data on the public apex, read the
+[jomcgi-site architecture](../projects/jomcgi-site/ARCHITECTURE.md) next. Platform mechanics (ingress library, delivery, storage) are in
 `projects/platform/ARCHITECTURE.md`.
 
 ## Where things run
@@ -30,7 +29,7 @@ are the live `HTTPRoute` set on the shared Gateway (`kubectl get httproutes -A`)
 | Identity provider | `auth.jomcgi.dev` | anyone, for the login flow | authentik's own session and MFA; the admin console is behind Cloudflare Access, configured in the dashboard |
 | Tailnet | the Tailscale operator | tailnet members | the Kubernetes API through the operator's API-server proxy, and the monolith API as `monolith` on the tailnet |
 
-(see: `projects/platform/cf-ingress-library/`, `projects/monolith/chart/templates/httproute-*.yaml`, `projects/mcp/context-forge-gateway/chart/templates/httproute-*.yaml`, `projects/platform-gke/tailscale/`)
+(see: `projects/platform/cf-ingress-library/`, `projects/monolith/chart/templates/httproute-*.yaml` (tag `hub-final`), `projects/mcp/context-forge-gateway/chart/templates/httproute-*.yaml`, `projects/platform-gke/tailscale/`)
 
 **Why.** Per-service hostnames were rejected because each one added DNS and
 optional SSO by hand; audience tiers make private exposure the default and
@@ -59,11 +58,11 @@ name. authentik runs on the hub with its own CNPG cluster and publishes
 `auth.jomcgi.dev` with no `SecurityPolicy`, because the login and setup
 flows share one API prefix and cannot be gated by path.
 
-**The monolith verifies, it does not issue.** `projects/monolith/auth/`
+**The monolith verifies, it does not issue.** `projects/monolith/auth/` (tag `hub-final`)
 validates configured authentik standing issuers and hands opted-in handlers a
 `Principal`. The complete current decision, exact claim checks, surface-specific
 missing and invalid token behavior, owner authorization, and result-access gaps
-are recorded in `projects/monolith/ARCHITECTURE.md` section 7 (#4940, #4941).
+are recorded in `projects/monolith/ARCHITECTURE.md` (tag `hub-final`) section 7 (#4940, #4941).
 In particular, anonymous catalogue discovery on the shared MCP mount does not
 authorize an anonymous tool call, and the agent MCP mount rejects anonymous
 requests. `Authority.DELEGATED` and actor/scope fields are representable but no
@@ -87,10 +86,10 @@ Documented holes in that gate, each deliberate:
   reachable through an IP-allowlist bypass in the Access policy and
   authenticated by HMAC in the handler. The monolith chart declares the route
   with `cfIngress.private.githubWebhook.enabled: true`
-  (`projects/monolith/chart/values.yaml`,
-  `projects/monolith/chart/templates/httproute-private.yaml`). The handler is
+  (`projects/monolith/chart/values.yaml` (tag `hub-final`),
+  `projects/monolith/chart/templates/httproute-private.yaml` (tag `hub-final`)). The handler is
   off by default: `swarm.factoryGithubWebhookEnabled` is `false` in the chart,
-  and `projects/monolith/factory/orchestration/factory_webhook.py` returns
+  and `projects/monolith/factory/orchestration/factory_webhook.py` (tag `hub-final`) returns
   404 while `FACTORY_GITHUB_WEBHOOK_ENABLED` is off. The route stays declared
   and the handler is disabled; these are two separate boundaries.
 - `/webhooks/github/argocd` is the ArgoCD push-sync webhook route, enabled on
@@ -116,7 +115,7 @@ authorization is the `groups` claim inside the verified token.
 
 **MCP identity.** Context Forge forwards the caller’s authentik bearer to the monolith. The shared MCP surface checks the operator group in `core/mcp_policy.py`. Knowledge search applies caller-derived scope filters in `knowledge/retrieval_policy.py`. Individual tools govern access to their results.
 
-**Discord features are allow-list only** (`projects/monolith/chat/acl.py`,
+**Discord features are allow-list only** (`projects/monolith/chat/acl.py` (tag `hub-final`),
 the `discord_feature_grant` table).
 
 ## Network
@@ -237,7 +236,7 @@ The one class of secret that cannot be declarative is the
 `kubernetes.io/basic-auth` secret CNPG needs for a managed role, because the
 operator emits only `Opaque` secrets. Each is created once from the same
 1Password item the consumer reads, and each has a note in
-`projects/monolith/deploy/` (`public-reader-secret.md`,
+`projects/monolith/deploy/` (tag `hub-final`) (`public-reader-secret.md`,
 `public-writer-secret.md`, `spire-db-secret.md`, `embervm-oplog-secret.md`,
 `agents-writer-secret.md`, `cnpg-gcs-backup-secret.md`).
 
@@ -247,7 +246,7 @@ No automated check on secret hygiene runs in CI beyond Semgrep Managed
 Scans' registry rules: the repo's own rules for a hardcoded secret or an
 empty item path were removed (#4777), so review has to catch them.
 
-(see: `projects/*/chart/templates/onepassworditem*.yaml`, `projects/monolith/deploy/*.md`)
+(see: `projects/*/chart/templates/onepassworditem*.yaml`, `projects/monolith/deploy/*.md` (tag `hub-final`))
 
 **Why.** One external secret store with a CR per item keeps every
 credential out of git and every consumer declarative; the hand-created
@@ -277,67 +276,24 @@ rejected at admission, and no check flags a new exception: the repo's
 
 ## Public tier
 
-`jomcgi.dev` is served by `monolith-public`, a separate chart and a separate
-Python entrypoint (`projects/monolith/app/main_public.py`) whose import
-closure is pruned in `projects/monolith/BUILD` and asserted by
-`app/main_public_imports_test.py`. The rules that keep it fail-closed:
+`jomcgi.dev` is a static site on a Cloudflare Worker
+([jomcgi-site](../projects/jomcgi-site/README.md)). The Worker serves only the
+built pages and the published objects in `data/sources.json`; it has no
+database role and no backend route.
 
-- **Reads go through `public_reader` on the replica.** `monolith-pg` runs
-  two instances on the hub; the public service reads `monolith-pg-ro` as a
-  `NOLOGIN` role created by CNPG `managed.roles`, and every public table
-  needs an explicit grant (`projects/monolith/chart/migrations/*_public_reader_grant.sql`).
-  A PreToolUse hook (`bazel/tools/hooks/check-public-reader-grant.sh`)
-  blocks a new `CREATE TABLE` in a public schema without one; it fires only
-  for edits made through Claude Code.
-- **Constrained chat writes.** Grimoire chat writes as `public_writer` on the
-  primary, scoped to its `grimoire_chat` tables; the retired notes-chat
-  `chat_public` grants and tables remain (`chart/migrations/20260706200000_grimoire_chat.sql`
-  and `chat_public_grants_test.py` under `projects/monolith/`).
-  Sessions are Turnstile-bound with per-session token budgets and a global
-  concurrency slot of one (`projects/monolith/grimoire_chat/limits.py`). On
-  the hub, `grimoire_chat/inference.py` reads `GRIMOIRE_CHAT_INFERENCE_URL`
-  with `CHAT_PUBLIC_INFERENCE_URL` as its fallback. The public hub values
-  still set that fallback to Meta's external API. The public composition
-  mounts Grimoire chat, reached through `/app/grimoire/chat` frontend proxies;
-  the old notes-chat router and inference client are removed. Anonymous
-  Grimoire prompts therefore use the configured off-cluster path, whose
-  availability is not verified here.
-- **Legacy notes-chat purge is built.** #3899 closed completed on 2026-10-01.
-  `chat_public/retention.py` and `app/jobs_main.py` implement retention and
-  selector-based takedown with audit counts, hashed selectors and dry-run
-  rollback. The private chart schedules `chat-public-retention` at `15 4 * * *`
-  with `suspend: false`; `chat-public-takedown` is manual-only and suspended.
-  CronWorkflows render when the jobs image is pinned. Defaults remove
-  snapshots older than 365 days and sessions idle over 30 days with no
-  remaining snapshot, including their messages. These jobs cover
-  `chat_public`, not `grimoire_chat`; no successful live purge is claimed here.
-- **No `/api` on the public origin.** The public `HTTPRoute`s
-  (`projects/monolith-public/chart/templates/httproute-public.yaml`) carry
-  no `/api` rule, asserted by `public_httproute_chat_guard_test`; pages
-  fetch through same-origin `+server.js` proxies. The paths that reach a
-  backend from the internet are `/functions/` (the FaaS router, backend
-  port), `/img/` (imgproxy, backed by R2), and `/health/otel-collector`. The functions route remains configured, but its EmberVM execution service has retired from the hub. Each route carries an Envoy
-  `BackendTrafficPolicy` rate limit.
-- **Row filtering is the query's job.** A grant admits the table; the query
-  must filter (`is_global = true` or the public view).
-- **Published docs pass a content gate.** `projects/monolith/knowledge/tools/public_content.py`
-  fails the docs and posts generators on in-cluster hostnames, private
-  addresses, node and brick names, bucket URIs, 1Password references and
-  secret-shaped assignments. It is a fixed marker list: an identifier
-  matching no marker publishes verbatim. #5275 closed completed for that
-  content gate; this residual limitation has no open tracker.
+- **Published posts pass a content gate.** `projects/jomcgi-site/posts/public_content.py`
+  fails the posts generator on in-cluster hostnames, private addresses, node
+  and brick names, bucket URIs, 1Password references and secret-shaped
+  assignments. The PR content scan in `buildbuddy.yaml` reports the same
+  markers. It is a fixed marker list: an identifier matching no marker
+  publishes verbatim. #5275 closed completed for that content gate; this
+  residual limitation has no open tracker.
 
-The inert destination-scoped Cilium policy and its policy-only guard were
-removed in #5816. [#5276](https://github.com/jomcgi-org/homelab/issues/5276) (public native-policy enforcement) closed not
-planned, so the egress scope is not enforced (Network
-above). The unrelated OTEL endpoint assertion survives in the public render
-test. Kargo promotes `monolith-public` on the hub,
-so the live `targetRevision` on the Application, not the git pin, says what
-is deployed.
+The hub public tier (`monolith-public`, `public_reader` on `monolith-pg`) is
+retired with the hub (HOME-262). Its controls are at tag
+[`hub-final`](https://github.com/jomcgi-org/homelab/blob/hub-final/docs/security.md#public-tier).
 
-(see: `projects/monolith-public/`, `projects/monolith/app/main_public.py`, `projects/monolith/chat_public/`, `docs/runbooks/public-tier-checklist.md`)
-
-**Why.** The anonymous SSR surface once shared a pod, backend, database role
+**Why (hub).** The anonymous SSR surface once shared a pod, backend, database role
 and secret set with the private application, so a public-process compromise
 crossed every boundary at once (ADR security/004). A feature-flagged single
 image was rejected because the private code still ships and the isolation
@@ -384,11 +340,6 @@ a convention this document asks for and nothing enforces.
 | Semgrep registry rules | Semgrep Managed Scans, configured on the Semgrep side | live; not in this repo |
 | Chart admissibility (kubeconform) | `//bazel/helm:chart_admissibility_test`, `chart-admissibility-test.sh` and `admissibility.bzl` | landed; validates the explicit `MANIFEST_SETS` in `bazel/helm/BUILD`: application/dev and platform default/hub renders plus Loom manifests, against pinned Kubernetes and CRD schemas; completeness checks retain explicit skips |
 | Pod hardening and privilege | Kyverno | two policies, both `Audit`, neither about security context |
-| Resource requests and a memory limit | Kyverno `require-resource-requests` | `Audit`, `monolith` and `monolith-public` only |
-| Public binary import closure | `main_public_imports_test` | live in CI |
-| Public route shape | `public_httproute_chat_guard_test` | live in CI |
-| Public chat grants | `chat_public_grants_test` | live in CI |
-| Public library image digests | `public_library_image_digest_guard_test` | live in CI |
 | Published doc content | `public_content.py` in the Format stage | live in CI, marker list only |
 | Retired ADR path guard | `bazel/tools/format/doc_links/check_doc_links.py` | live in CI |
 | STPA security rows carry `status` and `issue` | the validator in `docs/agents/stpa.md` BLOCK A | at authoring time |
@@ -411,16 +362,13 @@ column above says nothing will do it for you:
 - Ingress as an `HTTPRoute` on the shared Gateway with an `ingress-tier`
   label and a `SecurityPolicy` for anything not public; never a
   `LoadBalancer` or an `Ingress`.
-- A private monolith endpoint that reads cluster resources needs matching
-  permissions in `projects/monolith/chart/templates/rbac.yaml`. An agents-tier
-  observation instead belongs in its independent namespaced Roles and narrow
-  cluster exception, never the private ClusterRole.
-- Anything served on the public apex: the public-tier checklist.
+- Anything served on the public apex: the jomcgi-site deploy source list
+  (`projects/jomcgi-site/data/sources.json`).
 - Identity comes from a verified claim or token, never from a header a
   caller can set; hand-pinned image digests go stale after the next
   rebuild.
 
-(see: `bazel/tools/hooks/`, `projects/monolith/BUILD`, `.claude/settings.json`)
+(see: `bazel/tools/hooks/`, `.claude/settings.json`)
 
 **Why.** Semgrep was moved into Bazel so a rule would run as a cached test
 with hermetic, digest-pinned inputs (ADR security/001). Its fail-open wrapper
@@ -435,15 +383,12 @@ which is why the list above states enforcement rather than intent.
 |---------|-------------|
 | Ingress allowlist | `projects/*/chart/templates/httproute*.yaml`, rendered onto `cloudflare-ingress` |
 | Cloudflare Access JWT | `projects/platform/cf-ingress-library/templates/_security-policy.tpl` |
-| authentik OIDC lanes | `projects/platform/authentik/blueprints/`, `projects/monolith/chart/templates/httproute-friends.yaml` |
+| authentik OIDC lanes | `projects/platform/authentik/blueprints/` |
 | Identity header strip | `projects/platform/cloudflare-gateway/templates/client-traffic-policy.yaml` |
-| Bearer verification | `projects/monolith/auth/` |
-| Tailnet access | `projects/monolith/chart/templates/service-tailnet.yaml` |
-| Pod network policy | none on the hub beyond the Context Forge redis rule; `projects/monolith/chart/templates/networkpolicy-egress.yaml` is gated off in `values-gke.yaml` |
+| Pod network policy | none on the hub beyond the Context Forge redis rule |
 | Secrets | `OnePasswordItem` CRs per chart; operator is the `connect` Helm release outside git |
-| Public data isolation | `public_reader` and `public_writer` grants, `main_public_imports_test`, `public_httproute_chat_guard_test`, `chat_public_grants_test`, `check-public-reader-grant.sh` |
-| Public rate limits | `BackendTrafficPolicy` objects in `projects/monolith-public/chart/templates/` |
-| Published content | `projects/monolith/knowledge/tools/public_content.py` |
+| Public data isolation | The static Worker holds no database role; `data/sources.json` lists what it publishes |
+| Published content | `projects/jomcgi-site/posts/public_content.py` |
 | Review-time static checks | Semgrep Managed Scans (registry rules) |
 | Findings register | Private security project and HOME fix tickets |
 

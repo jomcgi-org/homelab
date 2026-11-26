@@ -9,7 +9,7 @@ ordinary callers, one shared bucket for assistant egress ranges that never
 also draws from a per-client bucket, a fail-safe bucket for a missing or
 malformed identity, and Cloudflare Workers refused.
 
-The harness follows projects/monolith/public_faas_rate_limit_test.py.
+The harness follows the hub's public_faas_rate_limit_test.py (tag hub-final).
 """
 
 from __future__ import annotations

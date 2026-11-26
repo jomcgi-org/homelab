@@ -6,10 +6,9 @@ Argo Rollouts is off. Two things about the revision gate are worth pinning
 because either regresses silently:
 
   1. It is OFF by default. `promotion.revisionGate.enabled: false` must leave
-     the default render identical to a render with no gate at all, because the
-     monolith's /healthz does not carry `chart_version` yet, and rendering the
-     step early would make every production promotion poll until timeout and
-     fail. A refactor that drops the `and` in the template guard turns the
+     the default render identical to a render with no gate at all, because a
+     workload whose /healthz lacks `chart_version` would make every promotion
+     poll until timeout and fail. A refactor that drops the `and` in the template guard turns the
      flag into decoration.
 
   2. When ON, a Stage that carries `revisionURL` and no `verdictURL` (so no
@@ -18,8 +17,9 @@ because either regresses silently:
      failureExpression. The conformance step and this one share a template
      block, so a change to one can drop the other.
 
-No hub Stage carries `verdictURL` since EmberVM left the hub (HOME-476). The
-conformance tests render a fixture pipeline beside the hub pipelines.
+No hub Stage carries `verdictURL` since EmberVM left the hub (HOME-476), and
+none carries `revisionURL` since the monolith was deleted (HOME-262). The
+gate tests render a fixture pipeline beside the hub pipelines.
 
 Both renders need helm: HELM_BIN comes from the BUILD target under Bazel and
 falls back to `helm` on PATH locally. values.yaml sits beside Chart.yaml, in the
@@ -93,6 +93,43 @@ def _stages_with(key: str, values: dict | None = None) -> list[tuple[str, str]]:
 
 
 _FIXTURE = ("kargo-conformance-fixture", "dev")
+_REVISION = ("kargo-revision-fixture", "prod")
+_REVISION_URL = "http://fixture.fixture.svc.cluster.local:8000/healthz"
+
+
+def _revision_values(tmp_path: Path) -> list[str]:
+    """Helm args: the hub pipelines plus one prod Stage with a revisionURL."""
+    values = _values()
+    values["promotion"]["pipelines"].append(
+        {
+            "name": "revision-fixture",
+            "warehouse": "revision-fixture-chart",
+            "project": _REVISION[0],
+            "chartRepo": "oci://ghcr.io/jomcgi/homelab/charts/fixture",
+            "semverConstraint": ">=0.1.0",
+            "discoveryLimit": 20,
+            "appSourceRepo": "ghcr.io/jomcgi/homelab/charts",
+            "appSourceChart": "fixture",
+            "desiredRevisionExpr": (
+                "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/fixture')"
+                ".Version }}"
+            ),
+            "waitTimeout": "10m0s",
+            "stages": [
+                {
+                    "name": _REVISION[1],
+                    "application": "fixture",
+                    "upstream": [],
+                    "autoPromotion": True,
+                    "revisionURL": _REVISION_URL,
+                    "verdictTimeout": "10m0s",
+                }
+            ],
+        }
+    )
+    path = tmp_path / "revision-fixture.yaml"
+    path.write_text(yaml.safe_dump(values))
+    return ["--values", str(path)]
 
 
 def _conformance_values(tmp_path: Path, scenarios: list[str]) -> tuple[Path, dict]:
@@ -138,77 +175,72 @@ def _conformance_values(tmp_path: Path, scenarios: list[str]) -> tuple[Path, dic
     return path, values
 
 
-def test_hub_pipelines_exclude_retired_embervm():
-    """EmberVM left the hub (HOME-476). Pin the four hub pipelines so its
-    Project, Warehouse and Stages cannot come back by accident."""
+def test_hub_pipelines_exclude_retired_workloads():
+    """EmberVM (HOME-476) and the monolith tiers (HOME-262) left the hub. Pin
+    the one hub pipeline so their Projects, Warehouses and Stages cannot come
+    back by accident."""
     pipelines = _values()["promotion"]["pipelines"]
-    assert [p["name"] for p in pipelines] == [
-        "monolith",
-        "monolith-agents",
-        "monolith-public",
-        "scotland-connector",
-    ]
+    assert [p["name"] for p in pipelines] == ["scotland-connector"]
     docs = _render()
     projects = sorted(d["metadata"]["name"] for d in docs if d.get("kind") == "Project")
-    assert projects == [
-        "kargo-monolith",
-        "kargo-monolith-agents",
-        "kargo-monolith-public",
-        "kargo-scotland-connector",
-    ]
-    assert "embervm" not in yaml.safe_dump_all(docs)
+    assert projects == ["kargo-scotland-connector"]
+    rendered = yaml.safe_dump_all(docs)
+    assert "embervm" not in rendered
+    assert "monolith" not in rendered
 
 
-def test_gate_is_wired_but_off_by_default():
+def test_gate_is_off_by_default():
     values = _values()
     assert values["promotion"]["revisionGate"]["enabled"] is False, (
-        "promotion.revisionGate.enabled flipped on in values.yaml: the monolith "
+        "promotion.revisionGate.enabled flipped on in values.yaml: the target "
         "/healthz must carry chart_version before this is safe (#4745)"
     )
-    assert ("kargo-monolith", "prod") in _stages_with("revisionURL"), (
-        "the monolith prod stage no longer carries revisionURL, so enabling "
-        "the gate would render nothing for production"
-    )
 
 
-def test_default_render_carries_no_rollout_version_step():
-    """The flag is the only thing standing between the wired revisionURL and a
+def test_default_render_carries_no_rollout_version_step(tmp_path):
+    """The flag is the only thing standing between a wired revisionURL and a
     step that fails every promotion until the workload exposes chart_version,
     so the default render must not contain it, on any Stage."""
-    for key, stage in _stages(_render()).items():
+    for key, stage in _stages(_render(_revision_values(tmp_path))).items():
         names = [s.get("as") for s in _http_steps(stage)]
         assert "rollout-version" not in names, (
             f"{key} renders the revision gate with revisionGate.enabled false"
         )
 
 
-def test_default_render_equals_render_with_no_revision_urls():
+def test_default_render_equals_render_with_no_revision_urls(tmp_path):
     """Stronger than the step being absent: with the flag off, revisionURL
     and verdictTimeout on a stage must change nothing, so the wiring is
     provably inert rather than merely unexercised."""
-    baseline = _render()
+    args = _revision_values(tmp_path)
+    index = len(_values()["promotion"]["pipelines"])
+    baseline = _render(args)
     stripped = _render(
-        [
-            f"--set=promotion.pipelines[{i}].stages[{j}].revisionURL=null"
-            for i, pipeline in enumerate(_values()["promotion"]["pipelines"])
-            for j, stage in enumerate(pipeline["stages"])
-            if stage.get("revisionURL")
-        ]
+        [*args, f"--set=promotion.pipelines[{index}].stages[0].revisionURL=null"]
     )
+    assert _REVISION in _stages(baseline)
     assert _stages(baseline) == _stages(stripped)
 
 
-def test_enabled_render_carries_step_on_stage_without_conformance():
+def test_enabled_render_carries_step_on_stage_without_conformance(tmp_path):
     """A Stage with revisionURL and no verdictURL still renders the http step:
     the conformance runner is not a prerequisite for the revision gate."""
-    stages = _stages(_render(["--set", "promotion.revisionGate.enabled=true"]))
-    prod = stages[("kargo-monolith", "prod")]
+    stages = _stages(
+        _render(
+            [
+                *_revision_values(tmp_path),
+                "--set",
+                "promotion.revisionGate.enabled=true",
+            ]
+        )
+    )
+    prod = stages[_REVISION]
     assert "verdictURL" not in yaml.safe_dump(prod)
     assert [s["uses"] for s in _steps(prod)] == ["argocd-update", "argocd-wait", "http"]
 
     (step,) = _http_steps(prod)
     assert step["as"] == "rollout-version"
-    assert step["config"]["url"].endswith("/healthz")
+    assert step["config"]["url"] == _REVISION_URL
     assert "chart_version" in step["config"]["successExpression"]
     assert "response.status == 200" in step["config"]["successExpression"]
     # Kargo pre-evaluates the desiredRevision expression so the body can only
@@ -234,20 +266,6 @@ def test_enabled_render_leaves_conformance_stages_unchanged(tmp_path):
     for key in keys:
         assert key in off, f"{key} missing from the render"
         assert _steps(off[key]) == _steps(on[key]), f"{key} changed with the flag"
-
-
-def test_monolith_revision_url_targets_the_probe_port():
-    """The gate must ask the same /healthz the readiness probe already hits,
-    on the api port (service.apiPort 8000), of the release-named Service in
-    the Application's destination namespace, or it proves something other
-    than the probe's Healthy. Derived from projects/gke-apps/monolith and the
-    monolith chart's service.yaml, not guessed."""
-    stages = _stages(_render(["--set", "promotion.revisionGate.enabled=true"]))
-    (step,) = _http_steps(stages[("kargo-monolith", "prod")])
-    assert (
-        step["config"]["url"]
-        == "http://monolith.monolith.svc.cluster.local:8000/healthz"
-    )
 
 
 def test_conformance_step_survives_runner_restarts(tmp_path):

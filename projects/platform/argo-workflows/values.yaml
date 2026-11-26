@@ -1,10 +1,7 @@
 # Argo Workflows configuration for the homelab.
 #
-# Purpose: an off-pod execution engine for the monolith's batch jobs (worldcup
-# sim, KG jobs) so the API pod stays lean. The monolith stays the orchestrator
-# (scheduling, retries, dedup); Argo is a "dumb" stateless executor that runs a
-# container to completion and reports status. See the jobs Typer image
-# (projects/monolith :jobs_image) and the follow-up Hera submission wiring.
+# Purpose: an off-pod execution engine for the hub monolith's batch jobs. The
+# monolith was deleted (HOME-262); no workload submits workflows now.
 #
 # Scope: NAMESPACE-SCOPED. singleNamespace=true makes the controller and server
 # run with --namespaced and creates Roles (not ClusterRoles) bound only in the

@@ -1,8 +1,8 @@
 // Shared by the deploy-time snapshot and the hydrated page. Only six summary
 // rows enter the HTML; the full forecast stays in its content-named data file.
 export const REFRESH_MS = 30 * 60_000;
-// Site snapshots poll R2 every 30 minutes; the upstream stars-refresh job
-// publishes forecasts every three hours (monolith/chart/values.yaml).
+// Site snapshots poll R2 every 30 minutes; the upstream refresh job publishes
+// forecasts every three hours (projects/stars-forecast/chart/values.yaml).
 export const FORECAST_REFRESH_MS = 3 * 60 * 60_000;
 export const EMPTY_SUMMARY = {
   asOf: null,

@@ -60,9 +60,3 @@ go_test(
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )
-
-filegroup(
-    name = "repo_docs",
-    srcs = ["README.md"],
-    visibility = ["//projects/monolith:__pkg__"],
-)

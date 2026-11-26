@@ -86,15 +86,6 @@ py_test(
     ],
 )
 
-filegroup(
-    name = "repo_docs",
-    srcs = glob(
-        ["**/*.md"],
-        exclude = ["**/node_modules/**"],
-    ) + ["//projects/jomcgi-site/web:repo_docs"],
-    visibility = ["//:__pkg__"],
-)
-
 # run.sh assembles the site with fresh data, then deploys it (HOME-209).
 sh_test(
     name = "run_test",

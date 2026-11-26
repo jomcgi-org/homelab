@@ -10,13 +10,6 @@ exports_files(
     visibility = ["//projects/factory-public/chart:__pkg__"],
 )
 
-# Expose this package's README to the repository documentation aggregate.
-filegroup(
-    name = "repo_docs",
-    srcs = ["README.md"],
-    visibility = ["//:__pkg__"],
-)
-
 py_test(
     name = "library_test",
     srcs = ["library_test.py"],

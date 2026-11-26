@@ -50,12 +50,6 @@ py3_image(
     tars = [":model"],
 )
 
-filegroup(
-    name = "repo_docs",
-    srcs = glob(["*.md"]),
-    visibility = ["//projects/monolith:__pkg__"],
-)
-
 sh_test(
     name = "inference_test",
     srcs = ["inference_test.sh"],

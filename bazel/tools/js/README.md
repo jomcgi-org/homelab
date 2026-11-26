@@ -27,24 +27,17 @@ rules. Without this wrapper, `py3_image`'s platform transitions can cause
 the non-host variant.
 
 ```python
-# projects/monolith/BUILD
+# projects/jomcgi-site/BUILD
 load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
 
 exec_filegroup(
-    name = "frontend_dist",
-    src = "//projects/monolith/frontend:build",
+    name = "web_dist",
+    src = "//projects/jomcgi-site/web:build",
 )
 ```
 
-The resulting label is then passed as `data` to the Python image target:
-
-```python
-py_venv_binary(
-    name = "main",
-    data = [":frontend_dist"],
-    ...
-)
-```
+The resulting label is then an input of the image's layer, for example a
+`genrule` that packs the built pages into a tar.
 
 ## `node_modules_tar`
 

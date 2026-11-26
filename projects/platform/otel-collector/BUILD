@@ -17,17 +17,6 @@ helm_chart(
     visibility = ["//visibility:public"],
 )
 
-# The prod opt-in list, exposed to the monolith's chart tests. The allowlist and
-# a sender's endpoint live in two charts that never see each other, and a
-# mismatch drops every span with no error, so the monolith asserts its own
-# service name is on this list. Narrow visibility on purpose: this is a
-# named-consumer edge, not a general export.
-filegroup(
-    name = "prod_values",
-    srcs = ["values-prod.yaml"],
-    visibility = ["//projects/monolith/chart:__pkg__"],
-)
-
 argocd_app(
     name = "otel-collector",
     chart = "projects/platform/otel-collector",

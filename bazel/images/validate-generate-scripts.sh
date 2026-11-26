@@ -19,8 +19,7 @@ extract_targets_from_build() {
 	# push_all and once in the push_charts subset PR CI runs, and this list is
 	# diffed against a bazel query that yields each label once.
 	# Package specs (`:__pkg__`, `:__subpackages__`) are visibility, not
-	# targets: the generated repo_docs filegroup (#6446) is visible to
-	# //projects/monolith:__pkg__.
+	# targets.
 	local build_file="$1"
 	grep -o '"//[^"]*"' "$build_file" | tr -d '"' | grep -v '^//visibility:\|:__subpackages__$\|:__pkg__$' | LC_ALL=C sort -u
 }
@@ -137,26 +136,6 @@ cat >"$TMPDIR_VALIDATE/mandoline_expected.txt" <<'LABELS'
 //projects/factory/reviewer/harness:image.push
 LABELS
 compare_targets "mandoline-publishers" "$TMPDIR_VALIDATE/mandoline_actual.txt" "$TMPDIR_VALIDATE/mandoline_expected.txt"
-
-# --- Validation 2: doc manifest inputs ---
-
-# The two doc-index manifests (repo_docs_manifest.ndjson and the public docs-site
-# docs-manifest.json) are build outputs, not committed files (#6446). Their
-# genrules read the markdown in //projects/monolith:repo_docs_srcs, one
-# `repo_docs` filegroup per owning package. A glob stops at a package boundary,
-# so fail when a tracked doc the generators would index is not in that set.
-
-echo "Validating doc manifest inputs ..."
-
-bazel_query_retry 'kind("source file", deps(//projects/monolith:repo_docs_srcs))' |
-	filter_labels >"$TMPDIR_VALIDATE/repo_docs_query.txt"
-
-if python3 projects/monolith/knowledge/tools/check_repo_docs_coverage.py "$TMPDIR_VALIDATE/repo_docs_query.txt"; then
-	echo "  repo-docs coverage: PASS"
-else
-	echo "  repo-docs coverage: FAIL"
-	FAILED=1
-fi
 
 # --- Summary ---
 

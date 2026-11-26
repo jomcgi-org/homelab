@@ -101,9 +101,9 @@ These surfaces keep their deep models:
 
 | Surface | Untrusted input | Deep model |
 | --- | --- | --- |
-| Public tier | Anyone on the internet | [monolith STPA, security lens](../projects/monolith/STPA.md); [public-tier checklist](runbooks/public-tier-checklist.md) |
-| Private tier | Signed-in humans, service tokens, GitHub webhooks (HMAC-gated) | [monolith STPA, security lens](../projects/monolith/STPA.md) |
-| MCP gateway | Agents, including prompt-injected ones | [monolith STPA, security lens](../projects/monolith/STPA.md) |
+| Public tier | Anyone on the internet | [monolith STPA, security lens](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/STPA.md); [public-tier checklist](https://github.com/jomcgi-org/homelab/blob/hub-final/docs/runbooks/public-tier-checklist.md) |
+| Private tier | Signed-in humans, service tokens, GitHub webhooks (HMAC-gated) | [monolith STPA, security lens](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/STPA.md) |
+| MCP gateway | Agents, including prompt-injected ones | [monolith STPA, security lens](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/STPA.md) |
 | Polylane agent | None inbound; it reads the cluster and sends out | [Security lens](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/platform-gke/polylane/STPA.md#lens-security) |
 | Cluster baseline | Everything above sits on it | [security.md](security.md) |
 

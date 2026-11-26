@@ -1,5 +1,0 @@
-dist/
-.svelte-kit/
-node_modules/
-# Local builds of the preview harnesses (CI builds its own).
-*-fixture-preview/

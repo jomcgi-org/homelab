@@ -13,12 +13,6 @@ py_test(
     deps = ["@pip//pyyaml"],
 )
 
-filegroup(
-    name = "repo_docs",
-    srcs = ["README.md"],
-    visibility = ["//projects/monolith:__pkg__"],
-)
-
 exports_files(
     ["resources/argocd.yaml"],
     visibility = [

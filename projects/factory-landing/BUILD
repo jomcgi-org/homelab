@@ -50,13 +50,3 @@ apko_image(
     contents = "@factory_landing_lock//:contents",
     tars = [":static_tar"],
 )
-
-# Indexed through //:repo_docs so the factory does not modify the monolith.
-filegroup(
-    name = "repo_docs",
-    srcs = glob(
-        ["**/*.md"],
-        exclude = ["**/node_modules/**"],
-    ) + ["//projects/factory-landing/web:repo_docs"],
-    visibility = ["//:__pkg__"],
-)

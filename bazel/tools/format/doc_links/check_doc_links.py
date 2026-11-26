@@ -3,7 +3,7 @@
 ADR files were removed on 2026-09-06 under #4667. Decision rationale now lives
 in each domain's ``ARCHITECTURE.md``. This checker guards that references to a
 retired decision-tree path do not reappear, while preserving explicit
-exemptions for frozen fixtures and applied migrations.
+exemptions for frozen fixtures.
 
 ``git ls-files`` keeps the scanned population deterministic and excludes local
 build artifacts.
@@ -80,33 +80,7 @@ _TEST_FILE_SUFFIXES: tuple[str, ...] = (
 #
 _EXAMPLE_ALLOWLIST: frozenset[str] = frozenset(
     {
-        # Frozen knowledge-gate calibration fixtures: an atom's evidence text
-        # quotes the ADR path it was extracted from, and rewriting the evidence
-        # would change what the calibration test grades.
-        "projects/monolith/knowledge/testdata/atoms-all.tsv",
-        "projects/monolith/knowledge/testdata/atoms-graded.tsv",
         "projects/model-bench/tasks/research-adr-writeback-01/task.yaml",
-    }
-)
-
-# Generated artifacts that embed whole doc bodies, so they inherit every path
-# mentioned inside the prose they bake in. Regenerating is what fixes them.
-_GENERATED: frozenset[str] = frozenset(
-    {
-        "projects/monolith/chat/orchestrator_bundle.md",
-    }
-)
-
-# Applied Atlas migrations are immutable: Atlas records each applied file's
-# hash in its revisions table and refuses to apply a directory whose history
-# changed, and atlas.sum chains every later file's checksum on top. Editing
-# even a comment to repoint an ADR path would therefore break the in-cluster
-# AtlasMigration, so these keep their historical citation; the rollup that
-# deleted the ADR records where it went in the domain's ARCHITECTURE.md.
-_APPLIED_MIGRATIONS: frozenset[str] = frozenset(
-    {
-        "projects/monolith/chart/migrations/20260703070000_grimoire_schema.sql",
-        "projects/monolith/chart/migrations/20260714000000_faas_function.sql",
     }
 )
 
@@ -129,9 +103,7 @@ _SKIP_SUFFIXES: tuple[str, ...] = (
 
 def should_scan(rel_path: str) -> bool:
     """True when a tracked path's ADR references should be required to resolve."""
-    if rel_path in _GENERATED or rel_path in _EXAMPLE_ALLOWLIST:
-        return False
-    if rel_path in _APPLIED_MIGRATIONS:
+    if rel_path in _EXAMPLE_ALLOWLIST:
         return False
     if rel_path.endswith(_SKIP_SUFFIXES):
         return False

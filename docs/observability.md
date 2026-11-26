@@ -118,7 +118,7 @@ collector.
 The OpenTelemetry Operator chart was retired in #6914.
 `projects/platform-gke/` carries no Application for it.
 Each workload configures its own exporter endpoint. The private monolith's
-OTLP/HTTP trace endpoint is set in `projects/monolith/deploy/values.yaml`, and
+OTLP/HTTP trace endpoint is set in `projects/monolith/deploy/values.yaml` (tag `hub-final`), and
 the service is admitted through the allowlist above.
 
 The public stats ticker (`/app/notes/stats`) reads a snapshot the
@@ -154,7 +154,7 @@ for two consecutive 5-minute evaluations and notifies the Discord webhook
 recipient "Discord homelab alerts".
 
 Everything else alerts from the monolith. Operational health components in
-`projects/monolith/factory/ops_health.py` are registered as **advisory**
+`projects/monolith/factory/ops_health.py` (tag `hub-final`) are registered as **advisory**
 components of the private `/api/health`: a failing one is listed under
 `degraded` and the response stays 200. They are advisory because they describe
 capacity, providers and the factory lane rather than whether the monolith can
@@ -166,7 +166,7 @@ The monolith leader evaluates them every 60 seconds and posts one Discord
 message (through `shared.notify`, to `agent.discord.defaultChannelId` unless
 `healthAlerts.channelId` is set) when a component flips unhealthy or recovers,
 and a reminder every 6 hours while it stays unhealthy
-(`projects/monolith/factory/health_alerts.py`). The last announced state
+(`projects/monolith/factory/health_alerts.py` at tag `hub-final`). The last announced state
 is kept in the `platform_probe` table (`health_alert.<component>`), so a normal
 leader handover retains deduplication and reminder timing. State advances after
 successful enqueue. A crash between enqueue and the state write can duplicate
@@ -289,7 +289,7 @@ false through Git to disable this path; existing backup schedules are unchanged.
   `projects/platform/otel-collector/values-gke.yaml`
 - Honeycomb trigger specs, `sync.py` and the disabled Kyverno injection were
   deleted with the hub (HOME-262); tag `hub-final` keeps them.
-- Monolith health components and Discord alerts:
+- Monolith health components and Discord alerts, at tag `hub-final`:
   `projects/monolith/factory/ops_health.py`,
   `projects/monolith/factory/health_alerts.py`, chart values `healthAlerts`
 

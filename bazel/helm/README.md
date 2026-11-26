@@ -61,13 +61,10 @@ Declares a chart directory. Creates a `chart` filegroup, an optional
 targets that package the chart as a `.tgz` and push it to the OCI registry.
 
 ```python
-# projects/monolith/chart/BUILD
+# projects/trips/chart/BUILD
 helm_chart(
     name = "chart",
-    images = {
-        "backend.image":  "//projects/monolith:image.info",
-        "frontend.image": "//projects/monolith/frontend:image.info",
-    },
+    images = {"image": "//projects/trips/image:image.info"},
     lint = False,
     publish = True,
     visibility = ["//visibility:public"],
@@ -166,14 +163,13 @@ local Bazel installation and do not replace the Bazel-backed CI targets.
 Render one service by its path below `projects/`, or pass a chart directory:
 
 ```bash
-./bazel/helm/render.sh monolith \
-  --release monolith \
-  --namespace monolith \
-  --values projects/monolith/deploy/values.yaml
+./bazel/helm/render.sh trips \
+  --release trips \
+  --namespace trips
 ```
 
 The default output is `<chart>/manifests/all.yaml`, an ignored preview file. A
-nested service such as `mcp/context-forge-gateway` is also accepted. Use
+nested service path is also accepted. Use
 `--output -` for stdout, or `--output PATH` for another repository-local file.
 Run `./bazel/helm/render.sh --help` for all options. A missing chart, values
 file, Helm executable, or failed render is an error. A failed render does not
@@ -218,7 +214,6 @@ lint tests run Helm's strict validation.
 | `crd-schemas.py` | Extract kubeconform schemas from CRDs |
 | `lint-inputs_test.sh` | Regression tests for lint inputs |
 | `lint_test.sh` | Regression tests for lint |
-| `no-cilium-policies-test.sh` | Check renders for Cilium policies |
 | `publication-receipt.sh` | Summarize verified chart publication records |
 | `push_test.sh` | Regression tests for push |
 | `render_test.sh` | Regression tests for render |

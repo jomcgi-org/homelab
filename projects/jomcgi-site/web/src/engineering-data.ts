@@ -164,7 +164,7 @@ export const projects: EngineeringProject[] = [
     links: [
       {
         label: "projects/monolith/knowledge",
-        href: "https://github.com/jomcgi/homelab/tree/main/projects/monolith/knowledge",
+        href: "https://github.com/jomcgi/homelab/tree/hub-final/projects/monolith/knowledge",
       },
     ],
   },

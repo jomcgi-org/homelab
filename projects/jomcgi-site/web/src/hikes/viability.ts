@@ -1,4 +1,4 @@
-// Port of projects/monolith/hikes/router.py. Hours are daylight hours from
+// Port of projects/monolith/hikes/router.py (tag hub-final). Hours are daylight hours from
 // walks.json v2; only the current clock hour and later may contribute.
 export type Hour = [
   number,

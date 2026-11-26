@@ -127,12 +127,7 @@ share the remote cache.
   "nothing to publish" and "failed to notice a change" print almost the same
   thing.
 - **Generated files drifting.** `ci regen` runs the committed generators
-  (push-all image list, guest environment docs, routes, posts manifest,
-  orchestrator bundle). The
-  repo-docs and public docs manifests are genrule outputs (#6446); a
-  `repo-docs coverage: FAIL` from `validate-generate-scripts.sh` means a tracked
-  doc sits in a package with no `repo_docs` filegroup, and its message says
-  what to add. If CI auto-commits a regen you did not run, that is the format
+  (push-all image list, guest environment docs, posts manifest). If CI auto-commits a regen you did not run, that is the format
   bot, not a failure.
 
 ## Build graph questions without a local Bazel

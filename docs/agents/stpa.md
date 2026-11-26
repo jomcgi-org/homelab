@@ -4,7 +4,7 @@ Generate or update the STPA safety model for ONE system and ONE lens. Findings a
 written to committed JSON fragments under `<system>/stpa/`, and a merged
 `<system>/STPA.md` is rendered deterministically from all present fragments.
 
-The `system` argument is the directory to analyze (e.g. `projects/monolith`).
+The `system` argument is the directory to analyze (e.g. `projects/platform`).
 The `lens` argument is `logic`, `security`, or `governance` (default `logic` if
 not given). The analysis scope is that subtree and the control
 structure it grounds in.
@@ -65,7 +65,7 @@ A system may model only one view; omit ones you cannot ground; do not invent.
 ## Steps
 
 1. **Determine system and lens.** If not given, ask; a subagent with nobody to
-   ask uses the defaults (system = `projects/monolith`, lens = `logic`).
+   ask uses the defaults (system = `projects/platform`, lens = `logic`).
 2. **Check for prior fragments.** If `<system>/stpa/` exists, read them (prior
    analysis, semantic keys to reuse).
 3. **Ground in code.** List the system subtree; read READMEs, architecture docs,
@@ -159,7 +159,7 @@ hazards: condition slug: `stale-policy`, `cross-schema-grant`; ucas:
 **structure.json** (logic lens writes, others read):
 ```
 {
-  "system": "monolith", "system_dir": "projects/monolith", "commit": "abc1234",
+  "system": "platform", "system_dir": "projects/platform", "commit": "abc1234",
   "nodes": [ {"key":"acl","label":"Acl check","view":"logical","layer":"enforcement","maturity":"built"}, ... ],
   "control_actions": [ {"key":"acl.check","label":"...","view":"logical","from":"public-api","to":"acl","maturity":"built","evidence":"path:line"}, ... ],
   "feedback": [ {"view":"logical","from":"postgres","to":"scheduler","signal":"NOTIFY wakeup hint"}, ... ]
@@ -169,7 +169,7 @@ hazards: condition slug: `stale-policy`, `cross-schema-grant`; ucas:
 **<lens>.json** (logic, security, or governance):
 ```
 {
-  "lens": "security", "system_dir": "projects/monolith", "commit": "abc1234",
+  "lens": "security", "system_dir": "projects/platform", "commit": "abc1234",
   "scope": {"summary":"1-line headline","built":"built things","designed":"designed things","note":"OPTIONAL caveat"},
   "losses": [ {"key":"L.unauthorized-access","title":"..."}, ... ],
   "hazards": [ {"key":"stale-policy","view":"logical","statement":"...","losses":["L.unauthorized-access"],"maturity":"built","status":"shipped-off"}, ... ],

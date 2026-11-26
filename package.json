@@ -30,7 +30,6 @@
       "flatted": ">=3.4.2 <4",
       "picomatch@>=4.0.0 <4.0.4": ">=4.0.4 <5",
       "marked": ">=18.0.10 <19",
-      "@sveltejs/kit": ">=2.70.3 <3",
       "svelte": ">=5.56.9 <6",
       "vite": ">=6.4.3 <7",
       "vitest": "4.1.12",
@@ -39,7 +38,6 @@
       "brace-expansion": ">=5.0.6 <6"
     },
     "patchedDependencies": {
-      "@sveltejs/kit": "bazel/patches/@sveltejs__kit.patch",
       "rollup": "bazel/patches/rollup.patch",
       "happy-dom@21.0.4": "bazel/patches/happy-dom@21.0.4.patch",
       "@astryxdesign/charts@0.7.17-canary.g12f81bd": "bazel/patches/@astryxdesign__charts@0.7.17-canary.g12f81bd.patch"

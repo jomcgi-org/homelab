@@ -60,15 +60,3 @@ go_test(
         "@org_golang_google_protobuf//types/known/structpb",
     ],
 )
-
-filegroup(
-    name = "repo_docs",
-    srcs = [
-        "ARCHITECTURE.md",
-        "DESIGN-detectors.md",
-        "DESIGN-large-bodies.md",
-        "DESIGN-prior-art.md",
-        "README.md",
-    ],
-    visibility = ["//projects/monolith:__pkg__"],
-)

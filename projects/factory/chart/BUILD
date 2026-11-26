@@ -52,7 +52,7 @@ helm_chart(
 )
 
 # Kept here, not generated from deploy/application.yaml, because gazelle
-# resets chart visibility otherwise (the monolith-public pattern).
+# resets chart visibility otherwise.
 argocd_app(
     name = "factory",
     chart = "projects/factory/chart",

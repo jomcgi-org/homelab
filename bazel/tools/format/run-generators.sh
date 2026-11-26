@@ -11,12 +11,7 @@
 #
 # Generators covered (each self-locates via BUILD_WORKSPACE_DIRECTORY, so this
 # wrapper only cd's to the workspace and invokes them):
-#   - the push-all BUILD list, monolith routes, the posts manifest, the ADR 036
-#     orchestrator context bundle (orchestrator_bundle.md).
-#
-# Deliberately NOT here: the repo-docs and public docs manifests. They are
-# build outputs of genrules (#6446), never committed, so nothing regenerates
-# or checks them in; validate-generate-scripts.sh checks their inputs instead.
+#   - the push-all BUILD list and the jomcgi-site posts manifest.
 #
 # Deliberately NOT here: sync-helm-deps and atlas-checksum generation. They need
 # helm/atlas CLIs that are not in the CI format runner and have their own gates;
@@ -38,9 +33,7 @@ run() {
 }
 
 run ./bazel/images/generate-push-all.sh
-run ./projects/monolith/generate-routes.sh
 run python3 ./projects/jomcgi-site/posts/gen_posts_manifest.py
-run python3 ./projects/monolith/knowledge/tools/gen_orchestrator_bundle.py
 
 fails=0
 for p in "${pids[@]}"; do

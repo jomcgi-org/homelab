@@ -38,21 +38,6 @@ py_test(
 )
 
 py_library(
-    name = "central_build_ratchet_lib",
-    srcs = ["central_build_ratchet.py"],
-    imports = ["."],
-)
-
-py_test(
-    name = "central_build_ratchet_test",
-    srcs = ["central_build_ratchet_test.py"],
-    deps = [
-        ":central_build_ratchet_lib",
-        "@pip//pytest",
-    ],
-)
-
-py_library(
     name = "chart_version_guard_lib",
     srcs = ["chart_version_guard.py"],
     imports = ["."],
@@ -63,22 +48,6 @@ py_test(
     srcs = ["chart_version_guard_test.py"],
     deps = [
         ":chart_version_guard_lib",
-        "@pip//pytest",
-    ],
-)
-
-py_library(
-    name = "grimoire_journey_trigger_lib",
-    srcs = ["grimoire_journey_trigger.py"],
-    imports = ["."],
-)
-
-py_test(
-    name = "grimoire_journey_trigger_test",
-    srcs = ["grimoire_journey_trigger_test.py"],
-    data = ["//:buildbuddy.yaml"],
-    deps = [
-        ":grimoire_journey_trigger_lib",
         "@pip//pytest",
     ],
 )

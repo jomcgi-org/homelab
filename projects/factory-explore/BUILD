@@ -4,13 +4,3 @@ go_image(
     name = "image",
     binary = "//projects/factory-explore/cmd",
 )
-
-filegroup(
-    name = "repo_docs",
-    srcs = [
-        "ARCHITECTURE.md",
-        "README.md",
-        "REVIEW.md",
-    ],
-    visibility = ["//:__pkg__"],
-)

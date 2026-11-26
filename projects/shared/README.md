@@ -102,15 +102,14 @@ Adjust the relative path depth as needed (services nested one level deeper use
 
 ### Consumers
 
-| Project           | Chart path                       |
-| ----------------- | -------------------------------- |
-| `monolith-public` | `projects/monolith-public/chart` |
+No chart depends on the library since `monolith-public` was deleted
+(HOME-262).
 
 ### Bumping the version
 
 When changing any template, bump `version` in the library `Chart.yaml` and
 update the `version` field in each consumer's `Chart.yaml` dependency block to
-match (`projects/monolith-public/chart`). Then regenerate each consumer's
+match. Then regenerate each consumer's
 vendored artifacts: its `Chart.lock` and `charts/homelab-library-<version>.tgz`
 (`helm dependency update <chart-dir>` rebuilds both, and removes the old
 tarball so exactly one remains).

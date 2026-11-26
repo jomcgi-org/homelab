@@ -78,7 +78,7 @@ whose fetch fails.
 ## Hub inventory and port issues (HOME-258)
 
 The [deploy source list](../projects/jomcgi-site/data/sources.json) names the
-current Stars and Hikes keys. The [hub chart](../projects/monolith/chart/values.yaml)
+current Stars and Hikes keys. The [hub chart](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/chart/values.yaml)
 defines the schedules below (UTC). Each port must compare CPU-seconds and
 peak resident memory against the Python job on the same inputs. Each port is
 filed under [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178) with the Done when criteria below and its Go rationale ([record](https://factory-plan.jomcgi.dev/factory/issue/HOME-258#comment-4197)).
@@ -133,7 +133,7 @@ memory under concurrency and less CPU spent copying upload buffers.
 The daily Python `trips-export` Argo CronWorkflow runs at 03:00 UTC. It reads the
 private trip state through the API serializers, writes WebP photo derivatives
 through the hub imgproxy presets, and commits `stars/trips/export.json` last
-([export README](../projects/monolith/trips/export/README.md)). HOME-401 also
+([export README](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/trips/export/README.md)). HOME-401 also
 moves this job: it switches the export's readers to the factory output and
 retires the hub schedule.
 

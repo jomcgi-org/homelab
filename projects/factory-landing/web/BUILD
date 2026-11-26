@@ -1,4 +1,4 @@
-# Hand-maintained rules_js app, independent of the monolith workspace package.
+# Hand-maintained rules_js app.
 # gazelle:ignore
 # gazelle:exclude src
 load("@aspect_rules_js//js:defs.bzl", "js_library", "js_run_binary")
@@ -89,16 +89,5 @@ typescript_bin.tsc_test(
 js_library(
     name = "paging",
     srcs = ["src/paging.mjs"],
-    visibility = ["//projects/factory-landing:__pkg__"],
-)
-
-# Indexed through the parent package's repo_docs; web/ is its own package, so
-# the parent's glob does not reach AGENTS.md.
-filegroup(
-    name = "repo_docs",
-    srcs = glob(
-        ["*.md"],
-        allow_empty = True,
-    ),
     visibility = ["//projects/factory-landing:__pkg__"],
 )

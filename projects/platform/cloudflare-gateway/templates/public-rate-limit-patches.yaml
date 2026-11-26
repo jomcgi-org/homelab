@@ -1,7 +1,7 @@
 {{- if .Values.gateway.enabled }}
 # Envoy Gateway 1.8.3 emits a route-specific LocalRateLimit for each public
-# policy that keys its limit with clientSelectors (the apex page route and the
-# public functions route). Envoy uses that configuration instead of the
+# policy that keys its limit with clientSelectors (such as the Scotland
+# connector route). Envoy uses that configuration instead of the
 # listener-level filter configuration, so its omitted max_dynamic_descriptors
 # would default to 20 and evict exhausted client buckets under ordinary traffic
 # cardinality. Raise it to the listener-level capacity for every such route.

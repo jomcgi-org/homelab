@@ -1,4 +1,4 @@
-# Hand-maintained rules_js app, independent of the monolith workspace package.
+# Hand-maintained rules_js app.
 # gazelle:ignore
 # gazelle:exclude src
 load("@aspect_rules_js//js:defs.bzl", "js_library", "js_run_binary")

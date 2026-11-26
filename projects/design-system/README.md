@@ -3,8 +3,8 @@
 This directory contains the shared `--ds-*` token contract from ADR
 platform/013 and the opt-in primitives built on it (#6873 to #6876). Since
 2026-10-17 the frontend converges on the technical-drawing language (#7016):
-on a sheet the page tokens in
-`projects/monolith/frontend/src/lib/public/styles/technical-drawing.css` are
+on a sheet the page tokens in the hub frontend's
+`src/lib/public/styles/technical-drawing.css` (tag `hub-final`) were
 the source of truth, and every `--ds-*` role is derived from them inside
 `.td`, so a primitive from this package renders in the page's scheme with no
 `data-ds-theme` boundary. The themes in `tokens/technical-drawing.css` remain
@@ -46,9 +46,8 @@ projects/design-system/
 `contract.css` defines the token **roles** (surface, ink, line, accent,
 shadow, border weight, type stacks, spacing, radius, status) with the public
 neobrutalist values as the baseline. It is a pnpm workspace package
-(`pnpm-workspace.yaml`) consumed by `projects/monolith/frontend` as
-`@homelab/design-system`, and `src/routes/+layout.svelte` imports it on every
-route.
+(`pnpm-workspace.yaml`) named `@homelab/design-system`. Its only consumer, the
+hub monolith frontend, was deleted (HOME-262), so no project imports it now.
 
 `BUILD` is `# gazelle:ignore` on purpose: the JS extension wants to add an
 `npm_package` target, but consumers depend on the `npm_link_all_packages`
@@ -168,7 +167,7 @@ handle `onchange` there. Components do not read or write URLs.
 </section>
 ```
 
-The synthetic `projects/monolith/frontend/controls-preview/` fixture exercises
+The synthetic hub `frontend/controls-preview/` fixture (tag `hub-final`) exercised
 these APIs through package exports. Its contract suite server-renders without
 browser globals, hydrates with element/text/attribute identity and zero console
 warnings/errors, exercises callbacks/bindings, and checks shared Svelte runtime
@@ -262,8 +261,8 @@ The cue is hidden from screen readers; the explicit label carries the meaning.
 
 `DATA_DISPLAY_FIXTURES` exports frozen measurements (all numeric edges,
 missing and non-finite values, long labels/units), rows, densities and states.
-They contain synthetic constants only. Unit/DOM tests live in
-`projects/monolith/frontend/src/lib/design-system/`; the isolated theme preview
+They contain synthetic constants only. Unit/DOM tests lived in the
+hub frontend's `src/lib/design-system/` (tag `hub-final`); the isolated theme preview
 renders every component in light, dark and nested boundaries and checks SSR,
 hydration and real Chromium text resize. No production page consumes this set.
 
@@ -349,7 +348,7 @@ listed system sans faces when it is unavailable.
 Selection is the literal `data-ds-theme` value. There is no `system` mode,
 media query or browser-global read at import time. Render the same attribute on
 the server and client. Import safety is tested in Node with browser globals
-undefined. The isolated `projects/monolith/frontend/theme-preview/` fixture
+undefined. The isolated hub `frontend/theme-preview/` fixture (tag `hub-final`)
 server-renders both schemes and a dark-in-light boundary, then hydrates the same
 markup. Its tests retain DOM nodes, text and attributes without hydration
 warnings. The browser lane checks text resize, keyboard focus, clipping and
@@ -384,8 +383,8 @@ ornament role, glow, shadow, gradient, ambient dawn/dusk tint or serif display.
 ### Measured contrast
 
 WCAG 2.x relative luminance from opaque sRGB `#rrggbb` values. The Node helper in
-`projects/monolith/frontend/src/lib/design-system/technical-drawing.test-helper.js`
-computes these rows; `technical-drawing.test.js` requires exact agreement to two
+`src/lib/design-system/technical-drawing.test-helper.js` in the hub frontend
+(tag `hub-final`) computed these rows; `technical-drawing.test.js` requires exact agreement to two
 decimal places. Text and status require 4.5:1. Focus, strong rules and series
 require 3:1. The on-accent row measures against the accent fill in each scheme,
 so its value is repeated across that scheme's surface columns.
@@ -420,13 +419,8 @@ ci
 
 Targeted advisory checks in a guest without `ci` (Linux PR CI remains required):
 
-```sh
-pnpm install --frozen-lockfile --ignore-scripts
-pnpm --dir projects/monolith/frontend exec vitest run src/lib/design-system/technical-drawing.test.js src/lib/design-system/technical-drawing.dom.test.js
-pnpm --dir projects/monolith/frontend exec vitest run --config factory-preview/vitest.config.js
-pnpm --dir projects/monolith/frontend exec vitest run --config theme-preview/vitest.config.js
-FACTORY_PREVIEW_SHA=$(git rev-parse HEAD) pnpm --dir projects/monolith/frontend exec vite build --config theme-preview/vite.config.js
-```
+The commands ran in the hub frontend, deleted under HOME-262. Check out tag
+`hub-final` to run them; this repository has no test of this package now.
 
 The Node test checks completeness, scoped syntax, default values, palette order,
 contrast, documentation and import safety. The happy-dom test loads both real
@@ -445,9 +439,6 @@ check command are in `frontend/theme-preview/README.md`.
 - Themes scope conflicting values to a surface marker or component root
   (`.public-theme` from the public layout and error boundary, `.ember-site`,
   `.grimoire`). Do not add another unscoped writer for those names.
-- A token change here ships in the shared monolith frontend image, so it
-  bumps both `monolith` and `monolith-public` together. Ownership moved here;
-  release trains did not.
 - Do not converge the themes visually. The differentiation is a product
   decision recorded in the stylesheets and in `.impeccable.md`, not drift.
 

@@ -33,7 +33,7 @@ npm_link_all_packages(name = "node_modules")
 # gazelle:resolve go github.com/bazelbuild/bazel-gazelle/rule @gazelle//rule
 # gazelle:exclude .claude
 # Explicit-only agent procedures + helper scripts (not py packages; imports are
-# runtime/monolith paths Gazelle cannot resolve).
+# runtime paths Gazelle cannot resolve).
 # gazelle:exclude docs/runbooks
 # gazelle:exclude docs/posts/figures
 
@@ -89,7 +89,9 @@ sh_test(
     ],
     data = [
         "docs/agents/stpa.md",
-        "//projects/monolith:stpa_model",
+        "//projects:platform/STPA.md",
+        "//projects:platform/stpa/security.json",
+        "//projects:platform/stpa/structure.json",
         "@jq_toolchains//:resolved_toolchain",
     ],
 )
@@ -139,30 +141,6 @@ exports_files(
 # all pip packages during CI analysis phase. Use:
 # - bazel run //bazel/tools/python:gazelle_python_manifest.update
 # - bazel test //bazel/tools/python:gazelle_python_manifest.test
-
-# Markdown read by the monolith doc-manifest genrules (#6446). See
-# //projects/monolith:repo_docs_srcs.
-filegroup(
-    name = "repo_docs",
-    srcs = glob(
-        [
-            "AGENTS.md",
-            "bazel/**/*.md",
-            "docs/**/*.md",
-        ],
-        allow_empty = True,
-        exclude = ["**/node_modules/**"],
-    ) + [
-        "//projects/factory-explore:repo_docs",
-        "//projects/factory-landing:repo_docs",
-        "//projects/factory-public:repo_docs",
-        "//projects/factory-storyboard:repo_docs",
-        "//projects/jomcgi-site:repo_docs",
-        "//projects/shared/helm/factory-library:repo_docs",
-        "//projects/stars-forecast:repo_docs",
-    ],
-    visibility = ["//projects/monolith:__pkg__"],
-)
 
 exports_files(
     [

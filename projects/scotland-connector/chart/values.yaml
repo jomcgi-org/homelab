@@ -12,7 +12,7 @@ image:
   pullPolicy: IfNotPresent
 
 # Fallback count when autoscaling is disabled. The hub Application must ignore
-# /spec/replicas while the HPA owns it (see the monolith-public Application).
+# /spec/replicas while the HPA owns it.
 replicas: 2
 
 autoscaling:
@@ -163,7 +163,7 @@ route:
     name: cloudflare-ingress
     namespace: envoy-gateway-system
   # Per-client local rate limits keyed on CF-Connecting-IP, in the shape
-  # projects/monolith-public/chart/templates/httproute-public.yaml proves out:
+  # the retired monolith-public public route proved out (tag hub-final):
   # a selector-less fail-safe bucket that only requests without a valid
   # identity draw from, and a Distinct bucket per valid client address.
   clientIdentity:

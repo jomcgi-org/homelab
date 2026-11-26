@@ -64,27 +64,6 @@ py_test(
     ],
 )
 
-# gazelle:resolve py knowledge //projects/monolith:monolith_backend
-# gazelle:resolve py knowledge.gardener //projects/monolith:monolith_backend
-# gazelle:resolve py knowledge.models //projects/monolith:monolith_backend
-# gazelle:resolve py app.main //projects/monolith:monolith_backend
-# gazelle:resolve py auth.api //projects/monolith:pkg_auth
-# gazelle:resolve py core.db //projects/monolith:monolith_backend
-py_test(
-    name = "knowledge_test",
-    srcs = ["knowledge_test.py"],
-    imports = ["../../projects/monolith"],  # keep
-    deps = [
-        ":cli",
-        "//projects/monolith:monolith_backend",
-        "//projects/monolith:pkg_auth",
-        "@pip//fastapi",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-        "@pip//typer",
-    ],
-)
-
 py_test(
     name = "main_test",
     srcs = ["main_test.py"],
