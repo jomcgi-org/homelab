@@ -120,8 +120,15 @@ argo-cd:
           hs.message = "Job is suspended"
           return hs
         end
-        local name = obj.metadata.name or ""
-        if obj.metadata.namespace == "factory-discord" and string.find(name, "^discord%-import%-") ~= nil then
+        -- ArgoCD's Lua sandbox has no string library, so match the import
+        -- Job by its pod template labels (chart templates/discord.yaml).
+        local labels = nil
+        if obj.spec ~= nil and obj.spec.template ~= nil and obj.spec.template.metadata ~= nil then
+          labels = obj.spec.template.metadata.labels
+        end
+        if obj.metadata.namespace == "factory-discord" and labels ~= nil
+            and labels["app.kubernetes.io/name"] == "factory-discord-bridge"
+            and labels["app.kubernetes.io/component"] == "import" then
           hs.status = "Healthy"
           hs.message = "Discord history import runs in the background"
           return hs
