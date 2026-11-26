@@ -18,7 +18,7 @@ Look at `status.sync.status`, `status.operationState` (phase, message, startedAt
 
 **Cause:** ArgoCD's repo-server can serve a stale cached render of the chart.
 
-**Fix:** force a fresh sync via the `monolith-k8s-sync-argocd-app` MCP tool (name=`<app>`), or a hard refresh. Note (third documented occurrence, 2026-07-04): the MCP sync can report `synced: true` while changing nothing; the reliable escalation is a hard-refresh annotation, which forces the repo-server to re-pull and re-render:
+**Fix:** a hard-refresh annotation, which forces the repo-server to re-pull and re-render:
 
 ```bash
 # Joe-run: agent cluster access is read-only
@@ -114,24 +114,25 @@ kubectl -n argocd patch application <app> --type merge -p '{"status":{"operation
 
 The Application CRD has no status subresource, so a plain merge patch on `status` is correct here, this is not a workaround. It takes 20-40 seconds to take effect: do not conclude the patch failed if nothing has changed after 5 seconds.
 
-**Without kubectl write access (agents):** the MCP tool `monolith-k8s-sync-argocd-app` patches `.operation` on the Application directly. The controller then finalizes the stale operation as Succeeded and any queued Kargo `argocd-update` proceeds. This is the path that cleared the 2026-08-24 embervm-dev wedge (#5250), where `operationState` sat at `phase: Running` with `finishedAt` already set because the resource it was waiting on had been pruned by the same sync. Capture the `operationState` JSON before clearing if it recurs.
+An agent has read-only cluster access. Capture the `operationState` JSON and give Joe the patch.
 
 ## Fleet-wide freeze via the root app
 
-`hub` is the root app-of-apps: it syncs `projects/gke-cluster` at HEAD and is itself synced by the hand-applied parent `hub-root`. If `hub` is wedged, nothing downstream deploys, including merged chart bumps that look fine in git. (The home cluster's root, `canada`, went with the home configuration in #6914.)
+`factory-root` syncs `projects/factory-cluster/root`, whose Application `factory` syncs `projects/factory-cluster`. If either is wedged, nothing downstream deploys, including merged chart bumps that look fine in git.
 
-Two known wedge modes:
+Known wedge modes:
 
 - **Stuck PreSync hook Job**: a hook Job blocks the operation indefinitely.
-- **Dangling kustomize reference**: a file was deleted but is still listed in a `kustomization.yaml`. This puts `hub` into `ComparisonError` with `sync=Unknown`.
+- **Dangling kustomize reference**: a file was deleted but is still listed in a `kustomization.yaml`. This puts the root into `ComparisonError` with `sync=Unknown`.
+- **Kept Job with a changed template**: an Application with `ServerSideDiff=true` dry-runs every rendered resource. If a kept Job's rendered template changes (a new image), the dry run fails with `field is immutable`, and the Application goes to `ComparisonError` with `sync=Unknown`. `ignoreDifferences` does not stop the dry run. `software-factory` stopped this way on 2026-11-25 on `discord-import-1`. Stop rendering the finished Job, or give each run a new Job name.
 
 **Diagnose:**
 
 ```bash
-kubectl -n argocd get application hub -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}'
+kubectl -n argocd get application <app> -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}'
 ```
 
-**Fix:** correct the git issue (remove the stuck hook or the dangling reference), then force `hub` to re-read via `monolith-k8s-sync-argocd-app`.
+**Fix:** correct the git issue (remove the stuck hook, the dangling reference or the kept Job), then hard-refresh the Application.
 
 ## App is Degraded but no resource in the tree looks degraded
 
@@ -156,12 +157,12 @@ There is no ArgoCD MCP server. For anything not covered by `kubectl get applicat
 ```bash
 bazel/tools/cluster/scripts/argocd-api.sh <api-path> [curl-args...]
 # e.g.
-bazel/tools/cluster/scripts/argocd-api.sh /api/v1/applications/monolith/managed-resources
+bazel/tools/cluster/scripts/argocd-api.sh /api/v1/applications/software-factory/managed-resources
 ```
 
 It handles the port-forward, reads the admin password from `argocd-initial-admin-secret`, exchanges it for a session JWT, and calls the path with that token. Two things that bite if you hand-roll this instead:
 
-- The path prefix and scheme are configuration, not constants. On the hub `server.rootpath` is empty and `server.insecure` is `false` (both in `argocd-cmd-params-cm`), so the API is at `/api/v1/...` over HTTPS. The script reads both from the cluster rather than hardcoding them. Getting either wrong fails as an EMPTY response, not an error, which reads as "this app has no diff".
+- The path prefix and scheme are configuration, not constants. Both live in `argocd-cmd-params-cm`. The script reads both from the cluster rather than hardcoding them. Getting either wrong fails as an EMPTY response, not an error, which reads as "this app has no diff".
 - The session POST needs `-H 'Content-Type: application/json'`, otherwise the API returns 415.
 - Admin credentials come from the `argocd-initial-admin-secret` secret in the `argocd` namespace, base64-decoded.
 

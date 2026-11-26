@@ -528,8 +528,8 @@ discord:
   bridge:
     # Enable after all eligible bridge nodes redact Authorization in Hubble.
     enforceAgentPath: false
-    # The gateway connection. Turn it on only after the bot token exists and
-    # the hub monolith's bot is off, so no message gets two replies.
+    # The gateway connection. Turn it on only after the bot token exists, and
+    # only one process uses that token, so no message gets two replies.
     enabled: false
     # Created by projects/platform-factory/hindsight-discord's consumer
     # Application, with the Hindsight tenant key Secret.

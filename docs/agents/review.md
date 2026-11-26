@@ -13,9 +13,8 @@ decides".
 The first review covers the whole diff at the head SHA. Later heads follow
 `REVIEW.md` "Later heads". The landing owner confirms that the review and the
 required checks cover the current head: the reviewer service for the
-`factory review` check, the dispatcher on the hub factory. A passing review
-permits landing. Whether and when to land stays with the landing owner, and
-a hold on landing still applies.
+`factory review` check. A passing review permits landing. Whether and when
+to land stays with the landing owner, and a hold on landing still applies.
 
 Factory work authored by `jomcgi-factory[bot]` needs Joe's APPROVED review
 when it touches a gated path or has a `human-gate` finding. Sessions Joe
