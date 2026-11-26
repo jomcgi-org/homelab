@@ -519,8 +519,13 @@ kind: Job
 metadata:
   name: {{ printf "discord-import-%s" (toString $d.import.runId) }}
   namespace: {{ $b.namespace }}
+  # No helm.sh/chart label: a kept Job must render the same in every
+  # release. Any change makes ArgoCD's server-side diff dry-run it, and that
+  # dry run fails on a Job, which stops the whole sync.
   labels:
-    {{- include "factory.labels" . | nindent 4 }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/part-of: factory
 spec:
   backoffLimit: 2
   activeDeadlineSeconds: {{ $d.import.deadlineSeconds }}
