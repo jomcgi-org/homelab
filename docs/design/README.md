@@ -1,6 +1,6 @@
 # Design
 
-A catalog of designers worth studying. One file per designer. Each entry has to point to a source.
+A catalog of designers and artists worth studying. One file per person. Each entry has to point to a source.
 
 ## Structure
 
@@ -8,6 +8,7 @@ A catalog of designers worth studying. One file per designer. Each entry has to 
 design/
   README.md          index and categories
   designers/         one file per designer
+  artists/           one file per artist
 ```
 
 ## Categories
@@ -16,16 +17,17 @@ Every designer gets tags on three axes.
 
 | Axis        | Values                                                     |
 |-------------|------------------------------------------------------------|
-| Discipline  | `industrial` · `editorial` · `graphic` · `digital` · `type` |
+| Discipline  | `industrial` · `editorial` · `graphic` · `digital` · `type` · `painting` |
 | Density     | `reductive` ↔ `maximal`                                     |
-| Mode        | `systematic` · `conceptual` · `humorous`                    |
+| Mode        | `systematic` · `conceptual` · `humorous` · `observational`  |
 
 ## Index
 
-| Designer                              | Discipline              | Density   | Mode                    |
+| Person                                | Discipline              | Density   | Mode                    |
 |---------------------------------------|-------------------------|-----------|-------------------------|
 | [Dieter Rams](designers/dieter_rams.md) | industrial              | reductive | systematic              |
 | [Tracy Ma](designers/tracy_ma.md)       | editorial, graphic      | maximal   | conceptual, humorous    |
+| [Caroline Walker](artists/caroline_walker.md) | painting          | reductive | observational           |
 
 ## Entry template
 
