@@ -102,6 +102,7 @@ routes. No external data host is permitted by this Job's network policy.
 | Component | Untrusted input | Credentials held |
 | --- | --- | --- |
 | web | Section data from the R2 snapshot, added at deploy time | No credential; the deploy Job holds the tokens |
+| posts | `docs/posts` markdown and figures in the public repository; each published body must pass the `public_content.py` markers | No credential |
 | preview | Pages of the agent's own checkout, built and loaded on loopback; the browser reaches no other host | The session's own `gh` login, only with `--comment` |
 
 The local preview hosts nothing and publishes no file (README "Local

@@ -36,7 +36,7 @@ for (const path of ["/app/llm-leaderboard", "/app/llm-leaderboard/*"]) {
 const snapshot = JSON.parse(
   read(
     new URL(
-      "../../monolith/frontend/src/lib/public/llm-leaderboard/leaderboard.json",
+      "hub/src/lib/public/llm-leaderboard/leaderboard.json",
       import.meta.url,
     ),
   ),

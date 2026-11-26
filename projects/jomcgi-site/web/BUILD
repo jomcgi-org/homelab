@@ -1,5 +1,6 @@
-# Hand-maintained rules_js app, independent of the monolith workspace package.
+# Hand-maintained rules_js app.
 # gazelle:ignore
+# gazelle:exclude hub
 # gazelle:exclude src
 load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_library", "js_run_binary", "js_test")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
@@ -8,6 +9,54 @@ load("@npm//projects/jomcgi-site/web:typescript/package_json.bzl", typescript_bi
 load("@npm//projects/jomcgi-site/web:vitest/package_json.bzl", vitest_bin = "bin")
 
 npm_link_all_packages(name = "node_modules")
+
+# hub/ keeps the files this site took from the retired hub frontend
+# (HOME-262), at the same paths they had in that frontend. These are build
+# inputs: posts, figures, the leaderboard snapshot, SEO data, fonts and icons.
+# The hub home page source is an input of the home-built check.
+js_library(
+    name = "hub_site_inputs",
+    srcs = glob(
+        ["hub/src/lib/public/posts/**"],
+        exclude = ["**/*.test.js"],
+    ) + [
+        "hub/preview/fonts/OFL.txt",
+        "hub/preview/fonts/SchibstedGrotesk.ttf",
+        "hub/src/lib/manifest.js",
+        "hub/src/lib/public/llm-leaderboard/leaderboard.json",
+        "hub/src/lib/public/llm-leaderboard/model.d.ts",
+        "hub/src/lib/public/llm-leaderboard/model.js",
+        "hub/src/lib/public/seo.js",
+        "hub/src/lib/server/markdown.js",
+        "hub/src/routes/public/+page.svelte",
+        "hub/static/apple-touch-icon.png",
+        "hub/static/favicon.svg",
+        "hub/static/joe-grey.png",
+    ],
+)
+
+# The original hub pages, for the HOME-207 parity tests only. The production
+# build never reads them.
+js_library(
+    name = "hub_migration_sources",
+    srcs = glob(["hub/src/routes/public/engineering/diagrams/*.svelte"]) + [
+        "hub/src/lib/cache-headers.js",
+        "hub/src/lib/public/components/Seo.svelte",
+        "hub/src/lib/public/fcstory/data/trace.js",
+        "hub/src/lib/public/fcstory/metrics.js",
+        "hub/src/lib/public/seo.js",
+        "hub/src/routes/public/app/llm-leaderboard/+page.svelte",
+        "hub/src/routes/public/engineering/+page.svelte",
+        "hub/src/routes/public/engineering/diagrams/index.js",
+        "hub/src/routes/public/engineering/engineering-data.js",
+        "hub/src/routes/public/scotland/+page.svelte",
+        "hub/src/routes/public/scotland/marketplace.json/+server.js",
+        "hub/src/routes/public/scotland/policy-data.js",
+        "hub/src/routes/public/scotland/scotland-data.js",
+        "hub/src/routes/public/slop/+page.svelte",
+        "package.json",
+    ],
+)
 
 js_library(
     name = "headers",
@@ -58,6 +107,7 @@ js_library(
         "vite.config.ts",
     ],
     deps = [
+        ":hub_site_inputs",
         ":node_modules/@astryxdesign/charts",
         ":node_modules/@astryxdesign/core",
         ":node_modules/@astryxdesign/theme-neutral",
@@ -76,9 +126,6 @@ js_library(
         "//projects/factory-storyboard:web_schema",
         "//projects/jomcgi-site/data:hikes_freshness",
         "//projects/jomcgi-site/data:stars_summary",
-        "//projects/monolith/frontend:blog_sources",
-        "//projects/monolith/frontend:leaderboard_sources",
-        "//projects/monolith/frontend:public_site_inputs",
     ],
 )
 
@@ -135,9 +182,9 @@ js_test(
         "budget.mjs",
         "home-built.mjs",
         ":build",
+        ":hub_site_inputs",
         ":node_modules/happy-dom",
         ":src",
-        "//projects/monolith/frontend:blog_sources",
     ],
     entry_point = "prerendered.mjs",
 )
@@ -191,7 +238,7 @@ js_test(
 js_library(
     name = "hub_fixture",
     srcs = ["hub-fixture.mjs"],
-    deps = ["//projects/monolith/frontend:scotland_migration_sources"],
+    deps = [":hub_migration_sources"],
 )
 
 # Checks the emitted pages and routes, not just the source React trees.
@@ -327,6 +374,7 @@ js_library(
         "vitest.config.ts",
     ],
     deps = [
+        ":hub_migration_sources",
         ":node_modules/@testing-library/dom",
         ":node_modules/@testing-library/react",
         ":node_modules/@types/react",
@@ -336,9 +384,6 @@ js_library(
         ":node_modules/vitest",
         ":src",
         "//projects/factory-storyboard:web_fixtures",
-        "//projects/monolith/frontend:engineering_migration_sources",
-        "//projects/monolith/frontend:leaderboard_migration_sources",
-        "//projects/monolith/frontend:scotland_migration_sources",
     ],
 )
 

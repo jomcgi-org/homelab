@@ -24,10 +24,10 @@ go_test(
         "jpeg_test.go",
     ],
     data = [
-        "//projects/monolith:trips/testdata/geotagged.jpg",
-        "//projects/monolith:trips/testdata/no_gps.jpg",
-        "//projects/monolith/chart:migrations/20260615120000_trips_schema.sql",
+        "testdata/geotagged.jpg",
+        "testdata/no_gps.jpg",
         "//projects/trips:approvals.sql",
+        "//projects/trips:hub_schema.sql",
         "@postgres_test//:postgres",
     ],
     embed = [":ingest_lib"],

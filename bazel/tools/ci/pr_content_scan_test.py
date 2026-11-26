@@ -36,7 +36,7 @@ def test_pr_scope_and_redaction(tmp_path, monkeypatch):
         [sys.executable, root / "bazel/tools/ci/pr_content_scan.py", "HEAD^", "HEAD"],
         env={
             **os.environ,
-            "PYTHONPATH": str(root / "projects/monolith/knowledge/tools"),
+            "PYTHONPATH": str(root / "projects/jomcgi-site/posts"),
         },
         check=True,
         capture_output=True,

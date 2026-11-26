@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
-const hub = new URL("../../monolith/frontend/src/", import.meta.url);
+const hub = new URL("hub/src/", import.meta.url);
 export const readHub = (path) => readFileSync(new URL(path, hub), "utf8");
 
 export function evaluateHub(files, expression) {

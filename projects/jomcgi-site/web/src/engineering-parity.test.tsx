@@ -9,7 +9,7 @@ import { render } from "./prerender";
 
 // The original hub files are test inputs only. The static page's production
 // build has no dependency on the hub, its Svelte runtime, or its trace data.
-const hub = resolve("../../monolith/frontend/src/routes/public/engineering");
+const hub = resolve("hub/src/routes/public/engineering");
 const read = (file: string) => readFileSync(resolve(hub, file), "utf8");
 
 // A child Node process imports the hub module (an ES module) and prints its

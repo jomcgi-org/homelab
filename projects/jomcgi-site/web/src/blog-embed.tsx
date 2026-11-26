@@ -9,17 +9,17 @@ const loadEmbed: EmbedLoader = async (target, kind) => {
   const { mount, unmount } = await import("svelte");
   if (kind === "conformance") {
     const { default: Component } =
-      await import("../../../monolith/frontend/src/lib/public/posts/ConformanceReplay.svelte");
+      await import("../hub/src/lib/public/posts/ConformanceReplay.svelte");
     const instance = mount(Component, { target });
     return () => {
       void unmount(instance);
     };
   }
   const [{ default: Component }, { default: recording }] = await Promise.all([
-    import("../../../monolith/frontend/src/lib/public/posts/QwenReplay.svelte"),
+    import("../hub/src/lib/public/posts/QwenReplay.svelte"),
     kind === "coding"
-      ? import("../../../monolith/frontend/src/lib/public/posts/agent-replay.json")
-      : import("../../../monolith/frontend/src/lib/public/posts/qwen-replay.json"),
+      ? import("../hub/src/lib/public/posts/agent-replay.json")
+      : import("../hub/src/lib/public/posts/qwen-replay.json"),
   ]);
   const instance = mount(Component, {
     target,

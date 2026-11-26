@@ -9,7 +9,7 @@ import (
 )
 
 func TestHubPhoto(t *testing.T) {
-	f, err := os.Open("../../monolith/trips/testdata/geotagged.jpg")
+	f, err := os.Open("testdata/geotagged.jpg")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestHubPhoto(t *testing.T) {
 }
 
 func TestJPEGRaster(t *testing.T) {
-	photo, err := os.ReadFile("../../monolith/trips/testdata/geotagged.jpg")
+	photo, err := os.ReadFile("testdata/geotagged.jpg")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestJPEGRaster(t *testing.T) {
 
 // A frame header above the pixel bound is rejected before the raster decodes.
 func TestJPEGPixelBound(t *testing.T) {
-	photo, err := os.ReadFile("../../monolith/trips/testdata/geotagged.jpg")
+	photo, err := os.ReadFile("testdata/geotagged.jpg")
 	if err != nil {
 		t.Fatal(err)
 	}

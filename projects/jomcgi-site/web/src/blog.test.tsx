@@ -11,10 +11,7 @@ import axe from "axe-core";
 import { describe, expect, it, vi } from "vitest";
 import type { PostSummary } from "./blog-types";
 const manifest: (PostSummary & { content: string })[] = JSON.parse(
-  readFileSync(
-    "../../monolith/frontend/src/lib/public/posts/posts-manifest.json",
-    "utf8",
-  ),
+  readFileSync("hub/src/lib/public/posts/posts-manifest.json", "utf8"),
 );
 import { BlogPage } from "./blog-page";
 import { BlogPost } from "./blog-post";

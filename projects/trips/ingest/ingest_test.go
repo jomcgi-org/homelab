@@ -27,7 +27,7 @@ func setup(t *testing.T) (service, *sql.DB) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	for _, path := range []string{"../../monolith/chart/migrations/20260615120000_trips_schema.sql", "../approvals.sql"} {
+	for _, path := range []string{"../hub_schema.sql", "../approvals.sql"} {
 		schema, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -67,7 +67,7 @@ func upload(t *testing.T, s service, query string, image []byte) (int, map[strin
 
 func fixture(t *testing.T, name string) []byte {
 	t.Helper()
-	data, err := os.ReadFile("../../monolith/trips/testdata/" + name)
+	data, err := os.ReadFile("testdata/" + name)
 	if err != nil {
 		t.Fatal(err)
 	}

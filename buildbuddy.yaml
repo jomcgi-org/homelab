@@ -98,7 +98,7 @@ actions:
               git fetch --quiet origin "refs/heads/$GIT_BASE_BRANCH"
               scan_base="$(git rev-parse FETCH_HEAD)"
             fi
-            PYTHONPATH=projects/monolith/knowledge/tools python3 bazel/tools/ci/pr_content_scan.py "$scan_base" HEAD
+            PYTHONPATH=projects/jomcgi-site/posts python3 bazel/tools/ci/pr_content_scan.py "$scan_base" HEAD
           fi
 
           # Shared ordered guards stop at the first failure.

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import figureStyles from "virtual:blog/figure-styles";
 
-const replayDir = "../../monolith/frontend/src/lib/public/posts";
+const replayDir = "hub/src/lib/public/posts";
 const replays = readdirSync(replayDir)
   .filter((name) => name.endsWith(".svelte"))
   .map((name) => join(replayDir, name));

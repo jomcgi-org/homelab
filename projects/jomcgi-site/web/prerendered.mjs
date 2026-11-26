@@ -57,10 +57,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const index = document("blog.html");
   const posts = JSON.parse(
     readFileSync(
-      new URL(
-        "../../monolith/frontend/src/lib/public/posts/posts-manifest.json",
-        import.meta.url,
-      ),
+      new URL("hub/src/lib/public/posts/posts-manifest.json", import.meta.url),
       "utf8",
     ),
   );
