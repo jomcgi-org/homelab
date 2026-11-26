@@ -1,6 +1,6 @@
 # Platform architecture
 
-The factory home cluster runs the software factory, including kagent and the itsaplan issue tracker, on three k3s servers. The GKE hub serves the monolith and its public and agent tiers, the Scotland connector, inference and Context Forge. Each cluster has its own ingress and its own ArgoCD installation that reconciles the platform and workloads from Git.
+The factory home cluster runs the software factory, including kagent and the itsaplan issue tracker, on three k3s servers. The GKE hub is scaled to zero and retired (HOME-262); it served the monolith and its public and agent tiers, the Scotland connector, inference and Context Forge. Each cluster has its own ingress and its own ArgoCD installation that reconciles the platform and workloads from Git.
 
 ```mermaid
 flowchart LR
@@ -51,7 +51,7 @@ For the software factory itself, CI writes the published OCI chart version to th
 
 ## 5. Storage on the hub and factory home cluster
 
-Hub PVCs use GCE persistent disks. CloudNativePG manages PostgreSQL for the monolith, Authentik and Context Forge. The monolith stores blobs in Cloudflare R2 and archives PostgreSQL backups to GCS. [Hub CloudNativePG](https://github.com/jomcgi-org/homelab/tree/hub-final/projects/platform-gke/cloudnative-pg) · [Monolith hub values](../monolith/deploy/values-gke.yaml)
+Hub PVCs use GCE persistent disks. CloudNativePG manages PostgreSQL for the monolith, Authentik and Context Forge. The monolith stores blobs in Cloudflare R2 and archives PostgreSQL backups to GCS. [Hub CloudNativePG](https://github.com/jomcgi-org/homelab/tree/hub-final/projects/platform-gke/cloudnative-pg) · [Monolith hub values](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/deploy/values-gke.yaml)
 
 At home, CloudNativePG manages the factory, kagent and Authentik databases. Garage stores workload objects and PostgreSQL archives on the home nodes, so those archives share the cluster's failure domain. [Factory storage and recovery](../factory-cluster/ARCHITECTURE.md#state-and-recovery)
 
@@ -71,7 +71,7 @@ The factory has separate Authentik and 1Password installations. Its admission po
 
 ## 9. Maintenance automation on the hub and factory home cluster
 
-Argo Workflows executes the hub monolith's scheduled jobs. The hub Renovate and apko lock maintenance CronWorkflows are configured with their schedules suspended. The factory home cluster owns daily Renovate and weekly apko CronJobs under the factory Renovate App. [Hub maintenance](https://github.com/jomcgi-org/homelab/tree/hub-final/projects/platform-gke/renovate) · [Factory maintenance](../platform-factory/renovate/)
+Argo Workflows executed the hub monolith's scheduled jobs until the monolith was deleted (HOME-262). The hub Renovate and apko lock maintenance CronWorkflows are configured with their schedules suspended. The factory home cluster owns daily Renovate and weekly apko CronJobs under the factory Renovate App. [Hub maintenance](https://github.com/jomcgi-org/homelab/tree/hub-final/projects/platform-gke/renovate) · [Factory maintenance](../platform-factory/renovate/)
 
 ## Direction
 

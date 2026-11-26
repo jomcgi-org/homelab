@@ -31,7 +31,8 @@ var method []byte
 // caches, and Cloudflare-CDN-Cache-Control for the edge. Cloudflare treats
 // s-maxage as proxy-revalidate, which disables the stale directives, so the
 // edge lifetime goes to Cloudflare as max-age in its own higher-precedence
-// header (the public-tier cache contract, docs/runbooks/public-tier-checklist.md).
+// header (the public-tier cache contract, docs/runbooks/public-tier-checklist.md
+// at tag hub-final).
 type cachePolicy struct{ browser, edge string }
 
 var (

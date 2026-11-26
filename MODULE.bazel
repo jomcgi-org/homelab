@@ -351,7 +351,7 @@ npm.npm_translate_lock(
 )
 use_repo(npm, "npm")
 
-# Node.js toolchain - required for production builds (monolith frontend vite build)
+# Node.js toolchain - required for production builds (vite site builds)
 # Expose the Linux and macOS arm64 repos packaged by node_tar.bzl.
 node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
 node.toolchain(node_version = "24.22.1")
@@ -580,14 +580,6 @@ apko.translate_lock(
     lock = "//projects/jomcgi-site:apko.lock.json",
 )
 apko.translate_lock(
-    name = "monolith_frontend_lock",
-    lock = "//projects/monolith/frontend:apko.lock.json",
-)
-apko.translate_lock(
-    name = "stars_grid_apko_lock",
-    lock = "//projects/monolith:stars/grid_gen/apko.lock.json",
-)
-apko.translate_lock(
     name = "egress_scan_engine_gate_lock",
     lock = "//projects/platform-factory/substrate/egress-scan/gate/image:apko.lock.json",
 )
@@ -627,7 +619,7 @@ apko.translate_lock(
     name = "scotland_connector_lock",
     lock = "//projects/scotland-connector/image:apko.lock.json",
 )
-use_repo(apko, "discord_render_lock", "egress_scan_engine_gate_lock", "factory_alert_relay_lock", "factory_broker_lock", "factory_codex_mode_lock", "factory_connector_lock", "factory_landing_lock", "factory_push_guard_lock", "factory_reviewer_lock", "itsaplan_web_lock", "jomcgi_site_lock", "monolith_frontend_lock", "scotland_connector_lock", "stars_grid_apko_lock", "trips_lock")
+use_repo(apko, "discord_render_lock", "egress_scan_engine_gate_lock", "factory_alert_relay_lock", "factory_broker_lock", "factory_codex_mode_lock", "factory_connector_lock", "factory_landing_lock", "factory_push_guard_lock", "factory_reviewer_lock", "itsaplan_web_lock", "jomcgi_site_lock", "scotland_connector_lock", "trips_lock")
 
 multiarch_http_file(
     name = "goose",

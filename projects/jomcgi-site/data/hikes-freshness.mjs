@@ -1,5 +1,5 @@
-// Shared by the deploy-time HTML and browser. The forecast producer runs at
-// "20 */2 * * *" (projects/monolith/chart/values.yaml). Allow three missed
+// Shared by the deploy-time HTML and browser. The forecast producer runs every
+// two hours (`jobs.refresh` in projects/hikes/chart/values.yaml). Allow three missed
 // forecast cycles plus one site snapshot interval before marking it stale.
 export const REFRESH_MS = 30 * 60_000;
 export const SNAPSHOT_STALE_MS = 3 * REFRESH_MS;

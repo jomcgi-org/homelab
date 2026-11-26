@@ -69,8 +69,9 @@ spec:
       timeouts:
         request: 10s
 ---
-# Per-client limits keyed on CF-Connecting-IP, in the shape the monolith-public
-# functions route uses and public_faas_rate_limit_test.py exercises against a
+# Per-client limits keyed on CF-Connecting-IP, in the shape the retired
+# monolith-public functions route used (tag hub-final) and
+# rate_limit_acceptance_test.py exercises against a
 # real Envoy: the first, selector-less rule is a fail-safe bucket that only a
 # missing or malformed identity draws from (Envoy Gateway sets
 # always_consume_default_token_bucket=false for descriptor rules), and the

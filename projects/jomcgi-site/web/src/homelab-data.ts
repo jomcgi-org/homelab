@@ -300,8 +300,9 @@ export const groups: ProjectGroup[] = [
       {
         name: "monolith",
         what: "The personal knowledge graph, chat agent and tools behind most of the older services.",
-        status: "moving",
+        status: "retired",
         path: "projects/monolith",
+        ref: HUB_FINAL,
       },
       {
         name: "mcp",

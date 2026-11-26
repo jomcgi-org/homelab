@@ -16,7 +16,7 @@ entries:
   # static credential.
   #
   # So there is NO client_secret here, no `!Env` lookup, and no 1Password item.
-  # dev-auth.yaml needs all three because Envoy Gateway runs that flow as a
+  # preview-auth.yaml needs all three because Envoy Gateway runs that flow as a
   # confidential client; Kargo runs its own and does not.
   #
   # That also sidesteps the `!Env [KEY]` trap those lanes document: a
@@ -97,7 +97,7 @@ entries:
     attrs:
       name: Kargo
       provider: !KeyOf kargo-provider
-      meta_description: Kargo pipeline UI for the hub's monolith services and EmberVM.
+      meta_description: Kargo pipeline UI for the hub's Scotland connector.
 
   # ── 3. Gate it ───────────────────────────────────────────────────────────
   # Without a policy binding authentik lets EVERY authenticated account

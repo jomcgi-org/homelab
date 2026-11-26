@@ -237,9 +237,6 @@
       "description": "First-party charts and the manual mcp-stack mirror are maintained outside Renovate.",
       "matchPackageNames": [
         "ghcr.io/jomcgi/homelab/charts/embervm",
-        "ghcr.io/jomcgi/homelab/charts/monolith",
-        "ghcr.io/jomcgi/homelab/charts/monolith-public",
-        "ghcr.io/jomcgi/homelab/charts/monolith-agents",
         "ghcr.io/jomcgi/homelab/charts/scotland-connector",
         "ghcr.io/jomcgi/homelab/charts/context-forge",
         "ghcr.io/jomcgi/homelab/charts/inference",

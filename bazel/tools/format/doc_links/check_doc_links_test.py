@@ -60,18 +60,12 @@ def test_test_files_are_skipped():
         assert c.check_file(path, f"{GONE}") == []
 
 
-def test_generated_artifacts_are_skipped():
-    path = "projects/monolith/chat/orchestrator_bundle.md"
-    assert not c.should_scan(path)
-    assert c.check_file(path, f"{GONE}") == []
-
-
 def test_ordinary_source_is_scanned():
     for path in (
         "projects/x/main.go",
         "projects/x/BUILD",
         "docs/runbooks/a.md",
-        "projects/monolith/knowledge/tools/gen_docs_manifest.py",
+        "projects/jomcgi-site/posts/gen_posts_manifest.py",
     ):
         assert c.should_scan(path), path
 

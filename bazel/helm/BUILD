@@ -24,11 +24,6 @@ exports_files([
 
 MANIFEST_SETS = [
     # First-party applications rendered with their deploy values.
-    "//projects/monolith-public/deploy:manifests/all.yaml",
-    "//projects/monolith-public/deploy:manifests_gke/all.yaml",
-    "//projects/monolith/deploy:manifests/all.yaml",
-    "//projects/monolith/deploy:manifests_gke/all.yaml",
-    "//projects/monolith/dev/deploy:manifests/all.yaml",
     "//projects/platform-factory/prometheus/resources/alert-relay/deploy:manifests/all.yaml",
     "//projects/platform-factory/substrate/egress-scan/deploy:manifests/all.yaml",
     "//projects/scotland-connector/deploy:manifests/all.yaml",
@@ -65,7 +60,6 @@ SKIPPED_MANIFEST_SETS = {
     "projects/trips/chart": "Factory-cluster CiliumNetworkPolicy uses a CRD outside the pinned schemas. //projects/trips/deploy:template_test checks rendered content and //projects/trips/chart:trips_test checks the staged defaults.",
     "projects/factory-storyboard/chart": "Factory-cluster CiliumNetworkPolicy; //projects/factory-storyboard/chart:scheduled_test checks the rendered workload.",
     "projects/jomcgi-site/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by //projects/jomcgi-site/deploy:template_test and //projects/jomcgi-site/chart:site_chart_test.",
-    "projects/monolith/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
     "projects/factory": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by :template_test and :chart_test and trialled on the factory cluster.",
     "projects/factory/deploy/values.yaml": "The factory chart's values; see projects/factory.",
     "projects/platform/authentik": "Hub-only chart; rendered with its hub overlay by :manifests_gke.",
@@ -77,29 +71,6 @@ SKIPPED_MANIFEST_SETS = {
     "projects/shared/helm/factory-library": "Library chart, which renders nothing on its own. Workload renders and refusals are covered by //projects/shared/helm/factory-library:library_test; the first consumer is covered by //projects/factory-landing/chart:landing_test.",
     "projects/shared/helm/homelab-library": "Library chart, which renders nothing.",
 }
-
-# Keep the two application charts free of inert custom policies in every
-# deployed values stack, including the historical home/dev render targets.
-NO_CILIUM_MANIFESTS = [
-    "//projects/%s/deploy:manifests%s/all.yaml" % (project, suffix)
-    for project in [
-        "monolith",
-        "monolith-public",
-    ]
-    for suffix in [
-        "",
-        "_gke",
-    ]
-] + [
-    "//projects/monolith/dev/deploy:manifests/all.yaml",
-]
-
-sh_test(
-    name = "no_cilium_policies_test",
-    srcs = ["no-cilium-policies-test.sh"],
-    args = ["$(rootpath %s)" % manifest for manifest in NO_CILIUM_MANIFESTS],
-    data = NO_CILIUM_MANIFESTS,
-)
 
 # Most CRD definitions are present in the rendered charts and are converted at
 # test time. These operators are installed from remote charts, or omit CRDs
@@ -250,16 +221,4 @@ bzl_library(
         "@bazel_skylib//lib:paths",  # keep
         "@rules_shell//shell:rules_bzl",  # keep
     ],
-)
-
-# Markdown read by the monolith doc-manifest genrules (#6446). See
-# //projects/monolith:repo_docs_srcs.
-filegroup(
-    name = "repo_docs",
-    srcs = glob(
-        ["**/*.md"],
-        allow_empty = True,
-        exclude = ["**/node_modules/**"],
-    ),
-    visibility = ["//projects/monolith:__pkg__"],
 )

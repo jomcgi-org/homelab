@@ -57,16 +57,6 @@ js_test(
     entry_point = "fixtures/rehash.test.mjs",
 )
 
-# Indexed through //:repo_docs so the factory does not modify the monolith.
-filegroup(
-    name = "repo_docs",
-    srcs = glob(
-        ["**/*.md"],
-        exclude = ["**/node_modules/**"],
-    ),
-    visibility = ["//:__pkg__"],
-)
-
 py_test(
     name = "publisher_test",
     srcs = [

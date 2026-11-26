@@ -17,8 +17,6 @@ replicas: 1
 backupCheck:
   enabled: false
   targets:
-    - namespace: monolith
-      cluster: monolith-pg
     - namespace: authentik
       cluster: authentik-pg
     - namespace: mcp

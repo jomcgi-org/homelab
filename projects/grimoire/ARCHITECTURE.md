@@ -1,6 +1,6 @@
 # Grimoire on the factory cluster
 
-[HOME-257](https://factory-plan.jomcgi.dev/factory/issue/HOME-257) plans the factory migration of the [current hub implementation](../monolith/grimoire/architecture.md). Keep existing bookmarks through path-specific Worker redirects. HOME-261 can take the catch-all after these routes move.
+[HOME-257](https://factory-plan.jomcgi.dev/factory/issue/HOME-257) plans the factory migration of the [hub implementation](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/grimoire/architecture.md) (tag `hub-final`). Keep existing bookmarks through path-specific Worker redirects. HOME-261 can take the catch-all after these routes move.
 
 ## Page ownership
 

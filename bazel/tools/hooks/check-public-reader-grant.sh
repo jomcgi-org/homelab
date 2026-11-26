@@ -117,7 +117,8 @@ cat >&2 <<-EOF
 	"permission denied" reading the table, which surfaces as a generic 503
 	(normally only caught by curling prod after deploy, not by CI).
 
-	See docs/runbooks/public-tier-checklist.md for the full checklist.
+	See docs/runbooks/public-tier-checklist.md at tag hub-final for the full
+	checklist.
 
 	Fix by either:
 	  1. Adding a GRANT SELECT ... TO public_reader; for this table in this

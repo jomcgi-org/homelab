@@ -43,13 +43,23 @@ const RETIRED_LINKS = new Set([
 const RETIRED_LABELS: Record<string, string> = {
   "jomcgi.dev/app/ships": "Map page",
 };
+// projects/monolith is deleted from main (HOME-262); its source links name
+// the hub-final tag instead.
+const atHubFinal = (href: string) =>
+  href.replace(
+    "github.com/jomcgi/homelab/tree/main/projects/monolith/",
+    "github.com/jomcgi/homelab/tree/hub-final/projects/monolith/",
+  );
 
 it("copies every hub content export unchanged, except links to retired hub pages", () => {
   const hub = hubExports();
   for (const project of hub.projects)
-    project.links = project.links.filter(
-      ({ href }: { href: string }) => !RETIRED_LINKS.has(href),
-    );
+    project.links = project.links
+      .filter(({ href }: { href: string }) => !RETIRED_LINKS.has(href))
+      .map((link: { href: string }) => ({
+        ...link,
+        href: atHubFinal(link.href),
+      }));
   expect(asJson({ categories, intro, marqueeItems, projects })).toEqual(hub);
 });
 

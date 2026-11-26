@@ -383,9 +383,9 @@ closing work merely because a PR merged.
 
 ### 7. Rehearse Grimoire without production writes
 
-Use the [local table and rehearsal](../../projects/monolith/dev/grimoire/README.md)
+Use the [local table and rehearsal](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/dev/grimoire/README.md)
 against pinned main, an isolated database and fixture users. Existing
-[CI](../../projects/monolith/dev/grimoire/ci.sh) already rehearses relevant
+[CI](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/dev/grimoire/ci.sh) already rehearses relevant
 PRs. The nightly job adds clean-main integration across merged changes and
 time-dependent behaviour; it does not replace that gate.
 Prior failures include [invitation acceptance returning 500](https://github.com/jomcgi-org/homelab/commit/817d958a6d68a1a6f80199b3fcb0ce493fe8c7e2)
@@ -393,7 +393,7 @@ and [feed position being lost](https://github.com/jomcgi-org/homelab/commit/1019
 
 Cover DM/player onboarding and join links, audience changes, journal/feed,
 notes, inventory, handouts, reload/reconnect and simultaneous clients as
-defined in [Grimoire's contract](../../projects/monolith/grimoire/architecture.md).
+defined in [Grimoire's contract](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/grimoire/architecture.md).
 Record exact build, seed, failed step and sanitized screenshots. No real
 campaign records, live invitations or production mutations. A separate
 authenticated fixture deployment would require an explicitly isolated
@@ -416,9 +416,9 @@ Use anonymous, read-only probes of hikes, stars, trips and scotland,
 with fixed device/network profiles and cold/warm cache samples. Track
 server-rendered content, data freshness, first meaningful map/content,
 interaction latency and transferred bytes. Compare with the public tier's
-[cache and data boundary](../../projects/monolith/frontend/src/hooks.server.js)
-and [operating checklist](../runbooks/public-tier-checklist.md).
-The [cache implementation](../../projects/monolith/frontend/src/lib/cache-headers.js)
+[cache and data boundary](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/frontend/src/hooks.server.js)
+and [operating checklist](https://github.com/jomcgi-org/homelab/blob/hub-final/docs/runbooks/public-tier-checklist.md).
+The [cache implementation](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/frontend/src/lib/cache-headers.js)
 records stale hikes payloads and trip edits hidden by a 24-hour cache.
 
 Proposed initial budgets are p75 LCP at most 2.5 s and a 20% regression
@@ -484,14 +484,14 @@ history and confusing zero findings with zero value.
 Read-only routine metadata inspected on November 14 showed the following.
 Metadata contains no prompt or yield history; `last_status: ok` does not
 establish a useful outcome. A null next-run time alone proves no terminal completion
-([routine API](../../projects/monolith/agent/mcp.py)).
+([routine API](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/agent/mcp.py)).
 
 | Old routine | Observed shape | Decision |
 | --- | --- | --- |
 | `factory-retro-daily` | 3,600-second interval despite its name; latest run November 14 | Port the [baseline/72-hour verdict](evolution.md#improvements-earn-their-place) and source-linked lessons into delivery health. Drop hourly model analysis and automatic refill. Preserve old receipts until retirement. |
 | `daily-repo-pulse` | 86,400-second interval; latest run November 14 | Merge into the delivery digest. Keep links and outcomes; drop another daily repository scan. |
 | `adr-index-*`, `adr-status-*` | One-shot rows with August last-run timestamps | Drop recurrence. ADR retirement #4667 changed the destination; job 3 checks current architecture decisions and status links. Do not restart completed or held rows. |
-| `kg-audit` | 86,400-second interval; last recorded run October 30, next due October 31 | Do not claim it is currently running. Preserve bounded sampling, provenance and cooldown ideas from the [KG architecture](../../projects/monolith/ARCHITECTURE.md#4-agents). Defer a new memory audit until the memory integration and poison-resistance contract are accepted; drop autonomous dispute/retain writes from the planner. |
+| `kg-audit` | 86,400-second interval; last recorded run October 30, next due October 31 | Do not claim it is currently running. Preserve bounded sampling, provenance and cooldown ideas from the [KG architecture](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/ARCHITECTURE.md#4-agents). Defer a new memory audit until the memory integration and poison-resistance contract are accepted; drop autonomous dispute/retain writes from the planner. |
 
 This proposal neither stops nor restarts any old routine.
 

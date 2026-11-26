@@ -2,7 +2,8 @@
 # Reads the newest complete Grimoire migration run from the private R2 bucket.
 # The hub job grimoire-migration-dump writes each run under
 # R2_BUCKET/MIGRATION_PREFIX<run id>/ and writes its SHA256SUMS last, so a run
-# with SHA256SUMS is complete (projects/monolith/grimoire/migration.py).
+# with SHA256SUMS is complete (projects/monolith/grimoire/migration.py at tag
+# hub-final).
 #
 #   migration.sh fetch DIR  copies the restore inputs to DIR and checks them
 #   migration.sh check      checks every object of the run against SHA256SUMS

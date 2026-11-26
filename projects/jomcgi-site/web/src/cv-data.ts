@@ -1,5 +1,5 @@
 // CV content, copied unchanged from the hub page
-// (projects/monolith/frontend/src/routes/public/cv/cv-data.js), which
+// (projects/monolith/frontend/src/routes/public/cv/cv-data.js at tag hub-final), which
 // transcribes the public CV kept in Joe's private cv repo. Strings keep the
 // markdown inline syntax (**bold**, [text](url)); Inline.tsx renders it.
 //

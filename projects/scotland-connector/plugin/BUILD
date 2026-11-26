@@ -16,11 +16,3 @@ py_test(
         "skills/scotland-trips/SKILL.md",
     ],
 )
-
-# The README and the skill are indexed with the repo docs.
-# See //projects/monolith:repo_docs_srcs.
-filegroup(
-    name = "repo_docs",
-    srcs = glob(["**/*.md"]),
-    visibility = ["//projects/monolith:__pkg__"],
-)

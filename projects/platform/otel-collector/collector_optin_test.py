@@ -221,15 +221,11 @@ def test_allowlisted_service_gets_a_filtered_traces_pipeline():
     assert any("monolith" in c for c in conditions)
 
 
-def test_prod_allowlist_includes_monolith_emitters():
-    values = yaml.safe_load(_values("values-prod").read_text())
-
-    assert {
-        "embervm-control",
-        "monolith-backend",
-        "monolith-jobs",
-        "monolith-public",
-    } <= set(values["allowedServices"])
+def test_prod_allowlist_excludes_deleted_monolith_emitters():
+    # The monolith was deleted (HOME-262); its service names must not return.
+    for overlay in ("values-prod", "values-gke"):
+        values = yaml.safe_load(_values(overlay).read_text())
+        assert not any(s.startswith("monolith") for s in values["allowedServices"])
 
 
 @pytest.mark.parametrize("values_name", ["values-prod", "values-gke"])
@@ -666,11 +662,11 @@ def test_loom_is_default_off_in_every_overlay(values_name):
         ),
         (
             "values-prod",
-            "d36ecc6c0724118964642b3059176805d1508aa67f228ae434a1cef9db482b6b",
+            "6b6f580b607fc09d4001b3958ddb015e43bf9a6dae7b0a00ef6dac10a63a0b0a",
         ),
         (
             "values-gke",
-            "b462bd1650fea3d295d327638f1bc99588ef4dfab7d204ed65454dbac50a59c0",
+            "cb743dcea8dbbde68b9f5c95fe0db23885a13ea9714275b13f6c8e0d003b07d8",
         ),
     ],
 )
@@ -870,7 +866,6 @@ def test_loom_rejects_a_disabled_metrics_or_probe_path(override):
 
 
 BACKUP_TARGETS = {
-    ("monolith", "monolith-pg"),
     ("authentik", "authentik-pg"),
     ("mcp", "context-forge-pg"),
 }
@@ -1026,7 +1021,7 @@ def test_shared_checker_defaults_off_outside_hub(overlay):
     [
         "allowedServices=null",
         "backupCheck.targets=[]",
-        "backupCheck.targets[1].namespace=monolith,backupCheck.targets[1].cluster=monolith-pg",
+        "backupCheck.targets[1].namespace=authentik,backupCheck.targets[1].cluster=authentik-pg",
         "backupCheck.targets[0].namespace=loom,backupCheck.targets[0].cluster=loom-pg",
     ],
 )
@@ -1348,7 +1343,7 @@ def test_gke_container_metrics_pipeline():
         "k8s_attributes"
     )
     conditions = config["processors"]["filter/container-metrics"]["metrics"]["metric"]
-    assert any("monolith-public" in c for c in conditions)
+    assert any("embervm" in c for c in conditions)
     assert any("working_set" in c for c in conditions)
 
     (exporter,) = metrics["exporters"]

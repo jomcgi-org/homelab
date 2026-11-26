@@ -5,7 +5,7 @@
 #   1. lint     format only files changed vs origin/main
 #   2. regen    selective generators, Helm dependency sync and migration checks
 #               (complete guest validation also runs the image's pinned Gazelle)
-#   3. ratchet  verification tags, central BUILD entries, chart versions, source patterns
+#   3. ratchet  verification tags, chart versions, source patterns
 #   4. test     bb remote (Linux) affected Bazel tests with the pr-checks flags
 #
 # Usage:
@@ -190,11 +190,6 @@ need_generators() {
 		projects/*/deploy/* | bazel/images/* | projects/*/image/*)
 			return 0
 			;;
-		projects/monolith/generate-routes.sh | projects/monolith/*/router.py | \
-			projects/monolith/*/module.py | projects/monolith/knowledge/tools/* | \
-			projects/monolith/chat/*)
-			return 0
-			;;
 		projects/jomcgi-site/posts/* | docs/posts/figures/*)
 			return 0
 			;;
@@ -312,7 +307,7 @@ cmd_ratchet() {
 		err "ratchet: cannot find the merge base of $BASE_REF and HEAD"
 		return 1
 	fi
-	log "ratchet: checking verification tags, central BUILD entries, chart versions and source patterns"
+	log "ratchet: checking verification tags, chart versions and source patterns"
 	./bazel/tools/ci/ratchets.sh "$merge_base" HEAD
 }
 

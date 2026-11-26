@@ -1,6 +1,7 @@
 # Kargo
 
-Kargo owns the live chart revision of four Applications on the GKE hub.
+Kargo owns the live chart revision of one Application on the GKE hub,
+`scotland-connector`.
 The UI is at `private.jomcgi.dev/app/kargo`, behind Cloudflare Access and
 Authentik. The `homelab-admin` group has promotion rights.
 
@@ -13,30 +14,23 @@ are true in this configuration.
 
 | Pipeline | Project / namespace | Warehouse | Stage: Application |
 | --- | --- | --- | --- |
-| monolith | kargo-monolith | monolith-chart | prod: monolith |
-| monolith-agents | kargo-monolith-agents | monolith-agents-chart | prod: monolith-agents |
-| monolith-public | kargo-monolith-public | monolith-public-chart | prod: monolith-public |
 | scotland-connector | kargo-scotland-connector | scotland-connector-chart | prod: scotland-connector |
 
-All four Applications live in `argocd` and are registered through
-`projects/gke-apps/kustomization.yaml`. Each pipeline subscribes directly to
-its Warehouse and has no upstream Stage or soak. There is no registered
-monolith dev Application. This configuration makes no decision about adding
-one. EmberVM's pipeline left the hub with EmberVM in HOME-476.
+The Application lives in `argocd`. The pipeline subscribes directly to its
+Warehouse and has no upstream Stage or soak. EmberVM's pipeline left the hub
+with EmberVM in HOME-476. The monolith, monolith-agents and monolith-public
+pipelines left with the monolith in HOME-262.
 
 Each Warehouse polls its OCI chart under `ghcr.io/jomcgi/homelab/charts` every
 five minutes, subject to its configured semver constraint and discovery limit.
 The chart name matches the pipeline name. Discovered versions become Freight.
 `ProjectConfig` enables auto-promotion separately for each Stage.
 
-Registry access is configured per pipeline. `monolith-agents` sets
-`credentialItemPath` to the managed 1Password item
-`vaults/k8s-homelab/items/argocd-ghcr-repo-creds`. The template creates
-`OnePasswordItem/monolith-agents-chart-creds` in `kargo-monolith-agents` with
-`kargo.akuity.io/cred-type: helm`. The operator supplies the Secret; Kargo
-matches its `repoURL`, `username` and `password` fields to the chart repository.
-The other pipelines do not configure this item. No credential needs to be read
-or changed to maintain these docs.
+Registry access is configured per pipeline. A pipeline that sets
+`credentialItemPath` gets a `OnePasswordItem/<pipeline>-chart-creds` in its
+Project with `kargo.akuity.io/cred-type: helm`. The operator supplies the
+Secret; Kargo matches its `repoURL`, `username` and `password` fields to the
+chart repository. No pipeline sets it now.
 
 ## What promotion verifies
 
@@ -67,9 +61,10 @@ block marks Freight verified when its Promotion succeeds.
 ### Revision gate remains disabled
 
 `promotion.revisionGate.enabled` is false in the effective hub configuration.
-Only monolith's prod Stage carries `revisionURL`; no `rollout-version` step is
-rendered while the flag is false. `promotion_gate_test.py` checks that this
-wiring is inert and that enabling it leaves conformance steps intact.
+No hub Stage carries `revisionURL` since the monolith left (HOME-262), and no
+`rollout-version` step is rendered while the flag is false.
+`promotion_gate_test.py` checks with a fixture pipeline that this wiring is
+inert and that enabling it leaves conformance steps intact.
 
 When enabled, a Stage with `revisionURL` polls `/healthz` for a `chart_version`
 equal to the Freight's version. Stale or missing fields keep polling until the
@@ -86,8 +81,7 @@ that directory; the parent definition is
 `projects/gke-cluster/hub-root-application.yaml`. Root ownership changes belong
 in Git and deploy through that parent.
 
-The root's `ignoreDifferences` list covers `monolith`, `monolith-agents`,
-`monolith-public` and `scotland-connector`, each at
+The root's `ignoreDifferences` list covers `scotland-connector` at
 `/spec/sources/0/targetRevision`. It is paired with
 `RespectIgnoreDifferences=true`. Diff suppression alone hides drift; the sync
 option also prevents a later apply from stamping the Git pin over a promotion.
@@ -143,10 +137,10 @@ inspect hub objects and do not approve Freight, promote, sync or patch anything:
 
 ```sh
 kubectl --context "${HUB_CONTEXT:?Set the homelab-hub context}" -n argocd get application hub -o yaml
-for project in kargo-monolith kargo-monolith-agents kargo-monolith-public kargo-scotland-connector; do
+for project in kargo-scotland-connector; do
   kubectl --context "$HUB_CONTEXT" -n "$project" get warehouses,stages,promotions,freights
 done
-for app in monolith monolith-agents monolith-public scotland-connector; do
+for app in scotland-connector; do
   kubectl --context "$HUB_CONTEXT" -n argocd get application "$app" \
     -o jsonpath='{.metadata.name}{" "}{.spec.sources[0].targetRevision}{" "}{.status.sync.status}{" "}{.status.health.status}{"\n"}'
 done

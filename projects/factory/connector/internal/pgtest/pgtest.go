@@ -1,6 +1,6 @@
 // Package pgtest runs a real PostgreSQL 16 for tests from the binaries Bazel
-// extracts into @postgres_test, the way projects/monolith/shared/testing
-// does for pytest. Each test gets its own database with the connector's
+// extracts into @postgres_test, the way the hub's projects/monolith/shared/testing
+// (tag hub-final) did for pytest. Each test gets its own database with the connector's
 // migrations applied.
 package pgtest
 

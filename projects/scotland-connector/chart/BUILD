@@ -21,7 +21,7 @@ filegroup(
 )
 
 # Kept here, not generated from deploy/application.yaml, because gazelle
-# resets chart visibility otherwise (the monolith-public pattern).
+# resets chart visibility otherwise.
 argocd_app(
     name = "scotland-connector",
     chart = "projects/scotland-connector/chart",
@@ -42,7 +42,6 @@ py_test(
     data = [
         "Chart.yaml",
         "values.yaml",
-        "//projects/monolith-public/chart:chart_values",
         "//projects/platform-factory/edge-tunnel/resources:route.yaml",
         "//projects/platform/cloudflare-gateway:gateway_test_inputs",
         "//projects/scotland-connector/deploy:deploy_values",
@@ -54,7 +53,6 @@ py_test(
         "DEPLOY_VALUES": "$(rootpath //projects/scotland-connector/deploy:deploy_values)",
         "FACTORY_VALUES": "$(rootpath //projects/scotland-connector/factory:values.yaml)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
-        "MONOLITH_PUBLIC_VALUES": "$(rootpath //projects/monolith-public/chart:chart_values)",
     },
     deps = [
         "@pip//pytest",

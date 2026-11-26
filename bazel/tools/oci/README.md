@@ -226,16 +226,12 @@ In the chart's `BUILD`, pass a map of dotted Helm values paths to `.info`
 labels:
 
 ```python
-# projects/monolith/chart/BUILD
+# projects/trips/chart/BUILD
 load("//bazel/helm:defs.bzl", "helm_chart")
 
 helm_chart(
     name = "chart",
-    images = {
-        "backend.image":               "//projects/monolith:image.info",
-        "frontend.image":              "//projects/monolith/frontend:image.info",
-        "jobs.image":                  "//projects/monolith:jobs_image.info",
-    },
+    images = {"image": "//projects/trips/image:image.info"},
     publish = True,
 )
 ```

@@ -106,12 +106,8 @@ they do not launch their own planner, review or landing sequence.
 - **Never hardcode a `.svc.cluster.local` URL.** Helm prepends the release
   name, so a rename silently breaks it. Read it from an env var set in
   `values.yaml` (`envOr("URL", "")`, no default). Gated.
-- **Monolith endpoints that read cluster resources need matching `ClusterRole`
-  verbs.** A missing verb fails in prod as `Forbidden`, which dashboards show
-  as a generic 5xx.
 - **Keep bulk data out of `chart/migrations/*.sql`.** The migrations ConfigMap
-  has a 256 KiB client-side annotation cap; load seeds out of band
-  (`projects/monolith/hikes/seed/`).
+  has a 256 KiB client-side annotation cap; load seeds out of band.
 - **Grep the tests before changing a number.** TTLs, timeouts, `max_tokens`
   and retry counts are asserted; update the assertions in the same change.
 - **Images are apko plus `rules_apko`, never Dockerfiles**, amd64 only (all
@@ -120,9 +116,7 @@ they do not launch their own planner, review or landing sequence.
   `arm64 = True` and per-arch `tars`: `arm64 = False` with `multiarch_tars`
   fails only at push.
 - **Python deps are `@pip//package` via `aspect_rules_py`.** `requirement()`
-  does not exist here. JS is pnpm plus `rules_js`. The
-  `projects/monolith/frontend/` app is Svelte 5 runes only, with CSS imported
-  from JavaScript, never bare `@import` package specifiers inside CSS.
+  does not exist here. JS is pnpm plus `rules_js`.
 - **Cluster reads** use `kubectl` with
   `KUBECONFIG=~/.kube/factory-sessions.yaml` on node-1. The Argo CD UI is
   `factory-argocd.jomcgi.dev`, behind Authentik. Kargo has no UI.
@@ -407,11 +401,11 @@ when its row applies.
 
 | When | Read |
 |------|------|
-| Working under `projects/monolith/`, `projects/monolith/web/grimoire/`, `projects/jomcgi-site/web/` or `projects/factory-landing/web/` | that directory's `AGENTS.md` |
+| Working under `projects/jomcgi-site/web/` or `projects/factory-landing/web/` | that directory's `AGENTS.md` |
 | Factory: connector, broker, reviewer, agents, chart | [factory architecture](../../projects/factory/ARCHITECTURE.md); `projects/factory/REVIEW.md` for its review rules |
 | Factory home cluster request path, authentication and storage | [Platform §1, Clusters](../../projects/platform/ARCHITECTURE.md#1-clusters) · [Factory cluster architecture](../../projects/factory-cluster/ARCHITECTURE.md) |
 | Factory home cluster bootstrap and recovery | [Operator steps](../../projects/factory-cluster/README.md) |
-| The earlier hub factory (off: `swarm.factoryEnabled: false`) | [FACTORY.md](../../projects/monolith/factory/orchestration/FACTORY.md); [monolith section 4](../../projects/monolith/ARCHITECTURE.md#4-agents) |
+| The earlier hub factory (retired) | [FACTORY.md](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/factory/orchestration/FACTORY.md) at tag `hub-final` |
 | A red CI run you need to diagnose | `docs/agents/ci-triage.md` |
 | Opening, readying or enqueuing a PR without GraphQL (cloud session) | `docs/agents/cloud-sessions.md` |
 | Running Go or pytest checks in a cloud session without `ci` | `docs/agents/local-tests.md` |
@@ -422,7 +416,6 @@ when its row applies.
 | Refreshing a system's STPA model | `docs/agents/stpa.md` |
 | Cutting BuildBuddy cache traffic | `docs/agents/buildbuddy-usage.md` |
 | Security-sensitive change | `docs/security.md`; `docs/THREAT-MODEL.md` for assets, attacker positions and trust boundaries |
-| Public tier: jomcgi.dev, monolith-public, `public_reader` data | `docs/runbooks/public-tier-checklist.md` |
 | ArgoCD OutOfSync, stuck rollout, "is my change live?" | `docs/runbooks/argocd-outofsync.md` |
 | Adding a service | "New service" in Gotchas above, `projects/platform/ARCHITECTURE.md` section 4, `projects/platform-factory/kustomization.yaml` (the live workload list) |
 | Observability or alerting | `docs/observability.md` |

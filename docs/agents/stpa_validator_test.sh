@@ -39,7 +39,7 @@ pruned=$("$jq_bin" '.lenses[1].ucas[0].hazards -= ["retired"]' <<<"$model")
 
 # Check the published models with the same jq programs used by Block A.
 renderer=$(sed -n "/<< 'JQEOF'/,/^JQEOF$/{ /JQEOF/!p; }" "$guide")
-for project in projects/monolith; do
+for project in projects/platform; do
 	fragments=()
 	for lens in logic security governance; do
 		fragment="$project/stpa/$lens.json"

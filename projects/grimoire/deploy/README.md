@@ -9,8 +9,6 @@ cluster. Design and reasons: [ARCHITECTURE.md](../ARCHITECTURE.md).
 ```bash
 ci test -- //projects/grimoire/deploy:restore_test   # restore a synthetic dump and a hub-script dump
 ci test -- //projects/platform-factory/grimoire-data:provisioning_test   # pin peers, keys and logins
-ci test -- //projects/monolith:grimoire_migration_test   # the hub run's objects and SHA256SUMS
-ci test -- //projects/monolith/chart:grimoire_migration_dump_test   # the hub CronWorkflow
 ```
 
 ## Identities and peers
@@ -50,8 +48,8 @@ endpoint adds that exact peer to `grimoire-api` and `grimoire-worker`.
 ## The hub migration run
 
 No factory identity can read the hub. The hub CronWorkflow
-`grimoire-migration-dump` (`projects/monolith/chart/templates/grimoire-migration-dump.yaml`)
-writes one run under `migration/<run id>/` of the private R2 bucket
+`grimoire-migration-dump` ([template at tag `hub-final`](https://github.com/jomcgi-org/homelab/blob/hub-final/projects/monolith/chart/templates/grimoire-migration-dump.yaml),
+script copy [hub-dump.sh](hub-dump.sh)) wrote one run under `migration/<run id>/` of the private R2 bucket
 `grimoire`. The run id is a UTC timestamp, such as `20261119T120000Z`.
 
 | Object | Contents |
@@ -69,14 +67,10 @@ the private bucket. No route serves `migration/`.
 
 ### Start a hub run
 
-Joe starts each run, because only he can reach the hub:
-
-```sh
-argo submit --from cronworkflow/grimoire-migration-dump -n monolith-workflows
-```
-
-The job log ends with `wrote s3://grimoire/migration/<run id>/ with N
-objects (B bytes); M referenced objects missing`.
+The hub is retired (HOME-262), so no new hub run can start. A new run needs
+the hub restored first. The job log ended with `wrote
+s3://grimoire/migration/<run id>/ with N objects (B bytes); M referenced
+objects missing`.
 
 ### Check a run
 

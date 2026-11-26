@@ -50,17 +50,6 @@ multirun(
         "//projects/hikes:image.push",
         "//projects/jomcgi-site/chart:chart.push",
         "//projects/jomcgi-site:image.push",
-        "//projects/monolith-public/chart:chart.push",
-        "//projects/monolith/chart:chart.push",
-        "//projects/monolith/frontend:image.push",
-        "//projects/monolith/frontend:image_public.push",
-        "//projects/monolith:image.push",
-        "//projects/monolith:image_public.push",
-        "//projects/monolith:jobs_image.push",
-        "//projects/monolith:main_agents_image.push",
-        "//projects/monolith:progress_image.push",
-        "//projects/monolith:stars_grid_apko_base.push",
-        "//projects/monolith:stars_grid_image.push",
         "//projects/platform-factory/prometheus/resources/alert-relay/chart:chart.push",
         "//projects/platform-factory/substrate/credential-provider:image.push",
         "//projects/platform-factory/substrate/egress-scan/chart:chart.push",
@@ -95,8 +84,6 @@ multirun(
         "//projects/factory/chart:chart.push",
         "//projects/hikes/chart:chart.push",
         "//projects/jomcgi-site/chart:chart.push",
-        "//projects/monolith-public/chart:chart.push",
-        "//projects/monolith/chart:chart.push",
         "//projects/platform-factory/prometheus/resources/alert-relay/chart:chart.push",
         "//projects/platform-factory/substrate/egress-scan/chart:chart.push",
         "//projects/scotland-connector/chart:chart.push",
@@ -105,16 +92,4 @@ multirun(
     ],
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],
-)
-
-# Markdown read by the monolith doc-manifest genrules (#6446). See
-# //projects/monolith:repo_docs_srcs.
-filegroup(
-    name = "repo_docs",
-    srcs = glob(
-        ["**/*.md"],
-        allow_empty = True,
-        exclude = ["**/node_modules/**"],
-    ),
-    visibility = ["//projects/monolith:__pkg__"],
 )

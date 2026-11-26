@@ -227,9 +227,9 @@ affected_ln=$(grep -n 'local-affected-test.sh "$base_ref"' "$BUILD_BUDDY" | head
 if [[ -n "$ratchet_ln" && -n "$affected_ln" && "$ratchet_ln" -lt "$affected_ln" ]] &&
 	grep -q 'git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}"' "$BUILD_BUDDY" &&
 	grep -q 'git merge-base "$base_ref" HEAD' "$BUILD_BUDDY"; then
-	pass "central_build_ratchet_in_pr_checks"
+	pass "ratchets_in_pr_checks"
 else
-	fail "central_build_ratchet_in_pr_checks" "ratchet must fetch and resolve the merge base before affected tests"
+	fail "ratchets_in_pr_checks" "ratchet must fetch and resolve the merge base before affected tests"
 fi
 
 if [[ -n "$reachability_ln" && -n "$affected_ln" && "$reachability_ln" -lt "$affected_ln" ]]; then
@@ -573,7 +573,7 @@ run_guard_case() {
 run_guard_case invariant_failure "" 0 check_invariants.py 0 1 ""
 
 guard_calls=""
-for guard in verification_genrule_guard.py central_build_ratchet.py chart_version_guard.py source_ratchet.py; do
+for guard in verification_genrule_guard.py chart_version_guard.py source_ratchet.py; do
 	if [[ "$guard" == verification_genrule_guard.py ]]; then
 		guard_calls="./bazel/tools/ci/$guard ."
 	else
@@ -962,7 +962,7 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 	fi
 	# Relative workflow tools record their invocation without running build or
 	# publish code. No network, credentials or real snapshot cleanup is used.
-	for tool in bazel/images/generate-push-all.sh bazel/helm/ci-diff-manifests.sh bazel/images/push/push-changed.sh bazel/helm/write-back-versions.sh bazel/images/validate-generate-scripts.sh bazel/tools/format/check-migration-ordering.sh bazel/tools/git/check-commit-msg-ascii.sh bazel/tools/hooks/validate-hooks-executable.sh projects/monolith/dev/grimoire/ci-runner.sh projects/platform/authentik/runtime/check.sh; do
+	for tool in bazel/images/generate-push-all.sh bazel/helm/ci-diff-manifests.sh bazel/images/push/push-changed.sh bazel/helm/write-back-versions.sh bazel/images/validate-generate-scripts.sh bazel/tools/format/check-migration-ordering.sh bazel/tools/git/check-commit-msg-ascii.sh bazel/tools/hooks/validate-hooks-executable.sh projects/platform/authentik/runtime/check.sh; do
 		mkdir -p "$workflow_root/${tool%/*}"
 		printf '#!/usr/bin/env bash\nprintf "tool %%s\\n" "$0" >> "$TRACE"\n' >"$workflow_root/$tool"
 		chmod +x "$workflow_root/$tool"
@@ -972,7 +972,7 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 	cp "${CI%/*}/ratchets.sh" "$LOCAL_AFFECTED_TEST" "$workflow_root/bazel/tools/ci/"
 	printf '#!/usr/bin/env bash\necho //fixture:test\n' >"$workflow_root/bazel/tools/ci/affected-targets.sh"
 	chmod +x "$workflow_root/bazel/tools/ci/affected-targets.sh"
-	for failed_guard in none check_bundles verification_genrule_guard central_build_ratchet chart_version_guard source_ratchet test_source_reachability; do
+	for failed_guard in none check_bundles verification_genrule_guard chart_version_guard source_ratchet test_source_reachability; do
 		case "$failed_guard" in
 		none) ;;
 		check_bundles)
@@ -1065,7 +1065,7 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 			fail "workflow_$scenario" "workflow failed: $(cat "$workflow_root/output-$failed_guard")"
 			continue
 		fi
-		for guard in verification_genrule_guard central_build_ratchet chart_version_guard source_ratchet test_source_reachability; do
+		for guard in verification_genrule_guard chart_version_guard source_ratchet test_source_reachability; do
 			grep -q "/$guard.py" "$TRACE" || fail "workflow_${scenario}_$guard" 'head guard was skipped'
 		done
 		grep -q '^cleanup$' "$TRACE" || fail "workflow_${scenario}_cleanup" 'snapshot hygiene was skipped'

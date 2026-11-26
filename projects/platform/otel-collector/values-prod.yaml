@@ -18,18 +18,9 @@ environment: production
 # embervm-noded follows the same contract through noded.tracing.serviceName in
 # that values file.
 #
-# monolith-backend must match PRIVATE_PROFILE.service_name in
-# projects/monolith/framework/core.py, which is what _setup_otel puts in the
-# resource. Its endpoint is set in projects/monolith/deploy/values.yaml and
-# points at 4318 rather than 4317: that service exports over HTTP, not gRPC.
-# monolith-public and monolith-jobs use the same OTLP/HTTP endpoint. Their
-# service names are set by PUBLIC_PROFILE and app/jobs_main.py respectively.
 allowedServices:
   - embervm-control
   - embervm-noded
-  - monolith-backend
-  - monolith-jobs
-  - monolith-public
 
 httpcheck:
   enabled: true

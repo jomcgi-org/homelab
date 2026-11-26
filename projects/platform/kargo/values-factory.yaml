@@ -53,7 +53,7 @@ kargo:
         cpu: 10m
         memory: 32Mi
 
-# The hub's monolith, EmberVM and Scotland connector pipelines.
+# The hub's Scotland connector pipeline.
 promotion:
   enabled: false
 

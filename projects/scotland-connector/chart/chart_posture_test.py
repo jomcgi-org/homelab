@@ -20,11 +20,20 @@ _DEPLOY_VALUES = Path(
 _FACTORY_VALUES = Path(
     os.environ.get("FACTORY_VALUES", _CHART_DIR.parent / "factory" / "values.yaml")
 )
-_MONOLITH_PUBLIC_VALUES = Path(
-    os.environ.get(
-        "MONOLITH_PUBLIC_VALUES",
-        _CHART_DIR.parent.parent / "monolith-public" / "chart" / "values.yaml",
-    )
+# RE2-compatible canonical IPv4 or IPv6, as the retired monolith-public chart
+# pinned it (tag hub-final). rate_limit_acceptance_test proves it in Envoy.
+_CLIENT_IP_PATTERN = (
+    r"^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
+    r"(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,7}:"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}"
+    r"|[0-9A-Fa-f]{1,4}:(?:(?::[0-9A-Fa-f]{1,4}){1,6})"
+    r"|:(?:(?::[0-9A-Fa-f]{1,4}){1,7}|:))$"
 )
 # Carried by :gateway_test_inputs, so it sits at the same relative path in
 # Bazel runfiles as in the repository.
@@ -163,15 +172,8 @@ def test_route_carries_per_client_limits_and_worker_denies() -> None:
     ]
     # The per-client rule excludes exactly the shared bucket's addresses.
     assert headers[2]["value"] == assistant_match["value"]
-    # The identity pattern is the one monolith-public's Envoy acceptance test
-    # proves; a copy that drifts from it is untested.
-    monolith_public = yaml.safe_load(_MONOLITH_PUBLIC_VALUES.read_text())
-    want = monolith_public["cfIngress"]["public"]["clientIdentity"]["clientHeader"][
-        "valuePattern"
-    ]
-    assert headers[1]["value"] == want, (
-        "client identity regex drifted from monolith-public"
-    )
+    # A pattern that drifts from the pinned one is untested.
+    assert headers[1]["value"] == _CLIENT_IP_PATTERN, "client identity regex drifted"
     deny = {
         r["name"]
         for r in _one(docs, "SecurityPolicy")["spec"]["authorization"]["rules"]

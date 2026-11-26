@@ -23,7 +23,7 @@
       "key": "intake",
       "label": "Monolith dependency intake",
       "layer": "controller",
-      "evidence": "projects/monolith/factory/orchestration/dependency_prs.py:398",
+      "evidence": "hub-final:projects/monolith/factory/orchestration/dependency_prs.py:398",
       "view": "logical",
       "maturity": "built"
     },
@@ -100,7 +100,7 @@
       "label": "Assess changed files, dependency comparison and advisories",
       "from": "intake",
       "to": "pr",
-      "evidence": "projects/monolith/factory/orchestration/dependency_prs.py:398",
+      "evidence": "hub-final:projects/monolith/factory/orchestration/dependency_prs.py:398",
       "view": "logical",
       "maturity": "built"
     },

@@ -40,17 +40,16 @@ Direct Go tests are also supplemental evidence. They do
 not reproduce Bazel's hermetic dependency graph, target selection, hosted
 services or full CI coverage. No global `SKIP_REMOTE` setting is added.
 
-For a targeted factory check:
+For a targeted Python check:
 
 ```bash
-PYTHONPATH=projects/monolith PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  /workspace/.cloud/local-tests/venv/bin/python -m pytest \
-  -p pytest_asyncio.plugin -q \
-  projects/monolith/factory/orchestration/factory_rollout_test.py \
-  projects/monolith/factory/orchestration/factory_landing_test.py
+PYTHONPATH=projects/jomcgi-site/posts PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  /workspace/.cloud/local-tests/venv/bin/python -m pytest -q \
+  projects/jomcgi-site/posts/gen_posts_manifest_test.py \
+  projects/jomcgi-site/posts/prettier_json_test.py
 ```
 
-The selected Python dependency set supports these factory tests. Other tests
+The selected Python dependency set supports these tests. Other tests
 may need more packages; setup does not claim to install every repository
 runtime dependency.
 

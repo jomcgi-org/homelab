@@ -10,8 +10,8 @@ Usage: render.sh [options] SERVICE_OR_CHART
 Render one Helm chart to manifests/all.yaml below the chart directory.
 
 Arguments:
-  SERVICE_OR_CHART  Service name (for example monolith or
-                    mcp/context-forge-gateway), or a chart directory path
+  SERVICE_OR_CHART  Service name (for example trips or
+                    platform/argocd), or a chart directory path
 
 Options:
   --release NAME       Helm release name (default: Chart.yaml name)

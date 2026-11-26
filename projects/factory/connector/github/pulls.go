@@ -1193,7 +1193,8 @@ func (t timelineActor) last() string {
 }
 
 // Revert forms that git and GitHub write, as in
-// projects/monolith/factory/orchestration/factory_reverts.py: a "This reverts
+// the hub file projects/monolith/factory/orchestration/factory_reverts.py
+// (tag hub-final): a "This reverts
 // commit <sha>" line with a full or abbreviated SHA, a "Reverts [owner/repo]#N"
 // line, or a subject that starts with "Revert" and cites #N. A qualified
 // reference counts only when it names the scanned repository.

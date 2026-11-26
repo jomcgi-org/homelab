@@ -42,8 +42,8 @@ workloads still run on the GKE hub and move off it.
 | Area | Today | Direction | Tracks |
 | --- | --- | --- | --- |
 | Factory and its platform | Factory home cluster | Unchanged | [factory-cluster](projects/factory-cluster/) |
-| Private apps (monolith, Grimoire, MCP gateway) | GKE hub | Factory home cluster. The hub scales to zero | [HOME-128](https://factory-plan.jomcgi.dev/factory/issue/HOME-128), [HOME-262](https://factory-plan.jomcgi.dev/factory/issue/HOME-262), [decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-178#comment-2358) |
-| Public site jomcgi.dev | Hub monolith, moving one section at a time | Static site on Cloudflare with its data on R2 | [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178), [decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-178#comment-2358) |
+| Private apps (monolith, Grimoire, MCP gateway) | GKE hub, scaled to zero. Its code is at tag `hub-final` | Factory home cluster | [HOME-128](https://factory-plan.jomcgi.dev/factory/issue/HOME-128), [HOME-262](https://factory-plan.jomcgi.dev/factory/issue/HOME-262), [decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-178#comment-2358) |
+| Public site jomcgi.dev | Static site on Cloudflare with its data on R2 | Unchanged | [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178), [decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-178#comment-2358) |
 | Deploy | ArgoCD from Git. Kargo promotes the hub pipelines | Kargo for every app. Cilium, 1Password Connect, ArgoCD, cert-manager and Kargo stay on ArgoCD. Verified Freight closes the HOME issue | [HOME-116](https://factory-plan.jomcgi.dev/factory/issue/HOME-116) |
 | Pod-to-pod identity | Cilium network policy | SPIFFE workload identity | [HOME-254](https://factory-plan.jomcgi.dev/factory/issue/HOME-254) |
 | Model choice | One fixed model for each agent | Trial arms compared on production outcomes | [HOME-244](https://factory-plan.jomcgi.dev/factory/issue/HOME-244) |
@@ -56,24 +56,21 @@ current state, its direction and the reasons.
 - [**Factory**](projects/factory/): the umbrella chart, connector, broker and reviewer above. Reusable for other repositories through a repository binding.
 - [**Capacity forecast**](projects/capacity-forecast/): shadow memory forecasts for factory reviewers, with a baseline comparison in Grafana.
 - [**Factory home cluster**](projects/factory-cluster/): node bootstrap and ArgoCD root. [platform-factory](projects/platform-factory/) holds one Application for each shared component.
-- [**Monolith**](projects/monolith/): knowledge graph, Discord bot, Grimoire and the private apps, with a [read-only public tier](projects/monolith-public/).
-- [**Knowledge pipeline**](projects/monolith/knowledge/): LLM extraction turns markdown into structured facts in pgvector, searchable through MCP tools.
-- [**Public site**](projects/jomcgi-site/): static Astryx pages on a Cloudflare Worker. It replaces the monolith's public pages section by section.
+- [**Public site**](projects/jomcgi-site/): static Astryx pages on a Cloudflare Worker. It replaced the monolith's public pages.
 - [**Trips**](projects/trips/) stages a Go service for private photo uploads and a daily export of approved trip points and photo derivatives.
 - [**Scotland connector**](projects/scotland-connector/): Go service that answers Scottish dark-sky and walk-weather questions over REST and MCP.
 - [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against.
 - [**Build system**](bazel/): Bazel rules for Helm and OCI images. Builds run remotely on BuildBuddy.
-- **Retired hub code**: EmberVM, the Firecracker guests, oom-inference, the OCI Model Cache operator, Sextant, model-bench and the GKE hub overlays were deleted with the hub (HOME-262). Tag [`hub-final`](https://github.com/jomcgi-org/homelab/tree/hub-final) keeps them.
+- **Retired hub code**: the monolith (knowledge graph, Discord bot, private apps) and its public tier, EmberVM, the Firecracker guests, oom-inference, the OCI Model Cache operator, Sextant, model-bench and the GKE hub overlays were deleted with the hub (HOME-262). Tag [`hub-final`](https://github.com/jomcgi-org/homelab/tree/hub-final) keeps them.
 
 ## Applications
 
 Public apps at [jomcgi.dev/app](https://jomcgi.dev/app):
 
-- [**Trip tracker**](projects/monolith/frontend/src/routes/public/app/trips/): travel routes rebuilt from photo EXIF data, with elevation profiles.
-- [**Stargazing**](projects/monolith/frontend/src/routes/public/app/stars/): stargazing spots in Scotland with cloud-cover and darkness forecasts. The [factory forecast writer](projects/stars-forecast/) stages the migration to the R2 mirror.
-- [**Hiking routes**](projects/monolith/frontend/src/routes/public/app/hikes/): Scottish route finder with weather-based recommendations.
-- [**Grimoire**](projects/monolith/frontend/src/routes/public/app/grimoire/): D&D campaign manager with a public rules and lore explorer. See the [factory migration plan](projects/grimoire/ARCHITECTURE.md).
-- [**Notes**](projects/monolith/frontend/src/routes/public/app/notes/): public knowledge graph browsing.
+- [**Trip tracker**](projects/trips/): travel routes rebuilt from photo EXIF data, with elevation profiles.
+- [**Stargazing**](projects/stars-forecast/): stargazing spots in Scotland with cloud-cover and darkness forecasts.
+- [**Hiking routes**](projects/hikes/): Scottish route finder with weather-based recommendations.
+- [**Grimoire**](projects/grimoire/): D&D campaign manager with a public rules and lore explorer. See the [factory migration plan](projects/grimoire/ARCHITECTURE.md).
 
 ## Infrastructure patterns
 
@@ -108,8 +105,6 @@ projects/               # Services, operators and sites, each with its deploy co
 ├── hikes/              #   Factory jobs that publish WalkHighlands routes and daylight forecasts
 ├── jomcgi-site/        #   Public jomcgi.dev: static Astryx pages on a Cloudflare Worker
 ├── platform/           #   Shared charts (ArgoCD, Envoy Gateway, OTel collector, Renovate)
-├── monolith/           #   Knowledge graph, Discord bot, Grimoire, private and public apps
-├── monolith-public/    #   Read-only public replica of the monolith
 ├── scotland-connector/ #   Scottish dark-sky and walk-weather service
 └── design-system/      #   Shared design tokens
 bazel/                  # Build rules, tools and images

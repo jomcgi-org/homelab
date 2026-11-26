@@ -115,9 +115,9 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const seoURL = pathToFileURL(resolve('projects/monolith/frontend/src/lib/public/seo.js'));
+const seoURL = pathToFileURL(resolve('projects/jomcgi-site/web/hub/src/lib/public/seo.js'));
 const { PUBLIC_BASE } = await import(seoURL.href);
-const source = await readFile('projects/monolith/frontend/src/routes/public/scotland/scotland-data.js', 'utf8');
+const source = await readFile('projects/jomcgi-site/web/hub/src/routes/public/scotland/scotland-data.js', 'utf8');
 const renderedSource = source.replace('import { PUBLIC_BASE } from "$lib/public/seo.js";', `const PUBLIC_BASE = ${JSON.stringify(PUBLIC_BASE)};`);
 if (renderedSource === source) throw new Error('PUBLIC_BASE import did not match');
 const { marketplace } = await import(`data:text/javascript;base64,${Buffer.from(renderedSource).toString('base64')}`);
