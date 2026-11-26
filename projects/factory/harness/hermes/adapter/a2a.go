@@ -29,6 +29,7 @@ const (
 	codeInvalidRequest = -32600
 	codeMethodNotFound = -32601
 	codeInvalidParams  = -32602
+	codeInternal       = -32603
 )
 
 const maxRequestBytes = 1 << 20
@@ -106,7 +107,8 @@ type Handler struct {
 	Now   func() time.Time
 	NewID func() string
 
-	mu sync.Mutex
+	once sync.Once
+	turn chan struct{}
 }
 
 func (h *Handler) now() time.Time {
@@ -195,9 +197,16 @@ func (h *Handler) send(ctx context.Context, raw json.RawMessage) (*Task, *rpcErr
 	user := &Message{MessageID: msg.MessageID, ContextID: contextID, TaskID: task.ID, Role: RoleUser, Parts: msg.Parts}
 	task.History = []*Message{user}
 
-	h.mu.Lock()
+	// A request that waits for the turn slot stops when its client leaves,
+	// so a dropped request never runs later.
+	h.once.Do(func() { h.turn = make(chan struct{}, 1) })
+	select {
+	case h.turn <- struct{}{}:
+	case <-ctx.Done():
+		return nil, &rpcError{Code: codeInternal, Message: "request canceled before its turn started"}
+	}
 	reply, err := h.Hermes.Respond(ctx, contextID, idempotencyKey(contextID, msg.MessageID), msg.Parts[0].Text)
-	h.mu.Unlock()
+	<-h.turn
 
 	agent := &Message{MessageID: h.newID(), ContextID: contextID, TaskID: task.ID, Role: RoleAgent}
 	task.Status = TaskStatus{Message: agent, Timestamp: h.now().UTC().Format(time.RFC3339Nano)}
