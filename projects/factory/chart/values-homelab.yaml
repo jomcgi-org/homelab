@@ -374,8 +374,7 @@ reviewer:
       requiredChecks:
         - name: pr-checks
           statusCreator: buildbuddy-io[bot]
-# The Discord bot (HOME-162). The bridge is on: the hub monolith's bot, which
-# used the same token, is off (HOME-221).
+# The Discord bot (HOME-162). The bridge is on (HOME-221).
 discord:
   agent:
     enabled: true

@@ -55,8 +55,7 @@ it.
 
 A verdict is final once its window ends and its attempts settle: accepted,
 regressed or inconclusive. Record an inconclusive window once; nobody extends
-or restarts it by hand. The retro optimizer releases its selection on a final
-verdict (`docs/agents/drain-queue.md`).
+or restarts it by hand.
 
 Retain improvements supported by evidence. Revert or revise changes that fail
 their condition within existing authority. Repeated failures need a different

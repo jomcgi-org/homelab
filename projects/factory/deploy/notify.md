@@ -20,9 +20,9 @@ connector startup smoke notification in the homelab channel after rollout,
 restart the connector, and confirm there is still one message.
 
 This path ships off: the deploy values set neither the channel nor
-`connector.notify.enabled`. Agent sessions keep `monolith-agent-notify`
-(AGENTS.md, `docs/runbooks/daily-digest.md`) until a later HOME-228 change
-gives them an entry point on the bridge and retires the monolith tool.
+`connector.notify.enabled`. Agent sessions have no notify tool: the hub's
+`monolith-agent-notify` went with the hub (HOME-262). HOME-228 tracks an
+entry point for them on the bridge.
 
 ## HOME-385 rollout verification
 

@@ -93,9 +93,9 @@ they do not launch their own planner, review or landing sequence.
   with evidence and records the reverted outcome. Source holds and human
   ownership stay binding. The revision gate stays off; operational acceptance
   remains on #7450 with the authorized landing and validation owner.
-- For deployable changes, wait for chart writeback and call
-  `verify_deployment` with the expected revision until terminal. Without it,
-  verify ArgoCD Synced/Healthy, the new pod image and a responding service.
+- For deployable changes, wait for chart writeback, then verify Argo CD
+  Synced/Healthy at the expected revision, the new pod image and a
+  responding service.
   Docs need no rollout.
 
 ## Gotchas
@@ -123,9 +123,9 @@ they do not launch their own planner, review or landing sequence.
   does not exist here. JS is pnpm plus `rules_js`. The
   `projects/monolith/frontend/` app is Svelte 5 runes only, with CSS imported
   from JavaScript, never bare `@import` package specifiers inside CSS.
-- **Cluster reads** use `kubectl` against the hub context, or the monolith
-  MCP's `k8s-*` tools and `verify_deployment`. The ArgoCD UI has no route;
-  Kargo's is `private.jomcgi.dev/app/kargo`.
+- **Cluster reads** use `kubectl` with
+  `KUBECONFIG=~/.kube/factory-sessions.yaml` on node-1. The Argo CD UI is
+  `factory-argocd.jomcgi.dev`, behind Authentik. Kargo has no UI.
 - **New service:** a chart and `deploy/` under `projects/<svc>/` (copy
   `projects/trips/deploy/` for the factory pattern), plus an entry for that
   `deploy/` directory in `projects/platform-factory/kustomization.yaml`.
@@ -420,7 +420,6 @@ when its row applies.
 | Shipping a feature | `docs/agents/ship.md` |
 | Writing a PR title and description | `docs/agents/pull-requests.md` |
 | Refreshing a system's STPA model | `docs/agents/stpa.md` |
-| Queueing or triaging drain-lane (`qwen-drain`) jobs | `docs/agents/drain-queue.md` |
 | Cutting BuildBuddy cache traffic | `docs/agents/buildbuddy-usage.md` |
 | Security-sensitive change | `docs/security.md`; `docs/THREAT-MODEL.md` for assets, attacker positions and trust boundaries |
 | Public tier: jomcgi.dev, monolith-public, `public_reader` data | `docs/runbooks/public-tier-checklist.md` |

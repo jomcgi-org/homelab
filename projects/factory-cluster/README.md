@@ -41,10 +41,10 @@ clusters and scale `argocd-application-controller` to 1. Argo CD then
 restores the replicas from git. To read old data without the hub, restore a
 backup into a throwaway CNPG cluster.
 
-The rest of the hub is still to remove: the Cloudflare tunnel and DNS for
-`auth.`, `friends.`, `private.` and `mcp.jomcgi.dev`, the hub directories in
-`projects/gke-apps` and `projects/platform-gke`, and the monitors for the
-hub health paths ([HOME-865](https://factory-plan.jomcgi.dev/factory/issue/HOME-865)).
+`auth.`, `friends.`, `private.` and `mcp.jomcgi.dev` have no DNS records.
+#8720 deleted the hub directories; tag `hub-final` keeps them. Still to
+remove: the hub's Cloudflare tunnel and the monitors for the hub health paths
+([HOME-865](https://factory-plan.jomcgi.dev/factory/issue/HOME-865)).
 
 ## Bootstrap and rebuild
 

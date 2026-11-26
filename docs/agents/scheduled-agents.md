@@ -493,9 +493,7 @@ establish a useful outcome. A null next-run time alone proves no terminal comple
 | `adr-index-*`, `adr-status-*` | One-shot rows with August last-run timestamps | Drop recurrence. ADR retirement #4667 changed the destination; job 3 checks current architecture decisions and status links. Do not restart completed or held rows. |
 | `kg-audit` | 86,400-second interval; last recorded run October 30, next due October 31 | Do not claim it is currently running. Preserve bounded sampling, provenance and cooldown ideas from the [KG architecture](../../projects/monolith/ARCHITECTURE.md#4-agents). Defer a new memory audit until the memory integration and poison-resistance contract are accepted; drop autonomous dispute/retain writes from the planner. |
 
-The old [drain queue](drain-queue.md) still describes a daily retro cadence.
-That disagreement itself needs evidence-aware documentation review. This
-proposal neither stops nor restarts any old routine.
+This proposal neither stops nor restarts any old routine.
 
 ## Spend one weekly window deliberately
 
