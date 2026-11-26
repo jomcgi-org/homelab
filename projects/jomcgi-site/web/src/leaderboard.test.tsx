@@ -28,7 +28,7 @@ import { render as prerender } from "./prerender";
 import { Root } from "./root";
 
 const hub = readFileSync(
-  "../../monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte",
+  "hub/src/routes/public/app/llm-leaderboard/+page.svelte",
   "utf8",
 );
 const modelIds = (table: HTMLElement) =>

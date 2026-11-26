@@ -115,9 +115,13 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
 ## Blog
 
 The HOME-198 migration serves the index and every manifest post as static
-HTML at its existing URL. The hub's [post manifest](../monolith/frontend/src/lib/public/posts/posts-manifest.json)
-remains the content source; markdown, titles, summaries, dates and tags are
+HTML at its existing URL. The [post manifest](web/hub/src/lib/public/posts/posts-manifest.json)
+is the content source; markdown, titles, summaries, dates and tags are
 read from it without a runtime request.
+[`posts/gen_posts_manifest.py`](posts/gen_posts_manifest.py) writes it from
+the `public: true` posts in `docs/posts`; the Format stage runs it.
+`web/hub/` keeps the files that this site took from the retired hub frontend
+(HOME-262), at their hub paths.
 
 ```text
 hub manifest + shared markdown renderer + original Svelte figures
@@ -177,8 +181,8 @@ sortable tables hydrate on intent or a linked `?m=` selection.
 The deploy image serves `web:build` through an assets-only Worker.
 
 `projects/model-bench` (deleted; tag `hub-final` keeps it) wrote the frozen snapshot at
-`projects/monolith/frontend/src/lib/public/llm-leaderboard/leaderboard.json`.
-The site imports it and the hub model through `:leaderboard_sources`.
+`web/hub/src/lib/public/llm-leaderboard/leaderboard.json`.
+The site imports it and the hub model through `web:hub_site_inputs`.
 
 | Contract | Checks in `web/` |
 | --- | --- |
@@ -612,9 +616,9 @@ Application links keep their `jomcgi.dev` destination on the preview host.
 The links to retired hub pages (`/app/notes`, `/app/trips`) are removed
 (HOME-261); the parity test allows only that difference.
 
-The source is `projects/monolith/frontend/src/routes/public/engineering/`.
+The source is `web/hub/src/routes/public/engineering/`, a copy of the hub page.
 Its data and Svelte files are inputs only to the parity test, through
-`//projects/monolith/frontend:engineering_migration_sources`; the production
+`web:hub_migration_sources`; the production
 entry imports the React page and its copied data and diagrams.
 
 | HOME-197 requirement | Implementation and executable evidence |

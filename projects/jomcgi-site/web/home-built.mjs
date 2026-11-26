@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Window } from "happy-dom";
 import { hub, latestPosts, posts } from "./site-inputs.mjs";
 import { robots, llms, webmanifest } from "./machine-readable.mjs";
-import { PUBLIC_BASE } from "../../monolith/frontend/src/lib/public/seo.js";
+import { PUBLIC_BASE } from "./hub/src/lib/public/seo.js";
 
 export function checkHome(dist) {
   const read = (file) => readFileSync(join(dist, file));

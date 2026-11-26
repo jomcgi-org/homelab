@@ -195,6 +195,9 @@ need_generators() {
 			projects/monolith/chat/*)
 			return 0
 			;;
+		projects/jomcgi-site/posts/* | docs/posts/figures/*)
+			return 0
+			;;
 		*.md | */*.md) return 0 ;;
 		*/deploy/application.yaml | */deploy/kustomization.yaml | */apko.yaml | */apko.lock.json)
 			return 0

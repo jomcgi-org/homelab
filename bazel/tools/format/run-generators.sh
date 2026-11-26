@@ -39,7 +39,7 @@ run() {
 
 run ./bazel/images/generate-push-all.sh
 run ./projects/monolith/generate-routes.sh
-run python3 ./projects/monolith/knowledge/tools/gen_posts_manifest.py
+run python3 ./projects/jomcgi-site/posts/gen_posts_manifest.py
 run python3 ./projects/monolith/knowledge/tools/gen_orchestrator_bundle.py
 
 fails=0

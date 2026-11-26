@@ -18,8 +18,8 @@ go_test(
     name = "export_test",
     srcs = ["export_test.go"],
     data = [
-        "//projects/monolith/chart:migrations/20260615120000_trips_schema.sql",
         "//projects/trips:approvals.sql",
+        "//projects/trips:hub_schema.sql",
         "@postgres_test//:postgres",
     ],
     embed = [":export_lib"],

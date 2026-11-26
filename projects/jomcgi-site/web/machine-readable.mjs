@@ -1,9 +1,6 @@
 // Ported from the hub public routes. Build-time only; post bodies never enter a browser bundle.
-import {
-  LOCATION,
-  PUBLIC_BASE,
-} from "../../monolith/frontend/src/lib/public/seo.js";
-import { manifest } from "../../monolith/frontend/src/lib/manifest.js";
+import { LOCATION, PUBLIC_BASE } from "./hub/src/lib/public/seo.js";
+import { manifest } from "./hub/src/lib/manifest.js";
 
 // Policy: allow everything (training and retrieval bots alike). The public CV
 // content is published intentionally; the goal is maximum discoverability for

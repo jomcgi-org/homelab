@@ -173,7 +173,7 @@ py_test(
     srcs = ["pr_content_scan_test.py"],
     data = [
         "pr_content_scan.py",
-        "//projects/monolith:knowledge/tools/public_content.py",
+        "//projects/jomcgi-site/posts:public_content.py",
     ],
     deps = ["@pip//pytest"],
 )

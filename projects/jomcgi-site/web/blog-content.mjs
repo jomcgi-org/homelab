@@ -6,11 +6,11 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { compile } from "svelte/compiler";
 import { render } from "svelte/server";
-import { renderDoc } from "../../monolith/frontend/src/lib/server/markdown.js";
-import { splitFigures } from "../../monolith/frontend/src/lib/public/posts/ix/split.js";
+import { renderDoc } from "./hub/src/lib/server/markdown.js";
+import { splitFigures } from "./hub/src/lib/public/posts/ix/split.js";
 
 const postsDir = fileURLToPath(
-  new URL("../../monolith/frontend/src/lib/public/posts/", import.meta.url),
+  new URL("hub/src/lib/public/posts/", import.meta.url),
 );
 export const manifest = JSON.parse(
   readFileSync(resolve(postsDir, "posts-manifest.json"), "utf8"),

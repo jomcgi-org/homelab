@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build, createServer } from "vite";
 
-import { personLdScript } from "../../monolith/frontend/src/lib/public/seo.js";
+import { personLdScript } from "./hub/src/lib/public/seo.js";
 import { hub, posts } from "./site-inputs.mjs";
 import { robots, llms, webmanifest } from "./machine-readable.mjs";
 

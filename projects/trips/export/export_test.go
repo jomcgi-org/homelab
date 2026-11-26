@@ -98,7 +98,7 @@ func setup(t *testing.T) (*sql.DB, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	for _, path := range []string{"../../monolith/chart/migrations/20260615120000_trips_schema.sql", "../approvals.sql"} {
+	for _, path := range []string{"../hub_schema.sql", "../approvals.sql"} {
 		schema, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)

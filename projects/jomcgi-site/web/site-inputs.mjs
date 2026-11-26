@@ -1,7 +1,7 @@
 // HOME-198 and the home page use this published manifest; read it only at build time.
 import { readFileSync } from "node:fs";
 const moduleUrl = import.meta.url;
-export const hub = new URL("../../monolith/frontend/", moduleUrl);
+export const hub = new URL("hub/", moduleUrl);
 export const posts = JSON.parse(
   readFileSync(
     new URL("src/lib/public/posts/posts-manifest.json", hub),

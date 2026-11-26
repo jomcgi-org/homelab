@@ -10,7 +10,7 @@ import { SECTIONS, sectionsIn } from "./sections";
 // not import the hub or depend on its Svelte runtime.
 const policies: Policy[] = [privacy, terms, support];
 const original = (path: string) =>
-  readFileSync(`../../monolith/frontend/src/routes/public/${path}`, "utf8");
+  readFileSync(`hub/src/routes/public/${path}`, "utf8");
 const normalized = (text: string) => text.replace(/\s+/g, " ").trim();
 const body = (entry: string) => {
   const element = document.createElement("div");
