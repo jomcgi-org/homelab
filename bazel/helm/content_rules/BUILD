@@ -23,7 +23,6 @@ APPLICATIONS = [
     "jomcgi-site",
     "scotland-connector",
     "stars-forecast",
-    "trips",
 ]
 
 py_library(
