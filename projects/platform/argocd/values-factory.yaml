@@ -84,6 +84,51 @@ argo-cd:
       # (projects/factory-cluster/README.md).
       admin.enabled: "false"
       timeout.reconciliation: "180s"
+      # Job health, as ArgoCD's built-in check (Failed is Degraded, Complete
+      # is Healthy, Suspended is Suspended, else Progressing), with one
+      # exception: a running Discord history import Job is Healthy. A sync
+      # waits for every synced resource to be healthy, and an import may run
+      # for up to 24 h, so it held every factory change behind it
+      # (2026-11-26, discord-import-5). The import skips stored channel-days,
+      # so a rerun after a failure loses nothing. A failed import is still
+      # Degraded.
+      resource.customizations.health.batch_Job: |
+        hs = {}
+        local function condition(kind)
+          if obj.status ~= nil and obj.status.conditions ~= nil then
+            for _, c in ipairs(obj.status.conditions) do
+              if c.type == kind and c.status == "True" then
+                return c
+              end
+            end
+          end
+          return nil
+        end
+        local failed = condition("Failed")
+        if failed ~= nil then
+          hs.status = "Degraded"
+          hs.message = failed.message or "Job failed"
+          return hs
+        end
+        if condition("Complete") ~= nil then
+          hs.status = "Healthy"
+          hs.message = "Job completed"
+          return hs
+        end
+        if condition("Suspended") ~= nil or (obj.spec ~= nil and obj.spec.suspend == true) then
+          hs.status = "Suspended"
+          hs.message = "Job is suspended"
+          return hs
+        end
+        local name = obj.metadata.name or ""
+        if obj.metadata.namespace == "factory-discord" and string.find(name, "^discord%-import%-") ~= nil then
+          hs.status = "Healthy"
+          hs.message = "Discord history import runs in the background"
+          return hs
+        end
+        hs.status = "Progressing"
+        hs.message = "Job is running"
+        return hs
       # The client secret is generated in the cluster and copied here by the
       # authentik-secret-init Job (projects/platform-factory/authentik/).
       oidc.config: |
