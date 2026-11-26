@@ -540,6 +540,8 @@ the boundary and rollout checks.
 
 Bosun answers mentions in the configured Discord servers. The bridge scopes memory to the guild and channel and passes messages to a separate kagent agent. The agent uses a dedicated model credential and has no coding tools. [Isolation decision](https://github.com/jomcgi-org/homelab/pull/8188#issuecomment-6960669519)
 
+[Per-server agents](discord/server-agents.md) designs one persistent Hermes agent per server on ATE, with server-locked memory and per-server tools (HOME-905).
+
 ### itsaplan
 
 The connector uses separate identities to claim coding work and coordinate issue updates.
@@ -1335,6 +1337,7 @@ version write-back.
 | Verify the factory App author when adopting a PR. | [#7920](https://github.com/jomcgi-org/homelab/issues/7920) | live |
 | Remove third-party Apps from the merge trust path. | [#7921](https://github.com/jomcgi-org/homelab/issues/7921) | designed |
 | Move CI and the registry into the cluster and scope the chart write-back identity. | [#7922](https://github.com/jomcgi-org/homelab/issues/7922) | designed |
+| Give each Discord server its own persistent Hermes agent with server-locked memory ([design](discord/server-agents.md)). | [HOME-905](https://factory-plan.jomcgi.dev/factory/issue/HOME-905) | designed |
 | Isolate fork PRs. Agents preview pages locally (HOME-877), so no public preview host is planned. | [#7923](https://github.com/jomcgi-org/homelab/issues/7923) | designed |
 
 ### Discord operator session
