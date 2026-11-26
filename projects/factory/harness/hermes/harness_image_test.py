@@ -131,11 +131,6 @@ def test_ci_runs_the_chrooted_cases() -> None:
         _need_userns()
 
 
-def test_temp_ci_env_reaches_the_test() -> None:
-    # TEMPORARY: checks that BUILD's env_inherit gives this test CI.
-    assert IN_CI, "CI is not set in the test environment"
-
-
 @pytest.fixture(scope="module")
 def rootfs():
     with tempfile.TemporaryDirectory() as tmp:
