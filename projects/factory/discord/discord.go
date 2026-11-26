@@ -1,7 +1,7 @@
 // Package discord is the Discord bridge (HOME-162). It reads gateway events,
 // answers only messages that tag the bot in allowlisted servers, keeps each
-// channel's memory in its own Hindsight tag scope (hindsight-discord), and
-// runs each turn on a kagent Agent that holds no memory credential.
+// server's memory in its own Hindsight bank (hindsight-discord), and runs
+// each turn on a kagent Agent that holds no memory credential.
 //
 // Every message, username and attachment is untrusted data from people other
 // than Joe (HOME-162 contract rule 1). Joe's operator session (operator.go)

@@ -106,6 +106,8 @@ func run(log *slog.Logger) error {
 		Memory:  memory,
 		Replies: rest,
 		Log:     log,
+		// Only allowlisted servers are cached: anyone can add the bot.
+		Places: &discord.Places{Keep: func(id string) bool { _, ok := policy.Guilds[id]; return ok }},
 	}
 	if err := wireOperator(log, bridge, rest, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions); err != nil {
 		return err
@@ -152,6 +154,7 @@ func run(log *slog.Logger) error {
 		Token:     botToken,
 		OnReady:   bridge.SetBot,
 		OnMessage: func(m discord.Message) { bridge.Handle(ctx, m) },
+		Places:    bridge.Places,
 		Log:       log,
 		Intents:   intents,
 	}

@@ -132,8 +132,8 @@ spec:
     snapshotPolicy:
       location: {{ printf "%s%s/" .Values.workers.snapshotLocationPrefix $ns | quote }}
 ---
-# No tools: web search is part of the model call (":online"), and the bridge
-# is the only Hindsight client (HOME-162 rule 3).
+# No tools and no web search, and the bridge is the only Hindsight client
+# (HOME-162 rule 3).
 apiVersion: api.kagent.dev/v1alpha3
 kind: Agent
 metadata:

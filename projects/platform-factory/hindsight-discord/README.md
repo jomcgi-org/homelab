@@ -14,9 +14,11 @@ flowchart LR
 
 The bridge is HOME-162. The only consumer copy of the tenant key is Secret
 `factory-discord/hindsight-discord-key`, field `tenant-api-key`. The key grants
-REST access to every bank in this process. The bridge must enforce channel
-access and supply strict tag filters; tags alone do not authorize a caller.
-MCP is disabled.
+REST access to every bank in this process. The bridge must enforce server
+access: it chooses the bank from the gateway event, never from message text.
+A recall reads the server's whole bank, every channel
+([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-162#comment-12817)).
+Tags alone do not authorize a caller. MCP is disabled.
 
 Hindsight stores retained image bytes in the private Garage bucket `discord-media`,
 by document and content hash. `factory-db` holds no image bytes. GPT-4.1 mini
