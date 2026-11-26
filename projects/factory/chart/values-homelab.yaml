@@ -401,9 +401,11 @@ discord:
       queueDepth: 3
   # The history import (HOME-164): one Job per runId reads every server's
   # history into its bank, up to maxDocuments channel-days per run (Joe,
-  # 2026-11-25). A new runId continues where the last one stopped.
+  # 2026-11-25). A new runId continues where the last one stopped. Off
+  # between runs: a kept Job's template is immutable, so a new connector
+  # image fails the Application's server-side diff for every resource.
   import:
-    enabled: true
+    enabled: false
     runId: "1"
   # Joe's operator session (HOME-314 step 1): a persistent session per thread
   # under #factory in the homelab server, for Joe's messages only. His user ID
