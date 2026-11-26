@@ -1538,6 +1538,7 @@ def test_discord_import_job_is_the_same_in_every_release() -> None:
     # and the Job carries no chart-version label.
     base = _DISCORD + [
         "discord.import.enabled=true",
+        "discord.import.runId=1",
         "discord.import.image=example.com/import@sha256:" + "a" * 64,
     ]
     jobs = [
