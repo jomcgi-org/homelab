@@ -552,7 +552,8 @@ The bridge backfills the history of each server with `history: true`
 (`discord/backfill.go`, HOME-836). It runs one pass after the gateway is
 ready, then one pass 6 hours after each pass ends (`discord.backfill`). A
 pass stores one document per channel and UTC day. It skips days already
-stored, today and the days the ingestor stored. One channel imports at a
+stored and today. It also skips a day with a live document on or after the
+server's `ingestSince`, because the ingestor stored that day. One channel imports at a
 time, and a limiter spaces every Discord read and Hindsight call (2 each
 second), so live turns and ingest keep their share. A failed server logs and
 waits for the next pass. The bridge serves `factory_discord_backfill_*` on

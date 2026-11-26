@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -191,8 +192,10 @@ type Importer struct {
 	// Hindsight call, so a rate limit keeps the import from starving live
 	// turns that share them.
 	Pace func(ctx context.Context) error
-	// SkipIngested skips a channel-day of a server with `ingest` when the
-	// live document for that day exists: the ingestor stored its messages.
+	// SkipIngested skips a channel-day of a server with `ingest` when the day
+	// is on or after its IngestSince and the live document for that day
+	// exists: the ingestor stored its messages. An earlier day's live
+	// document holds only tagged turns, so that day is imported.
 	SkipIngested bool
 	// Observe, when set, sees each channel-day as it is retained or skipped.
 	Observe func(guildID string, retained bool)
@@ -287,7 +290,7 @@ func (im *Importer) run(ctx context.Context, guilds []string) (ImportStats, erro
 		go func() {
 			defer wg.Done()
 			for j := range work {
-				retained, skipped, err := im.channel(runCtx, j.guildID, j.channel, today)
+				retained, skipped, err := im.safeChannel(runCtx, j.guildID, j.channel, today)
 				mu.Lock()
 				stats.Retained += retained
 				stats.Skipped += skipped
@@ -311,6 +314,21 @@ func (im *Importer) run(ctx context.Context, guilds []string) (ImportStats, erro
 		stats.Capped = true
 	}
 	return stats, firstErr
+}
+
+// safeChannel runs channel and turns a panic into an error, so a bad
+// message or store fails the run instead of the process.
+func (im *Importer) safeChannel(ctx context.Context, guildID string, c Channel, today time.Time) (retained, skipped int, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if im.Log != nil {
+				im.Log.Error("history import panicked", "guild", guildID, "channel", c.ID,
+					"panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+			}
+			err = fmt.Errorf("channel %s: panic: %v", c.ID, r)
+		}
+	}()
+	return im.channel(ctx, guildID, c, today)
 }
 
 // channel walks one channel's history newest first and stores each
@@ -391,7 +409,7 @@ func (im *Importer) store(ctx context.Context, guildID string, c Channel, day ti
 	if err != nil || exists {
 		return false, err
 	}
-	if im.SkipIngested && im.Config.Guilds[guildID].Ingest {
+	if im.SkipIngested && im.Config.Guilds[guildID].ingestedLive(day) {
 		exists, err := im.exists(ctx, guildID, DocumentID(c.ID, day))
 		if err != nil || exists {
 			return false, err
