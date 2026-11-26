@@ -23,11 +23,25 @@ type Limit struct {
 // Guild is an allowlisted server. Channels, when set, limits it to those
 // channels. History marks it for the history backfill (HOME-164). Ingest
 // stores every human message there, tagged or not (Joe, 2026-11-24,
-// HOME-833); it needs the privileged Message Content intent.
+// HOME-833); it needs the privileged Message Content intent. IngestSince is
+// the first UTC day (YYYY-MM-DD) the ingestor stored in full; the history
+// backfill trusts the live document only from that day on.
 type Guild struct {
-	Channels []string `json:"channels,omitempty"`
-	History  bool     `json:"history,omitempty"`
-	Ingest   bool     `json:"ingest,omitempty"`
+	Channels    []string `json:"channels,omitempty"`
+	History     bool     `json:"history,omitempty"`
+	Ingest      bool     `json:"ingest,omitempty"`
+	IngestSince string   `json:"ingestSince,omitempty"`
+}
+
+// ingestedLive reports whether the ingestor stored the whole of day, a UTC
+// midnight: the server ingests and day is on or after IngestSince. Before
+// that day a live document holds only tagged turns.
+func (g Guild) ingestedLive(day time.Time) bool {
+	if !g.Ingest || g.IngestSince == "" {
+		return false
+	}
+	since, err := time.Parse(time.DateOnly, g.IngestSince)
+	return err == nil && !day.Before(since)
 }
 
 // Config is the bridge's policy, from values only.

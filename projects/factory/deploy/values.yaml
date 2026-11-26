@@ -393,12 +393,13 @@ discord:
       # Every server Bosun is in (Joe, HOME-162 comment 1942). history marks
       # each for the history backfill (HOME-164). ingest stores every human
       # message in each (Joe, 2026-11-25, HOME-833); it needs the Message
-      # Content intent enabled for the application (HOME-834).
+      # Content intent enabled for the application (HOME-834). ingestSince is
+      # the first full ingested UTC day; the backfill imports earlier days.
       guilds:
-        "185442367703220224": {history: true, ingest: true} # NOT DEM BOYZ
-        "1290668195249917964": {history: true, ingest: true} # The gang...
-        "1501965852042330302": {history: true, ingest: true} # homelab
-        "1512814732392927463": {history: true, ingest: true} # Loom
+        "185442367703220224": {history: true, ingest: true, ingestSince: "2026-11-26"} # NOT DEM BOYZ
+        "1290668195249917964": {history: true, ingest: true, ingestSince: "2026-11-26"} # The gang...
+        "1501965852042330302": {history: true, ingest: true, ingestSince: "2026-11-26"} # homelab
+        "1512814732392927463": {history: true, ingest: true, ingestSince: "2026-11-26"} # Loom
       userLimit: {count: 10, window: 1h}
       guildLimit: {count: 60, window: 1h}
       globalLimit: {count: 300, window: 24h}

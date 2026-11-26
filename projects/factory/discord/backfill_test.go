@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -186,19 +187,57 @@ func TestBackfillSurvivesAFailingServer(t *testing.T) {
 }
 
 func TestBackfillSkipsDaysTheIngestorStored(t *testing.T) {
-	r := newBackfillRig(t, map[string]Guild{"g1": {History: true, Ingest: true}, "g2": {History: true}})
-	// Live ingest stored c1's 2026-11-16 in g1, and a tagged exchange in g2
-	// (no ingest) on 2026-11-14.
+	r := newBackfillRig(t, map[string]Guild{
+		"g1": {History: true, Ingest: true, IngestSince: "2026-11-16"},
+		"g2": {History: true},
+	})
+	// g1: a tagged turn's live document on 2026-11-15, before ingestSince,
+	// and the ingestor's on 2026-11-16. g2 (no ingest): a tagged turn.
+	_ = r.docs.RetainDocument(context.Background(), "g1", NewRetain("c1", day(15, 10), "ann: tagged"))
 	_ = r.docs.RetainDocument(context.Background(), "g1", NewRetain("c1", day(16, 10), "ann: ingested"))
 	_ = r.docs.RetainDocument(context.Background(), "g2", NewRetain("c9", day(14, 10), "dee: tagged"))
 	close(r.ready)
 	r.clock.passEnded(t)
 	ids := r.docs.ids()
+	if !slices.Contains(ids, "g1/discord:c1:2026-11-15:history") {
+		t.Errorf("a day before ingestSince lost its full history: %v", ids)
+	}
 	if slices.Contains(ids, "g1/discord:c1:2026-11-16:history") {
 		t.Errorf("an ingested day was imported again: %v", ids)
 	}
 	if !slices.Contains(ids, "g2/discord:c9:2026-11-14:history") {
 		t.Errorf("a server without ingest lost its day: %v", ids)
+	}
+	// Without ingestSince the live document is never trusted.
+	if (Guild{Ingest: true}).ingestedLive(day(16, 0)) {
+		t.Error("ingest without ingestSince skipped a day")
+	}
+}
+
+type panickingDocs struct{ fakeDocs }
+
+func (p *panickingDocs) RetainDocument(context.Context, string, RetainItem) error {
+	panic("store broke")
+}
+
+// A panic in a worker fails the run; it does not end the process.
+func TestImportTurnsAWorkerPanicIntoAnError(t *testing.T) {
+	im := newImporter(history(), nil, map[string]Guild{"g1": {History: true}})
+	im.Store = &panickingDocs{}
+	im.Workers = 1
+	_, err := im.RunGuild(context.Background(), "g1")
+	if err == nil || !strings.Contains(err.Error(), "panic: store broke") {
+		t.Fatalf("err = %v, want the panic as an error", err)
+	}
+}
+
+func TestParsePolicyChecksIngestSince(t *testing.T) {
+	base := `"userLimit":{"count":1,"window":"1h"},"guildLimit":{"count":1,"window":"1h"},"globalLimit":{"count":1,"window":"1h"}`
+	if _, err := ParsePolicy([]byte(`{"guilds":{"1":{"ingest":true,"ingestSince":"2026-11-26"}},` + base + `}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParsePolicy([]byte(`{"guilds":{"1":{"ingest":true,"ingestSince":"26/11/2026"}},` + base + `}`)); err == nil {
+		t.Error("a bad ingestSince was accepted")
 	}
 }
 

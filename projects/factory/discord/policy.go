@@ -60,6 +60,14 @@ func ParsePolicy(data []byte) (Config, error) {
 	}
 	c.NotificationChannels = p.NotificationChannels
 	c.Guilds = p.Guilds
+	for id, g := range c.Guilds {
+		if g.IngestSince == "" {
+			continue
+		}
+		if _, err := time.Parse(time.DateOnly, g.IngestSince); err != nil {
+			return Config{}, fmt.Errorf("guild %s: ingestSince %q is not YYYY-MM-DD", id, g.IngestSince)
+		}
+	}
 	if c.Guilds == nil {
 		c.Guilds = map[string]Guild{}
 	}
