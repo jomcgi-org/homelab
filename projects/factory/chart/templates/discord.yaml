@@ -511,9 +511,9 @@ spec:
 # server with `history: true` into its bank, one document per channel-day.
 # A new runId starts a new run; days already stored are skipped. The bridge's
 # label gives it the bridge's egress and hindsight-discord's admission.
-# The finished Job stays as it ran: deploy/application.yaml ignores /spec of
-# Jobs in this namespace, so a new connector image or chart version neither
-# fails the sync (a Job's template is immutable) nor starts another run.
+# A Job's template is immutable, and ArgoCD's server-side diff dry-runs it,
+# so a template change fails the whole sync. `import.image` pins the Job's
+# image apart from the connector's, so a release does not change the Job.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -546,7 +546,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: import
-          image: {{ include "factory.connectorImage" . | quote }}
+          image: {{ $d.import.image | default (include "factory.connectorImage" .) | quote }}
           imagePullPolicy: {{ .Values.connector.image.pullPolicy }}
           command: [/usr/local/bin/discord-bridge, import]
           env:
