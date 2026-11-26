@@ -475,7 +475,7 @@ use_repo(oci, "custom_crane_regctl_toolchains")
 
 oci.pull(
     name = "factory_codex_upstream",
-    digest = "sha256:51d92a9c9b5e819325e89491a80678539fc60dc7713a6e4e4b150ff9adc0a3cb",
+    digest = "sha256:b91837a603b7a69c92d4f9f463969ca0beea8b6f331462340ffee450a4ad5083",
     image = "ghcr.io/jomcgi-org/kagent/codex-harness",
     platforms = ["linux/amd64"],
 )
@@ -517,7 +517,7 @@ private_oci_layer(
 # projects/factory/deploy/values.yaml; harness_image_test checks it.
 oci.pull(
     name = "codex_harness",
-    digest = "sha256:51d92a9c9b5e819325e89491a80678539fc60dc7713a6e4e4b150ff9adc0a3cb",
+    digest = "sha256:b91837a603b7a69c92d4f9f463969ca0beea8b6f331462340ffee450a4ad5083",
     image = "ghcr.io/jomcgi-org/kagent/codex-harness",
     platforms = ["linux/amd64"],
 )

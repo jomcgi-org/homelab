@@ -76,6 +76,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              hermes:
+                description: |-
+                  HermesHarness selects the Hermes Agent runtime adapter. Kagent publishes no
+                  built-in Hermes image, so workload.image must name one that contains Hermes
+                  Agent and the kagent-hermes adapter.
+                type: object
               kagent:
                 description: KagentHarness configures the kagent runtime adapter.
                 properties:
@@ -227,7 +233,7 @@ spec:
                   rule: self.workerPoolRef.name.size() > 0
               workload:
                 description: Workload overrides the built-in runtime image and its
-                  command. BYO requires it.
+                  command. BYO and Hermes require it.
                 properties:
                   args:
                     description: Args overrides the image command arguments when set.
@@ -243,7 +249,7 @@ spec:
                     type: array
                   image:
                     description: |-
-                      Image overrides the release's built-in runtime image. BYO requires an image.
+                      Image overrides the release's built-in runtime image. BYO and Hermes require an image.
                       When set, it must be an OCI image reference pinned by sha256 digest.
                     pattern: ^[^[:space:]@]+@sha256:[a-f0-9]{64}$
                     type: string
@@ -257,9 +263,11 @@ spec:
                 && size(self.workload.command) > 0)'
             - message: BYO harnesses must specify workload.image
               rule: '!has(self.byo) || (has(self.workload) && has(self.workload.image))'
-            - message: exactly one of the fields in [kagent codex claude byo] must
-                be set
-              rule: (has(self.kagent)?1:0)+(has(self.codex)?1:0)+(has(self.claude)?1:0)+(has(self.byo)?1:0)
+            - message: Hermes harnesses must specify workload.image
+              rule: '!has(self.hermes) || (has(self.workload) && has(self.workload.image))'
+            - message: exactly one of the fields in [kagent codex claude hermes byo]
+                must be set
+              rule: (has(self.kagent)?1:0)+(has(self.codex)?1:0)+(has(self.claude)?1:0)+(has(self.hermes)?1:0)+(has(self.byo)?1:0)
                 == 1
         required:
         - spec
