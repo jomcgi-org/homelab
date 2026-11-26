@@ -7,7 +7,9 @@ package adapter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -144,7 +146,9 @@ func RenderHindsightConfig() ([]byte, error) {
 }
 
 // WriteHome writes the rendered configuration into home. It replaces files
-// from an earlier start, so values in git own the configuration.
+// from an earlier start, so values in git own the configuration. It also
+// removes $HERMES_HOME/.env: Hermes loads it over the process environment,
+// so a durable file could re-enable what the environment allowlist drops.
 func WriteHome(home string, s Settings) error {
 	cfg, err := RenderConfig(s)
 	if err != nil {
@@ -156,6 +160,9 @@ func WriteHome(home string, s Settings) error {
 	}
 	if err := os.MkdirAll(filepath.Join(home, "hindsight"), 0o700); err != nil {
 		return err
+	}
+	if err := os.Remove(filepath.Join(home, ".env")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("hermes: remove %s/.env: %w", home, err)
 	}
 	if err := writeFile(filepath.Join(home, "config.yaml"), cfg); err != nil {
 		return err

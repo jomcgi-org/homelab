@@ -349,3 +349,48 @@ func TestNewKeyIsLongEnoughForHermes(t *testing.T) {
 		t.Fatalf("key %q (%v)", k, err)
 	}
 }
+
+func TestWriteHomeRemovesADurableEnvFile(t *testing.T) {
+	home := t.TempDir()
+	env := filepath.Join(home, ".env")
+	if err := os.WriteFile(env, []byte("HERMES_YOLO_MODE=1\nAPI_SERVER_HOST=0.0.0.0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteHome(home, Settings{Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(env); !os.IsNotExist(err) {
+		t.Fatalf(".env still exists: %v", err)
+	}
+	// A .env that cannot be removed stops the start.
+	if err := os.MkdirAll(filepath.Join(env, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteHome(home, Settings{Model: "m"}); err == nil {
+		t.Fatal("WriteHome started with a .env it could not remove")
+	}
+}
+
+func TestCanceledWaitingRequestMakesNoHermesCall(t *testing.T) {
+	hermes := &fakeHermes{reply: completed}
+	hs := httptest.NewServer(hermes)
+	t.Cleanup(hs.Close)
+	h := &Handler{Hermes: &Client{BaseURL: hs.URL, Key: testKey}}
+	h.once.Do(func() { h.turn = make(chan struct{}, 1) })
+	h.turn <- struct{}{} // Another turn holds the slot.
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan *rpcError, 1)
+	go func() {
+		_, rpcErr := h.send(ctx, json.RawMessage(`{"message":{"messageId":"m","contextId":"c","role":"ROLE_USER","parts":[{"text":"hi"}]}}`))
+		done <- rpcErr
+	}()
+	cancel()
+	if rpcErr := <-done; rpcErr == nil || rpcErr.Code != codeInternal {
+		t.Fatalf("rpc error = %+v, want a canceled request", rpcErr)
+	}
+	<-h.turn // The other turn ends.
+	if n := len(hermes.Calls()); n != 0 {
+		t.Fatalf("calls = %d, want 0", n)
+	}
+}
