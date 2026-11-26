@@ -609,6 +609,9 @@ discord:
   import:
     enabled: false
     runId: "1"
+    # The image the import Job runs. Empty uses the connector image; set a
+    # fixed digest while a Job is kept, or each release fails the sync.
+    image: ""
     # Documents one run retains (one per channel-day), which bounds its
     # spend; the next runId continues.
     maxDocuments: 500

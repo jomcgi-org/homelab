@@ -403,7 +403,10 @@ discord:
   # 2026-11-25). A new runId continues where the last one stopped.
   import:
     enabled: true
-    runId: "2"
+    runId: "3"
+    # The connector build of #8725 (retain retries). A fixed digest keeps the
+    # kept Job's template the same across releases.
+    image: ghcr.io/jomcgi/homelab/projects/factory/connector@sha256:a419c71123c3144a03b66034ea3fed139087bd2f9ae13ac7ddcdd1f6b62393aa # ratchet-allow: image-digest (the import Job must not follow the connector's digest; bump it by PR)
   # Joe's operator session (HOME-314 step 1): a persistent session per thread
   # under #factory in the homelab server, for Joe's messages only. His user ID
   # is the `operator-user-id` field of the bot's 1Password item.
