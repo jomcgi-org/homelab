@@ -296,3 +296,99 @@ func TestThreadsListEveryParentKind(t *testing.T) {
 		t.Error("private threads are not imported")
 	}
 }
+
+// flakyDocs fails the first retains of each document, as a slow Hindsight
+// does, and can store the document anyway (a client timeout that the server
+// finished).
+type flakyDocs struct {
+	fakeDocs
+	failures    int
+	err         error
+	storeAnyway bool
+	calls       map[string]int
+}
+
+func (f *flakyDocs) RetainDocument(ctx context.Context, g string, item RetainItem) error {
+	f.mu.Lock()
+	if f.calls == nil {
+		f.calls = map[string]int{}
+	}
+	f.calls[item.DocumentID]++
+	n := f.calls[item.DocumentID]
+	f.mu.Unlock()
+	if n <= f.failures {
+		if f.storeAnyway {
+			_ = f.fakeDocs.RetainDocument(ctx, g, item)
+		}
+		return f.err
+	}
+	return f.fakeDocs.RetainDocument(ctx, g, item)
+}
+
+func TestImportRetriesTransientRetainFailures(t *testing.T) {
+	timeout := fmt.Errorf("Post: %w", context.DeadlineExceeded)
+	cases := []struct {
+		name      string
+		docs      *flakyDocs
+		retries   int
+		wantErr   bool
+		wantCalls int
+	}{
+		{"timeout then success", &flakyDocs{failures: 2, err: timeout}, 4, false, 3},
+		{"server finished the timed-out retain", &flakyDocs{failures: 1, err: timeout, storeAnyway: true}, 4, false, 1},
+		{"5xx then success", &flakyDocs{failures: 1, err: &StatusError{Status: 503}}, 4, false, 2},
+		{"retries run out", &flakyDocs{failures: 9, err: timeout}, 2, true, 3},
+		{"4xx is not retried", &flakyDocs{failures: 1, err: &StatusError{Status: 400}}, 4, true, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &fakeHistory{
+				channels: map[string][]Channel{"g1": {{ID: "c1", Name: "general"}}},
+				messages: map[string][]HistoryMessage{"c1": {msg("m1", "ann", day(15, 9), "hello")}},
+			}
+			im := newImporter(src, nil, map[string]Guild{"g1": {History: true}})
+			im.Store = tc.docs
+			im.Workers = 1
+			im.RetainRetries = tc.retries
+			im.Backoff = time.Second
+			var waits []time.Duration
+			im.Sleep = func(_ context.Context, d time.Duration) error { waits = append(waits, d); return nil }
+			_, err := im.Run(context.Background())
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want error %v", err, tc.wantErr)
+			}
+			id := HistoryDocumentID("c1", day(15, 0))
+			if got := tc.docs.calls[id]; got != tc.wantCalls {
+				t.Errorf("retain calls = %d, want %d", got, tc.wantCalls)
+			}
+			for i, w := range waits {
+				if want := time.Second << i; w != want {
+					t.Errorf("wait %d = %v, want %v", i, w, want)
+				}
+			}
+			if !tc.wantErr && !slices.Contains(tc.docs.ids(), "g1/"+id) {
+				t.Errorf("document %s not stored: %v", id, tc.docs.ids())
+			}
+		})
+	}
+}
+
+func TestImportStopsRetryingWhenCancelled(t *testing.T) {
+	src := &fakeHistory{
+		channels: map[string][]Channel{"g1": {{ID: "c1", Name: "general"}}},
+		messages: map[string][]HistoryMessage{"c1": {msg("m1", "ann", day(15, 9), "hello")}},
+	}
+	docs := &flakyDocs{failures: 9, err: fmt.Errorf("Post: %w", context.DeadlineExceeded)}
+	im := newImporter(src, nil, map[string]Guild{"g1": {History: true}})
+	im.Store = docs
+	im.Workers = 1
+	im.RetainRetries = 4
+	ctx, cancel := context.WithCancel(context.Background())
+	im.Sleep = func(context.Context, time.Duration) error { cancel(); return context.Canceled }
+	if _, err := im.Run(ctx); err == nil {
+		t.Fatal("cancelled run returned no error")
+	}
+	if got := docs.calls[HistoryDocumentID("c1", day(15, 0))]; got != 1 {
+		t.Errorf("retain calls = %d, want 1", got)
+	}
+}
