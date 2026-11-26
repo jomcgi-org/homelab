@@ -1524,13 +1524,35 @@ def test_discord_import_runs_once_per_run_id_with_the_bridge_boundary() -> None:
     }
     assert pod["spec"]["automountServiceAccountToken"] is False
     assert job["spec"]["activeDeadlineSeconds"] == 21600
-    # Only a new runId starts a run: no sync option recreates the Job, and the
-    # Application ignores its /spec (package_test.py).
+    # Only a new runId starts a run: no sync option recreates the Job.
     assert "argocd.argoproj.io/sync-options" not in (
         job["metadata"].get("annotations") or {}
     )
     with pytest.raises(RuntimeError, match="discord.import needs discord.bridge"):
         _render(_DISCORD[:1] + _DISCORD[2:3] + ["discord.import.enabled=true"])
+
+
+def test_discord_import_job_is_the_same_in_every_release() -> None:
+    # HOME-836: a changed Job fails ArgoCD's server-side diff dry run and stops
+    # the whole sync, so a new connector digest must not change the import Job,
+    # and the Job carries no chart-version label.
+    base = _DISCORD + [
+        "discord.import.enabled=true",
+        "discord.import.image=example.com/import@sha256:" + "a" * 64,
+    ]
+    jobs = [
+        _in(
+            _render(base + [f"connector.image.digest=sha256:{d * 64}"]),
+            "Job",
+            "factory-discord",
+            "discord-import-1",
+        )
+        for d in "bc"
+    ]
+    assert jobs[0] == jobs[1]
+    assert "helm.sh/chart" not in jobs[0]["metadata"]["labels"]
+    (c,) = jobs[0]["spec"]["template"]["spec"]["containers"]
+    assert c["image"] == "example.com/import@sha256:" + "a" * 64
 
 
 _OPERATOR = [
