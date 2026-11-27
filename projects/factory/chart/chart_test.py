@@ -2144,11 +2144,14 @@ def test_discord_artifacts_admit_only_routed_actors_through_the_gateway() -> Non
     for d in docs:
         if d["kind"] == "Deployment" and d["metadata"]["name"] != "bosun-artifacts":
             assert "bosun-artifacts-s3" not in str(d)
-    with pytest.raises(RuntimeError, match="needs a routed discord.serverAgents"):
-        _render(
-            base
-            + [
-                "discord.artifacts.enabled=true",
-                "discord.serverAgents.homelab.route=false",
-            ]
-        )
+    # With no routed agent no actor could call it: nothing renders.
+    unrouted = _render(
+        base
+        + [
+            "discord.artifacts.enabled=true",
+            "discord.serverAgents.homelab.route=false",
+        ]
+    )
+    assert not [d for d in unrouted if d["metadata"]["name"] == "bosun-artifacts"]
+    deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    assert deploy["discord"]["artifacts"]["enabled"] is True

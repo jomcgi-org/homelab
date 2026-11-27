@@ -449,6 +449,9 @@ discord:
       # One session per channel (Joe, 2026-11-27): up to 3 channels answer
       # at once, one worker each; idle sessions suspend.
       concurrency: 3
+  # Bosun's artifact tools at artifact.jomcgi.dev (HOME-917).
+  artifacts:
+    enabled: true
 
 semgrepSync:
   enabled: false

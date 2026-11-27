@@ -22,10 +22,9 @@ garage-init) is in this pod only; the actor holds none.
 {{- $atespaces = append $atespaces (printf "discord-%s" $a.guild) }}
 {{- end }}
 {{- end }}
-{{- if not $atespaces }}
-{{- fail "discord.artifacts needs a routed discord.serverAgents entry: no actor could call it" }}
-{{- end }}
 {{- $servers := keys ($d.bridge.policy.guilds | default dict) | sortAlpha }}
+{{- /* With no routed server agent no actor could call it, so it renders nothing. */}}
+{{- if $atespaces }}
 ---
 apiVersion: v1
 kind: Service
@@ -171,5 +170,6 @@ spec:
         - ports:
             - port: "8443"
               protocol: TCP
+{{- end }}
 {{- end }}
 {{- end }}
