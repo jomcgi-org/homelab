@@ -20,7 +20,7 @@ import (
 // the wait between passes. BACKFILL_RATE bounds the backfill's Discord reads
 // and Hindsight calls per second, which it shares with live turns and
 // ingest.
-func newBackfill(log *slog.Logger, policy discord.Config, rest *discord.REST, hindsightURL string, key func() (string, error), reg prometheus.Registerer) (*discord.Backfill, error) {
+func newBackfill(log *slog.Logger, policy discord.Config, rest *discord.REST, places *discord.Places, hindsightURL string, key func() (string, error), reg prometheus.Registerer) (*discord.Backfill, error) {
 	if os.Getenv("BACKFILL_ENABLED") != "true" {
 		return nil, nil
 	}
@@ -44,6 +44,7 @@ func newBackfill(log *slog.Logger, policy discord.Config, rest *discord.REST, hi
 	return &discord.Backfill{
 		Importer: &discord.Importer{
 			Source: rest,
+			Places: places,
 			// A synchronous retain runs the LLM's extraction, which retries
 			// on its own; one call took over 3 minutes on 2026-11-25.
 			Store: &discord.Hindsight{

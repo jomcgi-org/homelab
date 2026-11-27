@@ -44,6 +44,10 @@ type Places struct {
 type placeGuild struct {
 	server   Server
 	channels map[string]Channel
+	// roles maps a role ID to its name; users holds the users seen in the
+	// server's messages (Learn).
+	roles map[string]string
+	users map[string]User
 }
 
 type placeChannel struct {
@@ -64,6 +68,7 @@ func (p *Places) Apply(event string, data json.RawMessage) {
 			Unavailable bool      `json:"unavailable"`
 			Channels    []Channel `json:"channels"`
 			Threads     []Channel `json:"threads"`
+			Roles       []Role    `json:"roles"`
 		}
 		if json.Unmarshal(data, &g) != nil || g.ID == "" || g.Unavailable || !p.keep(g.ID) {
 			return
@@ -75,6 +80,10 @@ func (p *Places) Apply(event string, data json.RawMessage) {
 		pg.server.Description = ""
 		if g.Description != nil {
 			pg.server.Description = *g.Description
+		}
+		pg.roles = map[string]string{}
+		for _, r := range g.Roles {
+			pg.roles[r.ID] = r.Name
 		}
 		if event == "GUILD_UPDATE" {
 			return // No member count and no channels.
@@ -95,6 +104,29 @@ func (p *Places) Apply(event string, data json.RawMessage) {
 		p.mu.Lock()
 		delete(p.guilds, g.ID)
 		p.mu.Unlock()
+	case "GUILD_ROLE_CREATE", "GUILD_ROLE_UPDATE", "GUILD_ROLE_DELETE":
+		var e struct {
+			GuildID string `json:"guild_id"`
+			Role    Role   `json:"role"`
+			RoleID  string `json:"role_id"`
+		}
+		if json.Unmarshal(data, &e) != nil || e.GuildID == "" {
+			return
+		}
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		pg, ok := p.guilds[e.GuildID]
+		if !ok {
+			return
+		}
+		if pg.roles == nil {
+			pg.roles = map[string]string{}
+		}
+		if event == "GUILD_ROLE_DELETE" {
+			delete(pg.roles, e.RoleID)
+		} else if e.Role.ID != "" && (len(pg.roles) < maxPlaceChannels || pg.roles[e.Role.ID] != "") {
+			pg.roles[e.Role.ID] = e.Role.Name
+		}
 	case "CHANNEL_CREATE", "CHANNEL_UPDATE", "THREAD_CREATE", "THREAD_UPDATE", "CHANNEL_DELETE", "THREAD_DELETE":
 		var c placeChannel
 		if json.Unmarshal(data, &c) != nil || c.ID == "" || c.GuildID == "" {

@@ -183,7 +183,7 @@ func TestATaggedTurnGetsRecentLinesWithoutWaitingAndRetainsOnlyTheReply(t *testi
 	agent.mu.Lock()
 	prompt := agent.prompts[0]
 	agent.mu.Unlock()
-	if !strings.Contains(prompt, `"recent_messages":["ann (2026-11-17T12:00:00Z): the code word is heron"]`) {
+	if !strings.Contains(prompt, `"channel_messages_since_your_last_turn":[{"text":"ann (2026-11-17T12:00:00Z): the code word is heron"}]`) {
 		t.Errorf("prompt = %s", prompt)
 	}
 	if err := b.Ingest.Flush(context.Background(), guild, channel); err != nil {

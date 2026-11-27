@@ -224,7 +224,7 @@ func (b *Bridge) operatorTurn(ctx context.Context, m Message) {
 	if s.Fresh {
 		earlier = b.restore(ctx, m)
 	}
-	answer, err := b.Operator.Turn(ctx, m.ChannelID, m.ID, OperatorPrompt(m, b.stripMention(m.Content), earlier))
+	answer, err := b.Operator.Turn(ctx, m.ChannelID, m.ID, OperatorPrompt(m, b.Places.Resolve(m.GuildID, b.stripMention(m.Content), m.Mentions), earlier))
 	if err != nil {
 		l.WarnContext(ctx, "operator turn failed", "error", err)
 		b.reply(ctx, m, ReplyFailed)
@@ -257,7 +257,7 @@ func (b *Bridge) restore(ctx context.Context, m Message) []OperatorLine {
 		if (h.ChannelID != "" && h.ChannelID != m.ChannelID) || !b.fromOperator(h.Message) {
 			continue
 		}
-		text := b.stripMention(h.Content)
+		text := b.Places.Resolve(m.GuildID, b.stripMention(h.Content), h.Mentions)
 		if text == "" {
 			continue
 		}
