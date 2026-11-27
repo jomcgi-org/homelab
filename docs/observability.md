@@ -136,6 +136,12 @@ A node-level log agent (a DaemonSet in the same chart, enabled on the hub by
 `k8s-logs` dataset, using the same ingest key as the gateway. It does not pass
 through the gateway, so it opens no OTLP logs path for workloads.
 
+The Honeycomb environment makes one dataset per `service.name`, up to 100
+datasets. So every pod log line gets the logs dataset name as its
+`service.name`, and all pod logs land in one dataset. Group by
+`k8s.workload.name` (the app label, else the owning workload, else the
+container) to split them by workload.
+
 Levels come from JSON `level`/`severity`/`levelname` fields, a leading level
 token on plain-text lines (Python, zap console, Envoy, logfmt), or, for lines
 with no level at all, an error/traceback heuristic whose matches are marked
