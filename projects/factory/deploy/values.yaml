@@ -483,6 +483,15 @@ discord:
         - name: scotland
           url: https://scotland-mcp.jomcgi.dev/mcp
           tools: [plan, check, aurora, light]
+        # Bosun's artifacts (HOME-917, templates/discord-artifacts.yaml):
+        # publishes to the Joe-only artifact.jomcgi.dev. The cluster domain
+        # is required: Substrate resolves actor destinations as absolute
+        # names. No Secret: the gateway injects an actor JWT.
+        - name: artifacts
+          url: http://bosun-artifacts.factory-discord.svc.cluster.local:8080/mcp
+          actorJwt:
+            audiences: [bosun-artifacts]
+          tools: [put, list, delete]
   # Bosun's artifact tools at artifact.jomcgi.dev (HOME-917).
   artifacts:
     enabled: true
