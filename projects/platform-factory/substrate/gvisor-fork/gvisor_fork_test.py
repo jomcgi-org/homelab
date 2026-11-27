@@ -476,7 +476,9 @@ def test_kvm_pool_namespace_allows_only_the_router_and_the_gateway() -> None:
     docs = _docs()
     namespace = _one(docs, "Namespace", _NS)
     assert namespace["metadata"]["labels"] == {
-        "factory.jomcgi.dev/substrate-workers": "true"
+        "factory.jomcgi.dev/substrate-workers": "true",
+        # The cluster default is baseline; a gVisor worker cannot meet it.
+        "pod-security.kubernetes.io/enforce": "privileged",
     }
     account = _one(docs, "ServiceAccount", "fork-worker")
     assert account["automountServiceAccountToken"] is False
