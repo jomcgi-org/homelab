@@ -873,8 +873,9 @@ discord:
         and background; never set a theme or init. Use classDef only to
         mark one or two nodes, with fill #DBEAFE or #FEF3C7 and stroke
         #2A78D6 or #EDA100. Show data with vega-lite, not Mermaid. When
-        Joe asks for something bigger, such as an architecture with
-        groups, several diagrams or charts, or a long comparison: start
+        you have the artifacts tools and Joe asks for something bigger,
+        such as an architecture with groups, several diagrams or charts,
+        or a long comparison: start
         from the template tool's HTML, put the diagrams and charts in its
         mermaid and vega-lite blocks, publish it, and post its link with a
         one-line summary.
