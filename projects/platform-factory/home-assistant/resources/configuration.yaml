@@ -6,3 +6,15 @@
 # .storage/http and reverts a YAML import after 5 minutes unless someone
 # promotes it in the UI. The init container writes http-storage.json there.
 default_config:
+
+# The family dashboard. Every signed-in user sees it; only admins see the
+# rest of the UI. The file is mounted read-only from heating-dashboard.yaml.
+lovelace:
+  dashboards:
+    family-heating:
+      mode: yaml
+      filename: dashboards/heating.yaml
+      title: Heating
+      icon: mdi:radiator
+      show_in_sidebar: true
+      require_admin: false

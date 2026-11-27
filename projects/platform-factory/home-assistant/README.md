@@ -27,6 +27,30 @@ flowchart LR
 The Zigbee2MQTT web UI has no route. Reach it with
 `kubectl -n home-assistant port-forward deploy/zigbee2mqtt 8080`.
 
+## Family access
+
+The **Heating** dashboard (`resources/heating-dashboard.yaml`) has one dial per
+room and Comfort, Night and Away buttons for the whole house. Change it in
+git; the UI shows it read-only.
+
+```mermaid
+flowchart LR
+  P[Phone browser] --> A[Authentik: household group + MFA]
+  A --> E[Edge: home.jomcgi.dev only]
+  E --> H[Home Assistant login: non-admin user]
+  H --> D[Heating dashboard]
+```
+
+To add a person:
+
+1. In Authentik, add their account to the `household` group. The edge admits
+   that group on home.jomcgi.dev only.
+2. In Home Assistant, go to Settings → People → Add person. Turn on
+   **Allow login** and leave **Administrator** off.
+3. On their phone, open home.jomcgi.dev, sign in to both, open **Heating** and
+   add it to the home screen. Profile → **Dashboard** sets it as their
+   default.
+
 ## HTTP settings
 
 Home Assistant keeps its HTTP settings in `/config/.storage/http`. The

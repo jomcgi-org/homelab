@@ -6,11 +6,21 @@ metadata:
       The factory home cluster's OIDC clients: Envoy Gateway's gateway-wide
       policy in front of every factory.jomcgi.dev route, and ArgoCD's own login
       behind it. Both admit factory-operators and authentik Admins, and every sign-in
-      needs a second factor.
+      needs a second factor. The edge also admits household, which the edge
+      authorizes on home.jomcgi.dev only.
 entries:
   - model: authentik_core.group
     identifiers:
       name: factory-operators
+    attrs:
+      is_superuser: false
+
+  # Family members who use Home Assistant. Membership is added by hand in the
+  # authentik UI. The edge-app binding lets them sign in; the edge allows the
+  # group on home.jomcgi.dev only, and every other route denies it.
+  - model: authentik_core.group
+    identifiers:
+      name: household
     attrs:
       is_superuser: false
 
@@ -170,6 +180,15 @@ entries:
       target: !KeyOf edge-app
       group: !Find [authentik_core.group, [name, factory-operators]]
       order: 5
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf edge-app
+      group: !Find [authentik_core.group, [name, household]]
+      order: 10
     attrs:
       enabled: true
       negate: false

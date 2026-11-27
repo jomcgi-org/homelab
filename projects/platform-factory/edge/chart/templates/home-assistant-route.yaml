@@ -38,6 +38,6 @@ spec:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: home-assistant
-  {{- include "edge.operatorAuthorization" (dict "Values" .Values "adminOnly" true) | nindent 2 }}
+  {{- include "edge.operatorAuthorization" (dict "Values" .Values "adminOnly" true "extraGroups" (list "household")) | nindent 2 }}
   oidc:
     {{- include "edge.oidc" . | nindent 4 }}

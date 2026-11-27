@@ -266,7 +266,7 @@ def test_edge_may_reference_only_the_kagent_ui(docs):
     }
 
 
-def test_home_assistant_requires_admin_group_on_the_entire_host(docs):
+def test_home_assistant_admits_admins_and_household_on_the_entire_host(docs):
     route = docs["HTTPRoute", "home-assistant"]["spec"]
     assert route["hostnames"] == ["home.jomcgi.dev"]
     ((backend,),) = [rule["backendRefs"] for rule in route["rules"]]
@@ -289,10 +289,20 @@ def test_home_assistant_requires_admin_group_on_the_entire_host(docs):
     ]
     assert policy["oidc"] == gateway["oidc"]
     assert policy["authorization"]["defaultAction"] == "Deny"
-    (rule,) = policy["authorization"]["rules"]
-    assert rule["principal"]["jwt"]["claims"] == [
+    admins, household = policy["authorization"]["rules"]
+    assert admins["principal"]["jwt"]["claims"] == [
         {"name": "groups", "valueType": "StringArray", "values": ["authentik Admins"]}
     ]
+    assert household["action"] == "Allow"
+    assert household["principal"]["jwt"]["claims"] == [
+        {"name": "groups", "valueType": "StringArray", "values": ["household"]}
+    ]
+
+
+def test_household_is_admitted_on_home_assistant_only(docs):
+    for (kind, name), doc in docs.items():
+        if kind == "SecurityPolicy" and name != "home-assistant-authentik-oidc":
+            assert "household" not in str(doc.get("spec", {}))
 
 
 def test_t3_requires_admin_group_on_the_entire_host(docs):

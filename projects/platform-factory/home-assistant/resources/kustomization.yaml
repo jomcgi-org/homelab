@@ -11,6 +11,7 @@ configMapGenerator:
     files:
       - configuration.yaml
       - http-storage.json
+      - heating-dashboard.yaml
   - name: mosquitto
     files:
       - mosquitto.conf
