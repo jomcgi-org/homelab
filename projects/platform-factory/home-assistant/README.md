@@ -46,6 +46,8 @@ Home Assistant signs people in through Authentik with the
 integration. The `auth-oidc` init container installs a pinned release. The
 first sign-in creates the person's HA user: `authentik Admins` become admins,
 `household` become users.
+HA sets the role only at that first sign-in. To change it later, edit the
+user in Settings → People.
 
 To add a person:
 
