@@ -1,7 +1,7 @@
 # The init container copies this file to /app/data only when none is there.
 # Zigbee2MQTT then owns the file: it writes the generated network key and
 # device names into it. Change a live setting in its web UI, not here.
-version: 4
+version: 5
 homeassistant:
   enabled: true
 frontend:
