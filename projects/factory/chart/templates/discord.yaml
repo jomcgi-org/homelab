@@ -399,6 +399,22 @@ spec:
             - name: BACKFILL_INCLUDE_BOTS
               value: {{ $d.backfill.includeBots | quote }}
             {{- end }}
+            {{- if $d.archive.enabled }}
+            # The verbatim message archive (HOME-909). Optional: until
+            # factory-db-setup fills the Secret, the bridge runs without it.
+            - name: ARCHIVE_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: discord-archive-db
+                  key: DATABASE_URL
+                  optional: true
+            - name: ARCHIVE_READER_ROLE
+              value: factory_discord_archive_reader
+            {{- with $d.archive.purge }}
+            - name: ARCHIVE_PURGE
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- end }}
             {{- if $o.enabled }}
             - name: DISCORD_OPERATOR_AGENT
               value: {{ printf "%s/%s" $o.namespace $o.name | quote }}
@@ -490,7 +506,8 @@ spec:
             name: {{ $name }}-policy
 {{- if .Values.networkPolicy.cilium }}
 ---
-# Egress to the renderer, Discord, hindsight-discord and kagent's controller.
+# Egress to the renderer, Discord, hindsight-discord, factory-db (the message
+# archive) and kagent's controller.
 # Nothing connects in, except the connector to /notify when connector.notify
 # is on. DNS is the cluster baseline's.
 apiVersion: cilium.io/v2
@@ -544,6 +561,17 @@ spec:
         - ports:
             - port: "8888"
               protocol: TCP
+    {{- if $d.archive.enabled }}
+    # The message archive in factory-db (HOME-909).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-db
+            cnpg.io/cluster: factory-db
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    {{- end }}
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}

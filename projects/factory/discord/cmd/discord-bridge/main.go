@@ -4,6 +4,8 @@
 // sets `ingest`, it also stores every human message (HOME-833). With
 // BACKFILL_ENABLED, it also replays the history of each server with
 // `history: true` into its bank in the background (HOME-164, HOME-836).
+// With ARCHIVE_DATABASE_URL, it also keeps the verbatim archive of every
+// message for Bosun's history tools (HOME-909).
 package main
 
 import (
@@ -153,12 +155,37 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// The verbatim archive (HOME-909) outlives the gateway, as the ingestor
+	// does, so the last events are written.
+	archiver, archiveDB, err := newArchive(log, policy, bridge.Places, reg)
+	if err != nil {
+		return err
+	}
+	archiveDone := make(chan struct{})
+	stopArchive := func() {}
+	if archiver != nil {
+		defer archiveDB.Close()
+		if backfill != nil {
+			backfill.Importer.Archive = archiver
+		}
+		actx, cancel := context.WithCancel(context.Background())
+		stopArchive = cancel
+		go func() {
+			defer close(archiveDone)
+			runArchive(actx, log, archiver, archiveDB, policy)
+		}()
+	} else {
+		close(archiveDone)
+	}
 	// The backfill starts once the gateway is ready, with Bosun's user ID
 	// from READY. It stops with ctx.
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 	onReady := func(u discord.User) {
 		bridge.SetBot(u)
+		if archiver != nil {
+			archiver.SetBot(u)
+		}
 		readyOnce.Do(func() {
 			if backfill != nil {
 				backfill.Importer.BotID = u.ID
@@ -199,14 +226,19 @@ func run(log *slog.Logger) error {
 		Log:       log,
 		Intents:   intents,
 	}
+	if archiver != nil {
+		gateway.OnArchive = archiver.Event
+	}
 	log.Info("discord bridge starting", "guilds", len(policy.Guilds), "agent", cfg.agent, "intents", intents,
-		"backfill", backfill != nil)
+		"backfill", backfill != nil, "archive", archiver != nil)
 	err = gateway.Run(ctx)
 	stop()
 	bridge.Wait()
 	<-backfillDone
 	stopIngest()
 	<-ingestDone
+	stopArchive()
+	<-archiveDone
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}

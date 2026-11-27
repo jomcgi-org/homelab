@@ -74,13 +74,28 @@ LOGINS = [
         "factory",
         "factory-leaderboard-db",
     ),
+    # Bosun's message archive (HOME-909): the bridge's login and
+    # bosun-history's SELECT-only login.
+    (
+        "factory-db-discord-archive-login",
+        "factory_discord_archive",
+        "factory-discord",
+        "discord-archive-db",
+    ),
+    (
+        "factory-db-discord-archive-reader-login",
+        "factory_discord_archive_reader",
+        "factory-discord",
+        "discord-archive-reader-db",
+    ),
 ]
-# These logins share the connector database and own no database.
+# These logins share another login's database and own none.
 DATABASES = {
     "factory_broker_accounting": "factory_connector",
     "factory_storyboard": "factory_connector",
     "factory_reaper": "factory_connector",
     "factory_leaderboard": "factory_connector",
+    "factory_discord_archive_reader": "factory_discord_archive",
 }
 
 

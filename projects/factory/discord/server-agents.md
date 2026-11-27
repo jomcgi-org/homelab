@@ -409,6 +409,110 @@ HOME-909 sets one visual style for Bosun. These parts hold it:
 | The prompt's "Visual style" lines: one story per diagram, about 10 nodes at most, one direction, short labels, no emoji in Mermaid, Vega-Lite for data, lists over tables, the artifact template for rich pages | `chart/values.yaml` `systemPrompt` |
 | The prompt's "Accuracy" line: no invented motives, quotes or facts about real people; a joke must be obvious | `chart/values.yaml` `systemPrompt` |
 
+### Message history (HOME-909)
+
+Hindsight returns extracted memories by similarity. It cannot find an exact
+message or read the messages around one. So the bridge also keeps a
+verbatim archive of every conversation message in the allowlisted servers,
+and `bosun-history` gives Bosun three read tools on it.
+
+```mermaid
+flowchart LR
+  D["Discord gateway"] -- "MESSAGE_CREATE / UPDATE / DELETE" --> B["discord-bridge"]
+  H["history pages (backfill)"] --> B
+  B -- "owner login: upsert, edit, delete, reconcile" --> P[("factory-db: factory_discord_archive")]
+  A["Hermes actor"] -- "MCP history_*" --> G["egress gateway"]
+  G -- "actor JWT, aud bosun-history" --> M["bosun-history (factory-discord)"]
+  M -- "SELECT-only login" --> P
+```
+
+**What is stored.** One row per message (`archive/store.go`,
+`discord_message`): server, channel and channel name, thread parent,
+message ID, author ID and name (`username (display name)`), send time,
+edit time, the replied-to message ID, a Bosun flag and the text. The text
+has mentions named as in ingest (`mentions.go`) and placeholders such as
+`[attachment: plan.pdf]`, `[embed: title]`, `[sticker: name]`. No file,
+image or embed body is stored. A full-text index covers the text with the
+`english` and `simple` configurations, and the author name.
+
+**What is not stored.** Joe's operator channels and their threads, other
+bots' and webhooks' messages (unless `backfill.includeBots`), system
+messages, and servers off `bridge.policy.guilds`.
+
+**Writes** (`archive.go`):
+
+- Live: each `MESSAGE_CREATE` of a server with `ingest`, Bosun's replies
+  included. Events go through a bounded queue (2,048) so the gateway never
+  waits. A full queue drops the event and counts it.
+- Edit: a `MESSAGE_UPDATE` with `edited_timestamp` replaces the text. An
+  older edit never replaces a newer one.
+- Delete: `MESSAGE_DELETE` and `MESSAGE_DELETE_BULK` mark the row deleted
+  and clear its text and reply link. A delete of a message the archive does
+  not hold yet leaves a tombstone, so a later history page cannot add it.
+- Backfill: each history page the backfill reads (every pass, every
+  server with `history`) is upserted by message ID, so a pass is idempotent
+  and resumes where a stopped one ended. Archived messages in the page's ID
+  range that Discord did not return are marked deleted. Thus a create or a
+  delete that the live path dropped is repaired on the next pass (6 h).
+
+**Read tools** (`archive/read.go`, `archive/mcp.go`):
+
+| Tool | Arguments | Answer |
+| --- | --- | --- |
+| `history_search` | `server`, `query` (web search syntax), `author`, `channel` (ID includes its threads), `from`, `to`, `limit` (20, at most 50) | best match first with a query, else newest |
+| `history_around` | `server`, `message_id`, `before`, `after` (10, at most 25 each) | the channel's messages around one, oldest first |
+| `history_day` | `server`, `channel`, `date` (UTC), `after`, `limit` (100, at most 200) | one channel's day, oldest first; `next_after` continues it |
+
+Each message has its ID, channel, author, time, text and jump link. Text is
+cut at 2,000 bytes per message and 30,000 per answer. Every answer carries
+a note that the text is untrusted data. The log names the tool, server and
+count, never the query or the text.
+
+| Control | Where |
+| --- | --- |
+| Only routed server agents' actors call the tools: actor JWT with audience `bosun-history`, atespace in `ACTOR_JWT_ATESPACES` | `archive/mcp.go`, broker's `actorjwt` |
+| A call reads one server, which must be in `bridge.policy.guilds` (`HISTORY_SERVERS`) | `archive/read.go` |
+| The reader login `factory_discord_archive_reader` may only `SELECT` the table; the bridge's login owns it | factory-db `cluster.yaml`, `archive.Migrate` |
+| Only the egress gateway reaches the service; only the bridge and the service reach factory-db from `factory-discord` | Cilium policies |
+
+The trust limit is the one artifacts have: the actor JWT names the homelab
+atespace for every turn and does not carry the server. The caller states
+the server, and the allowlist bounds it. Today Bosun answers Joe alone, so
+an answer from another server's archive goes to Joe. Before Bosun answers
+other people, the bridge must bind the server to the turn.
+
+**Retention and deletion.** Rows stay while the server is allowlisted.
+They stay in the cluster: factory-db on local disks, and its 14-day base
+backups and WAL in the in-cluster Garage bucket `factory-db-backups`. No
+tool or job exports them. To delete a server's archive, remove it from
+`bridge.policy.guilds`, add its ID to `discord.archive.purge` and deploy:
+the bridge deletes its rows at start and logs the count. The bridge never
+purges an allowlisted server. Backups keep the rows until they age out (14
+days). Turn the whole archive off with `discord.archive.enabled: false`;
+the rows stay until the database is dropped.
+
+**Wiring (not live).** The "Bosun Hermes: tools" work adds MCP servers to
+the server-agents template. Add this entry for the homelab agent:
+
+```yaml
+discord:
+  serverAgents:
+    homelab:
+      mcpServers:
+        - name: history
+          url: http://bosun-history.factory-discord.svc.cluster.local:8080/mcp
+          actorJwt:
+            audiences: [bosun-history]
+          tools: [history_search, history_around, history_day]
+```
+
+Add this line to Bosun's prompt, beside the memory guidance:
+
+> Message history: history_search, history_around and history_day read the
+> exact messages of this server; pass the server ID of the current message.
+> Use memories for what you know. Use history for exact quotes, dates, what
+> happened around a message, and to check a memory before you rely on it.
+
 ### Research (HOME-909)
 
 Bosun can research a public GitHub repository through an explorer agent

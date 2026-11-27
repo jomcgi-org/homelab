@@ -463,6 +463,9 @@ discord:
   # Bosun's artifact tools at artifact.jomcgi.dev (HOME-917).
   artifacts:
     enabled: true
+  # Bosun's verbatim message archive and history tools (HOME-909).
+  archive:
+    enabled: true
 
 semgrepSync:
   enabled: false

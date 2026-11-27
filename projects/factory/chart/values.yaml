@@ -851,6 +851,25 @@ discord:
         memory: 32Mi
       limits:
         memory: 128Mi
+  # Bosun's verbatim message archive (HOME-909, discord/archive): the bridge
+  # writes every conversation message of bridge.policy.guilds, Bosun's
+  # included, with edits and deletes, to factory-db's factory_discord_archive
+  # database; the backfill writes each history page it reads. bosun-history
+  # (templates/discord-history.yaml) serves the read tools to routed
+  # serverAgents' actors, with an actor JWT for audience bosun-history.
+  # purge lists servers whose rows the bridge deletes at start: a server
+  # removed from bridge.policy.guilds. Hermes wiring: discord/server-agents.md,
+  # "Message history".
+  archive:
+    enabled: false
+    purge: []
+    # bosun-history's.
+    resources:
+      requests:
+        cpu: 5m
+        memory: 24Mi
+      limits:
+        memory: 96Mi
   # The history backfill (HOME-164, HOME-836): the bridge replays the history
   # of each server whose policy entry has `history: true` into its bank, one
   # document per channel-day. It runs one pass after the gateway is ready,
