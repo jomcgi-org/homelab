@@ -1829,6 +1829,57 @@ def test_discord_server_agent_actor_is_reached_only_through_substrate() -> None:
     assert policy["egress"] == [{"toEndpoints": only("atenet-egress"), "toPorts": port}]
 
 
+def test_discord_server_agent_takes_its_server_turns_only_when_routed() -> None:
+    # HOME-909: route puts the server's Agent in the bridge policy and opens
+    # its A2A path and the persistent session calls; without route Bosun
+    # keeps the server.
+    bridge = [
+        "discord.agent.enabled=true",
+        "discord.bridge.enabled=true",
+        "discord.bridge.enforceAgentPath=true",
+        "string:discord.bridge.policy.guilds.1501965852042330302.ingest=true",
+    ]
+
+    def wiring(docs: list[dict[str, Any]]) -> tuple[dict, list]:
+        policy = _in(docs, "ConfigMap", "factory-discord", "discord-bridge-policy")
+        rules = _controller_egress(
+            _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")[
+                "spec"
+            ]
+        )["toPorts"][0]["rules"]["http"]
+        return yaml.safe_load(policy["data"]["policy.json"]), rules
+
+    sessions = {
+        "method": "POST",
+        "path": "^/kagent\\.api\\.v1\\.SessionService/(CreateSession|RevertSession)$",
+    }
+    agent = {"method": "POST", "path": f"^/agents/{_HOMELAB_NS}/homelab$"}
+    homelab = [
+        f"kagent.rbac.namespaces={{kagent,factory-r-homelab,factory-discord-agent,{_HOMELAB_NS}}}"
+    ]
+    parsed, rules = wiring(
+        _render(
+            _HOMELAB + homelab + bridge + ["discord.serverAgents.homelab.route=false"]
+        )
+    )
+    assert "serverAgents" not in parsed
+    assert agent not in rules and sessions not in rules
+    routed = _HOMELAB + homelab + bridge + ["discord.serverAgents.homelab.route=true"]
+    parsed, rules = wiring(_render(routed))
+    assert parsed["serverAgents"] == {"1501965852042330302": f"{_HOMELAB_NS}/homelab"}
+    assert agent in rules and sessions in rules
+    deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    assert deploy["discord"]["serverAgents"]["homelab"]["route"] is True
+    with pytest.raises(RuntimeError, match="in discord.bridge.policy.guilds"):
+        _render(
+            routed
+            + [
+                "kagent.rbac.namespaces={kagent,factory-r-homelab,factory-discord-agent,discord-999}",
+                "string:discord.serverAgents.homelab.guild=999",
+            ]
+        )
+
+
 def test_discord_server_agent_image_needs_the_published_digest() -> None:
     # The source chart has no digest. The Harness CRD admits only a digest
     # reference, which the published chart carries (helm_chart images;

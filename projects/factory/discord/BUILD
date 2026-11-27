@@ -38,6 +38,7 @@ go_test(
         "notification_test.go",
         "operator_test.go",
         "places_test.go",
+        "server_agents_test.go",
     ],
     embed = [":discord"],
     deps = [

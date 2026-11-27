@@ -203,6 +203,20 @@ spec:
 {{- if $o.enabled }}
 {{- $policy = merge (dict "operator" (dict "guild" $o.guild "channels" $o.channels)) (deepCopy $b.policy) }}
 {{- end }}
+{{- /* Each routed server agent answers its server's turns (HOME-909). */}}
+{{- $routed := dict }}
+{{- range $key := keys $d.serverAgents | sortAlpha }}
+{{- $a := index $d.serverAgents $key }}
+{{- if and $a.enabled $a.route }}
+{{- if not (hasKey ($b.policy.guilds | default dict) $a.guild) }}
+{{- fail (printf "discord.serverAgents.%s.route needs server %s in discord.bridge.policy.guilds" $key $a.guild) }}
+{{- end }}
+{{- $_ := set $routed $a.guild (printf "discord-%s/%s" $a.guild $a.name) }}
+{{- end }}
+{{- end }}
+{{- if $routed }}
+{{- $policy = merge (dict "serverAgents" $routed) (deepCopy $policy) }}
+{{- end }}
 ---
 # The bridge runs as this account; its only token is the projected
 # kagent-invocation token below.
@@ -510,9 +524,17 @@ spec:
               - method: POST
                 path: "^/kagent\\.api\\.v1\\.SessionService/DeleteSession$"
               {{- if $o.enabled }}
-              # The operator session's Agent and its persistent sessions.
+              # The operator session's Agent.
               - method: POST
                 path: {{ printf "^/agents/%s/%s$" (regexQuoteMeta $o.namespace) (regexQuoteMeta $o.name) | quote }}
+              {{- end }}
+              {{- range $guild := keys $routed | sortAlpha }}
+              # Server {{ $guild }}'s own Agent (HOME-909).
+              - method: POST
+                path: {{ printf "^/agents/%s$" (regexQuoteMeta (index $routed $guild)) | quote }}
+              {{- end }}
+              {{- if or $o.enabled $routed }}
+              # The persistent sessions of the operator and server agents.
               - method: POST
                 path: "^/kagent\\.api\\.v1\\.SessionService/(CreateSession|RevertSession)$"
               {{- end }}

@@ -5,8 +5,12 @@ Each allowlisted Discord server gets its own persistent Hermes agent on ATE.
 The agent wakes when the bridge sends it a turn and suspends when idle. It
 reads and writes only its own server's Hindsight bank, and it gets only the
 MCP tools that its server's values list. The homelab agent's image and
-chart exist (slice 2); no control below is seen live yet, so each one is
-`designed`.
+chart exist (slice 2). Slice 4 (HOME-909) routes the homelab server's
+tagged messages to its agent: a policy entry `serverAgents` maps the guild to
+the Agent, and the bridge keeps one session per server with request ID
+`discord-server-<guild>` (`operator.go`, `ServerRequestID`). Until slice 3,
+the bridge still recalls and puts memories in each prompt. Other controls
+below are not seen live yet, so each one is `designed`.
 
 Joe's decisions are on
 [HOME-162 comment 12817](https://factory-plan.jomcgi.dev/factory/issue/HOME-162#comment-12817)
@@ -283,9 +287,10 @@ turn, and one memory owner per kind of fact.
 ## 6. Migration from Bosun and HOME-162 rule changes
 
 **Recommendation.** Move the homelab server first; the other three stay on
-Bosun until slice 6's measures pass. A server's policy entry gains
-`agent: hermes`; without it the server stays on Bosun. Rollback is removing
-that key.
+Bosun until slice 6's measures pass. The chart's
+`discord.serverAgents.<key>.route: true` adds the server to the policy's
+`serverAgents`; without it the server stays on Bosun. Rollback is
+`route: false`.
 
 Joe confirms each change below. Rules 1, 2, 3, 5, 6, 7 and 8 are worded
 from the code and chart comments that cite them. Rule 4 is inferred from
