@@ -81,7 +81,7 @@ The Zigbee2MQTT archive must hold `configuration.yaml` (the network key),
 keeps running during the copy. If `database.db` is incomplete,
 `coordinator_backup.json` still restores the network. The Home Assistant
 archive leaves out the recorder database (history only), logs, `deps`,
-`.cache` and `tts`. Home Assistant creates them again.
+`.cache`, `tts` and Home Assistant's own `backups`. Home Assistant creates them again.
 
 An off-site copy in R2 is not configured yet: it needs a private R2 bucket
 and a token for it.
