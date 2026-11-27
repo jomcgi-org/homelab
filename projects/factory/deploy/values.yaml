@@ -446,6 +446,9 @@ discord:
       cacheTTL: 1h
       compression:
         model: claude-sonnet-5-5
+      # One session per channel (Joe, 2026-11-27): up to 3 channels answer
+      # at once, one worker each; idle sessions suspend.
+      concurrency: 3
 
 semgrepSync:
   enabled: false

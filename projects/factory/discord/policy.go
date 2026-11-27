@@ -20,9 +20,6 @@ type policyFile struct {
 	Operator             *operatorFile     `json:"operator"`
 	// ServerAgents maps a guild ID to its agent, "namespace/name" (HOME-909).
 	ServerAgents map[string]string `json:"serverAgents"`
-	// ServerSessions maps a guild ID in ServerAgents to the guild whose
-	// session its turns join. Absent: the guild's own session.
-	ServerSessions map[string]string `json:"serverSessions"`
 	// Users is who may start a turn: "all" (or absent) or "operator", Joe
 	// alone (HOME-909).
 	Users string `json:"users"`
@@ -109,19 +106,6 @@ func ParsePolicy(data []byte) (Config, error) {
 			c.ServerAgents = map[string]kagent.AgentRef{}
 		}
 		c.ServerAgents[guild] = kagent.AgentRef{Namespace: ns, Name: name}
-	}
-	for guild, session := range p.ServerSessions {
-		agent, ok := c.ServerAgents[guild]
-		if !ok {
-			return Config{}, fmt.Errorf("serverSessions: guild %s has no server agent", guild)
-		}
-		if owner, ok := c.ServerAgents[session]; !ok || owner != agent {
-			return Config{}, fmt.Errorf("serverSessions: guild %s joins %s, which has another agent or none", guild, session)
-		}
-		if c.ServerSessions == nil {
-			c.ServerSessions = map[string]string{}
-		}
-		c.ServerSessions[guild] = session
 	}
 	switch p.Users {
 	case "", "all":

@@ -1804,7 +1804,8 @@ def test_discord_server_agent_runs_hermes_with_no_tools() -> None:
     }
     pool = _in(docs, "WorkerPool", ns, "homelab")["spec"]
     assert [c["name"] for c in pool["sandboxClasses"]] == ["gvisor"]
-    assert pool["replicas"] == 1
+    # One worker per concurrent channel session (Joe, 2026-11-27).
+    assert pool["replicas"] == 3
     assert pool["template"]["serviceAccountName"] == "homelab-worker"
     account = _in(docs, "ServiceAccount", ns, "homelab-worker")
     assert account["automountServiceAccountToken"] is False
@@ -1962,7 +1963,8 @@ def test_discord_server_agent_answers_only_joe_in_every_server() -> None:
     every = sorted(policy["guilds"])
     assert set(guilds) <= set(every)
     assert policy["serverAgents"] == {g: f"{_HOMELAB_NS}/homelab" for g in every}
-    assert policy["serverSessions"] == {g: guilds[0] for g in every if g != guilds[0]}
+    # One session per channel: no server joins another's session.
+    assert "serverSessions" not in policy
     pod = _in(docs, "Deployment", "factory-discord", "discord-bridge")["spec"][
         "template"
     ]["spec"]
