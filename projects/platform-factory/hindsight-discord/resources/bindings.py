@@ -86,9 +86,14 @@ class BindingTenant(ApiKeyTenantExtension):
 
 class BindingValidator(OperationValidatorExtension):
     async def filter_mcp_tools(self, bank_id, request_context, tools):
-        # The list does not depend on the session bank: each call is checked.
+        # Only the multi-bank session, whose bank no binding lists, gets the
+        # tools: there each call names its bank in bank_id. A session fixed
+        # to an allowed bank by URL path or X-Bank-Id gets none, because its
+        # tools ignore the call's bank_id.
         binding = binding_for(request_context)
-        return tools & binding.tools if binding else frozenset()
+        if binding is None or bank_id in binding.banks:
+            return frozenset()
+        return tools & binding.tools
 
     def validate(self, ctx, operation):
         binding = binding_for(ctx.request_context)

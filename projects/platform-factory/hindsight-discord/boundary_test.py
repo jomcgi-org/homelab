@@ -272,17 +272,27 @@ def test_recall_token_cannot_read_a_bank_outside_the_binding(server, bank, other
     assert "Operation outside MCP binding" in json.dumps(reply), reply
 
 
-@pytest.mark.parametrize(
-    "path,headers",
-    [("/mcp/", {}), ("/mcp/", {"X-Bank-Id": BANK}), (f"/mcp/{BANK}/", {})],
-    ids=["session-bank", "bank-header", "bank-path"],
-)
-def test_recall_without_bank_id_is_refused(server, bank, path, headers):
-    # Even where Hindsight would fall back to an allowed bank.
-    reply = MCP(server, path, RECALL_TOKEN, headers).call(
+def test_recall_without_bank_id_is_refused(server, bank):
+    reply = MCP(server, "/mcp/", RECALL_TOKEN).call(
         "tools/call", {"name": "recall", "arguments": {"query": "plans"}}
     )
     assert "recall requires bank_id" in json.dumps(reply), reply
+
+
+@pytest.mark.parametrize(
+    "path,headers",
+    [("/mcp/", {"X-Bank-Id": BANK}), (f"/mcp/{BANK}/", {})],
+    ids=["bank-header", "bank-path"],
+)
+def test_a_session_fixed_to_a_bank_gets_no_tools(
+    server, bank, other_bank, path, headers
+):
+    # Its recall would ignore the call's bank_id and read the session bank.
+    client = MCP(server, path, RECALL_TOKEN, headers)
+    assert client.call("tools/list")["result"]["tools"] == []
+    for arguments in ({"query": "plans"}, {"query": "plans", "bank_id": other_bank}):
+        reply = client.call("tools/call", {"name": "recall", "arguments": arguments})
+        assert refused(reply), reply
 
 
 def test_rest_recall_works_with_the_tenant_key(server, bank):
