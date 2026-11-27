@@ -302,7 +302,7 @@ func TestAReplyToBosunIsATagAndCarriesWhatItReplies(t *testing.T) {
 			t.Fatal(err)
 		}
 		got, _ := fields["reply_to"].(map[string]any)
-		if len(got) != 3 || got["author"] != want[i]["author"] || got["message"] != want[i]["message"] || got["from_you"] != want[i]["from_you"] {
+		if len(got) != 4 || got["id"] != "replied" || got["author"] != want[i]["author"] || got["message"] != want[i]["message"] || got["from_you"] != want[i]["from_you"] {
 			t.Errorf("prompt %d reply_to = %v, want %v", i, got, want[i])
 		}
 	}

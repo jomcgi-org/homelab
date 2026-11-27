@@ -29,7 +29,14 @@ gets the reply, and pin the reply. The bot's role needs Add Reactions, Create
 Public Threads, Send Messages in Threads and Pin Messages; a refused action
 is logged and skipped, and the reply goes to the channel when the thread
 fails. Memory stores `[thread: <name>]`, `[reacted: <emoji>]` and
-`[pinned]` only for actions Discord did. In a server with a `channels` list,
+`[pinned]` only for actions Discord did. Each `react`, `thread` and `pin`
+block takes an optional `target`, and a `reply` block `{"target": ...}`
+posts the answer as a reply to that message (`allowed_mentions` parse `[]`,
+`replied_user` false). A target is `tagged` (the default), `replied` (the
+message the tag replies to) or the `id` of a
+`channel_messages_since_your_last_turn` line (`m1` is the oldest). The
+bridge maps labels to Discord IDs for this turn only (`Targets`); any other
+target is logged and ignored. A pin with no target pins the answer. In a server with a `channels` list,
 the bridge does not answer a tag inside a new thread: its ID is not listed.
 Follow-up: reminders need state that survives a restart, so they wait for a
 persisted store. Other controls below are not seen live yet, so each one is
