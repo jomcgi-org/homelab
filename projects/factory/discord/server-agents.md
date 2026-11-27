@@ -594,28 +594,19 @@ sequenceDiagram
   waits an hour, and a session with no turn since the restart counts its
   TTL from its creation.
 
-### Cards and events (HOME-909)
+### Formatting and events (HOME-909)
 
-Each Bosun message is a Components V2 card: one container with an accent
-colour from the renderer's house theme (`card.go`).
-
-| Accent | Colour | Messages |
-|---|---|---|
-| Answer | `#2A78D6` blue | turn and operator answers |
-| Research | `#8E5BD6` violet | explorer research results |
-| Notice | `#EDA100` amber | busy, limited and research notices |
-| Failure | `#E34948` red | could not answer, poll or act |
-
-`REST.Post` builds the card. A `---`, `***` or `___` line outside a code
-block becomes a divider. A small space without a line parts text from an
-image gallery. Discord allows 40 components in a message, nested ones
-included, and no container in a container. When the parts pass that
-limit, the card holds the reply's own text displays and galleries. The
-4,000-character limit and the image order stay as before. The bridge does
-not escape text, so dynamic timestamps (`<t:UNIX:F>`) show in each
-reader's time zone. `allowed_mentions` stays `parse: []`, so no text
-pings. Polls and channel notifications are not cards: a poll cannot
-carry components, and the notification dedupe reads top-level text.
+Bosun's replies are top-level Components V2 text displays and media
+galleries, with no container: a container narrowed text on mobile and put
+the white diagram images in a dark box (Joe, 2026-11-27). `REST.Post` runs
+`Reply.Layout` (`layout.go`): a `---`, `***` or `___` line outside a code
+block becomes a divider separator. Discord allows 40 components in a
+message. When the parts pass that limit, the reply keeps its own text
+displays and galleries. The 4,000-character limit and the image order stay
+as before. The bridge does not escape text, so dynamic timestamps
+(`<t:UNIX:F>`) show in each reader's time zone. `allowed_mentions` stays
+`parse: []`, so no text pings. Polls are unchanged: a poll cannot carry
+components.
 
 Bosun creates a server event from a fenced `event` block:
 
