@@ -366,8 +366,15 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 		b.reply(ctx, m, ReplyFailed)
 		return
 	}
+	answer, poll := Polls(answer)
 	shown, memo, files := Visuals(ctx, b.Render, answer)
-	b.replyWith(ctx, m, shown, files)
+	shown, memo = PlacePoll(shown, memo, poll)
+	if shown != "" || len(files) > 0 || poll == nil {
+		b.replyWith(ctx, m, shown, files)
+	}
+	if poll != nil {
+		b.sendPoll(ctx, m, poll)
+	}
 	answer = memo
 	at := m.Timestamp
 	if at.IsZero() {
@@ -393,6 +400,14 @@ func (b *Bridge) reply(ctx context.Context, m Message, text string) {
 func (b *Bridge) replyWith(ctx context.Context, m Message, text string, files []File) {
 	if err := b.Replies.Send(ctx, m.ChannelID, WithImages(NewReply(text, m.ID), text, files)); err != nil {
 		b.Log.WarnContext(ctx, "reply failed", "channel", m.ChannelID, "message", m.ID, "error", err)
+	}
+}
+
+// sendPoll posts a poll after a turn's text reply, as its own message. Only
+// Turn calls it: notices, failure replies and operator turns post no poll.
+func (b *Bridge) sendPoll(ctx context.Context, m Message, p *Poll) {
+	if err := b.Replies.Send(ctx, m.ChannelID, NewPollReply(p, m.ID)); err != nil {
+		b.Log.WarnContext(ctx, "poll failed", "channel", m.ChannelID, "message", m.ID, "error", err)
 	}
 }
 
