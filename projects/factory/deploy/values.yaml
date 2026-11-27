@@ -74,9 +74,9 @@ kagent:
   controller:
     metrics:
       enabled: true
-    # kagent v1.0.1 built from jomcgi-org/kagent commit 34088646786a
+    # kagent v1.0.1 built from jomcgi-org/kagent commit 8198a63ae97f
     # (branch jomcgi/codex-6.2, build run
-    # https://github.com/jomcgi-org/kagent/actions/runs/46062092026). Commit
+    # https://github.com/jomcgi-org/kagent/actions/runs/46069133762). Commit
     # 2c2fc329a8d8 sets PinnedCodexVersion and the harness Dockerfile to Codex
     # 0.169.1, the first stable Codex whose bundled catalogue has
     # gpt-6.2-astra and gpt-6.2-sol (agents.*.model below). Upstream kagent
@@ -101,10 +101,13 @@ kagent:
     # spec.hermes.compression: threshold, verbatim user tail and summary model.
     # Commit 34088646786a (jomcgi-org/kagent#5) runs Hermes on an Anthropic
     # ModelConfig through the Messages API, with its prompt cache TTL.
+    # Commit 8198a63ae97f (jomcgi-org/kagent#6) gives Hermes RemoteMCPServer
+    # tools with explicit lists and Harness spec.hermes.serverTools
+    # (Anthropic web search, web fetch and code execution).
     image:
       registry: ghcr.io
       repository: jomcgi-org/kagent/controller
-      tag: 1.0.1-jomcgi.34088646786a@sha256:35cde86ced919ac492b5c36a446f6bb7badae16eafa50b3c2ca40c5ab229a74e
+      tag: 1.0.1-jomcgi.8198a63ae97f@sha256:b4607f2a8cb4b5d7ed9bfc0792e6285f63529107da51ffa3c5b1dccc9cc69d02
   # The UI peaked at 4Mi over two days (2026-11-16) against the chart's
   # 256Mi request.
   ui:
@@ -118,8 +121,8 @@ kagent:
     # 0.169.1 in place of 0.161.0. The controller starts only when `release`
     # equals its own version, so it names the fork build, not 1.0.1.
     harnessImages:
-      release: 1.0.1-jomcgi.34088646786a
-      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:14ef0e07befebc7478cfa4f0940fdc582436aa55b06ef250d40d8ca13efea104
+      release: 1.0.1-jomcgi.8198a63ae97f
+      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:d928810ae643e28602b4e07a837cc286299a15d703f84d2fd0d417b790112817
     runtimeDefaults:
       cpu: "4"
       memory: 8Gi
@@ -418,6 +421,12 @@ discord:
       # The bot answers Joe alone, in every server (Joe, 2026-11-27,
       # HOME-909); other authors' tags get no turn and no reply.
       users: operator
+      # Part of each channel session's request ID (HOME-915). kagent pins a
+      # session to the Agent revision that created it, so a new value gives
+      # every channel a new session on the current tools and prompt; the
+      # old context goes, Hindsight memory stays. Set a new value only after
+      # kagent has prepared the new Agent revision: the bridge syncs first.
+      sessionEpoch: ""
   # The bridge backfills each server's history (HOME-164), in place of the
   # import Job (Joe, 2026-11-26, HOME-836).
   backfill:
@@ -460,6 +469,20 @@ discord:
       # One session per channel (Joe, 2026-11-27): up to 3 channels answer
       # at once, one worker each; idle sessions suspend.
       concurrency: 3
+      # Joe's tools (2026-11-27, HOME-915; server-agents.md "Tools"). Web
+      # search costs $0.01 a search plus its result tokens; web fetch costs
+      # tokens; code execution costs tokens and container time after the
+      # free monthly hours. Recall as a tool waits for a bank bound to the
+      # turn's server; factory MCP waits for factory-mcp (HOME-916).
+      serverTools:
+        webSearch: {maxUses: 5}
+        webFetch: {maxUses: 3}
+        codeExecution: true
+      mcpServers:
+        # Public and read-only, with no sign-in (projects/scotland-connector).
+        - name: scotland
+          url: https://scotland-mcp.jomcgi.dev/mcp
+          tools: [plan, check, aurora, light]
   # Bosun's artifact tools at artifact.jomcgi.dev (HOME-917).
   artifacts:
     enabled: true

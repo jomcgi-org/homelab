@@ -497,7 +497,7 @@ use_repo(oci, "custom_crane_regctl_toolchains")
 
 oci.pull(
     name = "factory_codex_upstream",
-    digest = "sha256:14ef0e07befebc7478cfa4f0940fdc582436aa55b06ef250d40d8ca13efea104",
+    digest = "sha256:d928810ae643e28602b4e07a837cc286299a15d703f84d2fd0d417b790112817",
     image = "ghcr.io/jomcgi-org/kagent/codex-harness",
     platforms = ["linux/amd64"],
 )
@@ -539,7 +539,7 @@ private_oci_layer(
 # projects/factory/deploy/values.yaml; harness_image_test checks it.
 oci.pull(
     name = "codex_harness",
-    digest = "sha256:14ef0e07befebc7478cfa4f0940fdc582436aa55b06ef250d40d8ca13efea104",
+    digest = "sha256:d928810ae643e28602b4e07a837cc286299a15d703f84d2fd0d417b790112817",
     image = "ghcr.io/jomcgi-org/kagent/codex-harness",
     platforms = ["linux/amd64"],
 )
@@ -575,7 +575,7 @@ use_repo(oci, "hermes_agent", "hermes_agent_linux_amd64")
 # harness image reuses that layer. Move it with the controller.
 oci.pull(
     name = "hermes_runner",
-    digest = "sha256:dcf9c460dc1fbbc866d7cb5f7421a4f9e0e7f62773a0ad6c4a0f5f1429f9ee8b",
+    digest = "sha256:6cc8bccb984568559c4c099a93f16455dfabd8e1b50687edf48355a03c58cf34",
     image = "ghcr.io/jomcgi-org/kagent/hermes-runner",
     platforms = ["linux/amd64"],
 )

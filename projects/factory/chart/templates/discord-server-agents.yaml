@@ -1,9 +1,10 @@
 {{- /*
 Per-server Hermes agents (HOME-905, projects/factory/discord/server-agents.md).
 Each enabled server gets its own namespace and atespace,
-discord-<guild>, with a gVisor WorkerPool, a Hermes Harness and an Agent with
-no tools. The actor holds placeholders only: the egress gateway injects the
-OpenRouter key for this atespace. With `route`, the bridge sends the server's
+discord-<guild>, with a gVisor WorkerPool, a Hermes Harness and an Agent. Its
+tools are only the listed MCP servers' listed tools and Anthropic server
+tools (server-agents.md, "Tools"). The actor holds placeholders only: the
+egress gateway injects the model key and MCP tokens for this atespace. With `route`, the bridge sends the server's
 tagged messages to it in one persistent session (HOME-909); it has no
 Hindsight of its own yet (slice 3), so the bridge recalls for it.
 */}}
@@ -14,6 +15,20 @@ Hindsight of its own yet (slice 3), so the bridge recalls for it.
 {{- $ns := printf "discord-%s" $a.guild }}
 {{- $worker := printf "%s-worker" $a.name }}
 {{- $image := $d.hermesImage }}
+{{- $mcp := $a.mcpServers | default list }}
+{{- if and $a.serverTools (eq ($a.provider | default "openAI") "openAI") }}
+{{- fail (printf "discord.serverAgents.%s.serverTools needs provider anthropic: only the Messages API runs them" $server) }}
+{{- end }}
+{{- range $m := $mcp }}
+{{- /* The fork's Hermes toolset names and selectors (go/harness/hermes/config ReservedMCPServerName). */}}
+{{- $reserved := list "a2a" "all" "bot_room" "browser" "catalog" "clarify" "code_execution" "coding" "computer_use" "connections" "context_engine" "cronjob" "debugging" "delegation" "desktop_ui" "discord" "discord_admin" "feishu_doc" "feishu_drive" "file" "image_gen" "kanban" "memory" "no_mcp" "onboarding" "project" "safe" "search" "session_search" "skills" "terminal" "todo" "tts" "video" "video_gen" "vision" "web" "x_search" }}
+{{- if or (has $m.name $reserved) (hasPrefix "hermes" $m.name) (hasPrefix "mcp-" $m.name) }}
+{{- fail (printf "discord.serverAgents.%s.mcpServers name %s is a Hermes toolset name" $server $m.name) }}
+{{- end }}
+{{- if or (not $m.url) (empty $m.tools) }}
+{{- fail (printf "discord.serverAgents.%s.mcpServers %s needs url and tools: Hermes registers only listed tools" $server $m.name) }}
+{{- end }}
+{{- end }}
 ---
 # Kept: deleting it would take the WorkerPool and the session's snapshots.
 apiVersion: v1
@@ -133,10 +148,39 @@ spec:
   openAI:
     baseUrl: {{ $a.baseUrl | quote }}
   {{- end }}
+{{- range $m := $mcp }}
+---
+# An MCP server for this agent (server-agents.md, "Tools"). Discovery is off:
+# the Agent lists the only tools Hermes registers. With a secret, the egress
+# gateway injects its `token` as the Authorization header; the actor holds a
+# placeholder.
+apiVersion: api.kagent.dev/v1alpha3
+kind: RemoteMCPServer
+metadata:
+  name: {{ $m.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    kagent.dev/discovery: disabled
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  description: {{ printf "%s for the %s Discord agent" $m.name $server | quote }}
+  url: {{ $m.url | quote }}
+  protocol: STREAMABLE_HTTP
+  {{- with $m.secret }}
+  headersFrom:
+    - name: Authorization
+      valueFrom:
+        type: Secret
+        name: {{ . | quote }}
+        key: token
+  {{- end }}
+{{- end }}
 ---
 # Hermes Agent with the kagent fork's runner (projects/factory/harness/hermes).
-# The runner turns every Hermes toolset, memory and lazy install off, and
-# denies every approval. The Harness CRD admits only a digest reference,
+# The runner turns every built-in Hermes toolset, memory and lazy install
+# off, and denies every approval. The Harness CRD admits only a digest reference,
 # which helm_chart(images) writes into the published chart.
 apiVersion: api.kagent.dev/v1alpha3
 kind: Harness
@@ -148,8 +192,9 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  {{- with $a.compression }}
+  {{- if or $a.compression $a.serverTools }}
   hermes:
+    {{- with $a.compression }}
     # Compact before a long chat resends its whole history each turn
     # (server-agents.md, "Model and token cost").
     compression:
@@ -162,6 +207,23 @@ spec:
       {{- with .model }}
       model: {{ . | quote }}
       {{- end }}
+    {{- end }}
+    {{- with $a.serverTools }}
+    # Anthropic runs these tools (server-agents.md, "Tools"); maxUses bounds
+    # each Messages request.
+    serverTools:
+      {{- with .webSearch }}
+      webSearch:
+        maxUses: {{ int .maxUses }}
+      {{- end }}
+      {{- with .webFetch }}
+      webFetch:
+        maxUses: {{ int .maxUses }}
+      {{- end }}
+      {{- if .codeExecution }}
+      codeExecution: true
+      {{- end }}
+    {{- end }}
   {{- else }}
   hermes: {}
   {{- end }}
@@ -178,7 +240,8 @@ spec:
   idleSuspendDelay: {{ . | quote }}
   {{- end }}
 ---
-# No tools and no egress grants: the actor reaches only the model origin.
+# kagent grants egress only to the model origin and the listed MCP servers'
+# origins; Anthropic runs the server tools.
 apiVersion: api.kagent.dev/v1alpha3
 kind: Agent
 metadata:
@@ -194,14 +257,28 @@ spec:
       description: {{ printf "The %s Discord server's agent (HOME-905)" $server | quote }}
       modelConfig:
         name: {{ $a.name }}
+      {{- if or $mcp $a.serverTools }}
+      systemPrompt: {{ printf "%s%s" $a.systemPrompt ($a.toolsPrompt | default "") | quote }}
+      {{- else }}
       systemPrompt: {{ $a.systemPrompt | quote }}
+      {{- end }}
+      {{- with $mcp }}
+      tools:
+        {{- range . }}
+        - mcp:
+            server:
+              kind: RemoteMCPServer
+              name: {{ .name }}
+            tools: {{ .tools | toJson }}
+        {{- end }}
+      {{- end }}
   harnessRef:
     name: hermes
 {{- if $.Values.networkPolicy.cilium }}
 ---
 # Worker pods: kagent's A2A calls reach the actor only through Substrate's
 # router, and actor traffic leaves only through its egress gateway. The
-# gateway admits only the ModelConfig's origin for this actor.
+# gateway admits only the Agent's compiled origins for this actor.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:

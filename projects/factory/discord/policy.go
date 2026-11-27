@@ -3,6 +3,7 @@ package discord
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -25,6 +26,9 @@ type policyFile struct {
 	Users string `json:"users"`
 	// Explore turns on research of public GitHub repositories (HOME-909).
 	Explore *exploreFile `json:"explore"`
+	// SessionEpoch, when set, is part of every server agent channel
+	// session's request ID; a new value starts new sessions (HOME-915).
+	SessionEpoch string `json:"sessionEpoch"`
 }
 
 // exploreFile bounds research (explore.go). Every field is required.
@@ -63,6 +67,8 @@ func (e exploreFile) config() (ExploreConfig, error) {
 		Timeout: timeout, MaxSessions: e.MaxSessions, TTL: ttl, MaxRepoKB: e.MaxRepoMB * 1024,
 	}, nil
 }
+
+var sessionEpoch = regexp.MustCompile(`^[a-z0-9]{0,16}$`)
 
 // operatorFile is the operator session's place (HOME-314). Joe's user ID is
 // not in the policy: it comes from a Secret file.
@@ -151,6 +157,10 @@ func ParsePolicy(data []byte) (Config, error) {
 			return Config{}, err
 		}
 	}
+	if !sessionEpoch.MatchString(p.SessionEpoch) {
+		return Config{}, fmt.Errorf("sessionEpoch: %q must be at most 16 lower-case letters and digits", p.SessionEpoch)
+	}
+	c.SessionEpoch = p.SessionEpoch
 	switch p.Users {
 	case "", "all":
 	case "operator":

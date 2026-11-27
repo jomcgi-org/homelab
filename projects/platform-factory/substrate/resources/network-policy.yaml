@@ -307,6 +307,15 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+    # The homelab Discord Hermes agent's Scotland outdoors MCP server
+    # (factory chart `discord.serverAgents.<key>.mcpServers`), public and
+    # read-only, with no credential. kagent admits it only for that actor.
+    - toFQDNs:
+        - matchName: scotland-mcp.jomcgi.dev
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
     # Public tool downloads for a binding with `toolchain: homelab`, matching
     # the factory chart's EgressPolicy homelab-tools, which admits them per
     # actor. No credential is injected on these origins.

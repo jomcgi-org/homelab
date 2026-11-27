@@ -112,6 +112,49 @@ spec:
                         minimum: 8192
                         type: integer
                     type: object
+                  serverTools:
+                    description: |-
+                      ServerTools adds Anthropic server tools to each Messages API request of
+                      a turn. Anthropic runs them; the Actor makes no request to the tool's
+                      target. It requires a ModelConfig with the Anthropic provider.
+                    properties:
+                      codeExecution:
+                        description: |-
+                          CodeExecution adds code_execution (type code_execution_20260521). Code
+                          runs in Anthropic's sandbox, which has no network access.
+                        type: boolean
+                      webFetch:
+                        description: |-
+                          WebFetch adds web_fetch (web_fetch_20250910, direct calls). It fetches
+                          only URLs that are already in the conversation.
+                        properties:
+                          maxUses:
+                            description: |-
+                              MaxUses is the tool's max_uses: the most calls in one Messages API
+                              request. A turn that calls MCP tools makes one request per model step.
+                            format: int32
+                            maximum: 20
+                            minimum: 1
+                            type: integer
+                        required:
+                        - maxUses
+                        type: object
+                      webSearch:
+                        description: WebSearch adds web_search (web_search_20250305,
+                          direct calls).
+                        properties:
+                          maxUses:
+                            description: |-
+                              MaxUses is the tool's max_uses: the most calls in one Messages API
+                              request. A turn that calls MCP tools makes one request per model step.
+                            format: int32
+                            maximum: 20
+                            minimum: 1
+                            type: integer
+                        required:
+                        - maxUses
+                        type: object
+                    type: object
                 type: object
               idleSuspendDelay:
                 description: |-

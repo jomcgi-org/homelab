@@ -316,6 +316,19 @@ func ChannelRequestID(channelID string, generation int) string {
 	return fmt.Sprintf("discord-channel-%s-%d", channelID, generation)
 }
 
+// EpochChannelRequestID names channel sessions with epoch in the ID:
+// discord-channel-<epoch>-<channel>. kagent pins a session to the Agent
+// revision that created it, so a new epoch gives every channel a new session
+// on the current revision. An empty epoch is ChannelRequestID.
+func EpochChannelRequestID(epoch string) func(string, int) string {
+	if epoch == "" {
+		return ChannelRequestID
+	}
+	return func(channelID string, generation int) string {
+		return ChannelRequestID(epoch+"-"+channelID, generation)
+	}
+}
+
 // ServerRequestID is the request ID of a server agent's session for a whole
 // server, before sessions moved to one per channel (HOME-909).
 func ServerRequestID(guildID string, generation int) string {

@@ -78,6 +78,10 @@ type Config struct {
 	// Explore turns on research on public GitHub repositories (HOME-909,
 	// explore.go); zero for none.
 	Explore ExploreConfig `json:"-"`
+	// SessionEpoch is part of each server agent channel session's request
+	// ID. kagent pins a session to the Agent revision that created it, so
+	// a new epoch starts every channel on the current revision (HOME-915).
+	SessionEpoch string `json:"-"`
 }
 
 // dedupeWindow is how long a message ID is remembered. An older message

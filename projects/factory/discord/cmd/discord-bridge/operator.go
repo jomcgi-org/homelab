@@ -80,12 +80,12 @@ func wireServerAgents(log *slog.Logger, b *discord.Bridge, a2a *kagent.A2A, sess
 				A2A:       a2a,
 				Sessions:  sessions,
 				Agent:     agent,
-				RequestID: discord.ChannelRequestID,
+				RequestID: discord.EpochChannelRequestID(b.Config.SessionEpoch),
 			}
 			clients[agent] = c
 		}
 		b.Servers[guild] = c
-		log.Info("server agent on", "guild", guild, "agent", agent.Namespace+"/"+agent.Name, "sessions", "per channel")
+		log.Info("server agent on", "guild", guild, "agent", agent.Namespace+"/"+agent.Name, "sessions", "per channel", "epoch", b.Config.SessionEpoch)
 	}
 }
 
