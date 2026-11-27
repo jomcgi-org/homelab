@@ -90,6 +90,8 @@ def _render(
         "planner.enabled=false",
         "--set",
         "broker.claude.enabled=false",
+        "--set",
+        "discord.explorer.enabled=false",
     ]
     if trial:
         args += ["--values", str(_CHART_DIR / "files/coder-trial-values.yaml")]
@@ -246,6 +248,8 @@ def test_disabled_renders_byte_for_byte_without_the_connector() -> None:
             "planner.enabled=false",
             "--set",
             "broker.claude.enabled=false",
+            "--set",
+            "discord.explorer.enabled=false",
         ]
         assert _helm(_CHART_DIR, off) == _helm(bare, off)
 

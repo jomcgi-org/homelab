@@ -236,6 +236,18 @@ channel. */}}
 {{- if $routed }}
 {{- $policy = merge (dict "serverAgents" $routed) (deepCopy $policy) }}
 {{- end }}
+{{- /* Research on public GitHub repositories (HOME-909), while the explorer is on. */}}
+{{- $e := $d.explorer }}
+{{- if $e.enabled }}
+{{- $policy = merge (dict "explore" (dict
+  "agent" (printf "%s/%s" $e.namespace $e.name)
+  "limit" $e.limit
+  "concurrency" (int $e.concurrency)
+  "timeout" $e.timeout
+  "maxSessions" (int $e.maxSessions)
+  "ttl" $e.ttl
+  "maxRepoMB" (int $e.maxRepoMB))) (deepCopy $policy) }}
+{{- end }}
 {{- /* Joe's user ID is read for the operator session and for users: operator. */}}
 {{- $operatorUser := or $o.enabled (eq ($b.policy.users | default "all") "operator") }}
 ---
@@ -516,6 +528,10 @@ spec:
         - matchName: discord.com
         # gateway.discord.gg and its resume hosts.
         - matchPattern: "*.discord.gg"
+        {{- if $e.enabled }}
+        # The explorer's public-repository check, without credentials.
+        - matchName: api.github.com
+        {{- end }}
       toPorts:
         - ports:
             - port: "443"
@@ -563,10 +579,19 @@ spec:
               - method: POST
                 path: {{ printf "^/agents/%s$" (regexQuoteMeta $ref) | quote }}
               {{- end }}
-              {{- if or $o.enabled $routed }}
-              # The persistent sessions of the operator and server agents.
+              {{- if or $o.enabled $routed $e.enabled }}
+              # The persistent sessions of the operator, server agents and
+              # explorer.
               - method: POST
                 path: "^/kagent\\.api\\.v1\\.SessionService/(CreateSession|RevertSession)$"
+              {{- end }}
+              {{- if $e.enabled }}
+              # The research explorer (HOME-909): its turns, and naming,
+              # listing and deleting its sessions for the TTL and cap.
+              - method: POST
+                path: {{ printf "^/agents/%s/%s$" (regexQuoteMeta $e.namespace) (regexQuoteMeta $e.name) | quote }}
+              - method: POST
+                path: "^/kagent\\.api\\.v1\\.SessionService/(ListSessions|NameSession)$"
               {{- end }}
           {{- end }}
 {{- end }}

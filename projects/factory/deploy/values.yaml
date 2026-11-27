@@ -46,6 +46,9 @@ broker:
       actor/factory-r-homelab-planner/session-*:
         - claude-opus-5-5
         - claude-fable-5-2
+      # Bosun's research explorer (discord.explorer, HOME-909).
+      actor/discord-explorer/session-*:
+        - claude-opus-5-5
 
 kagent:
   # The pinned chart reads these Git values before the replacement chart ships.
@@ -64,7 +67,7 @@ kagent:
   # Agents and the controller's watch: kagent's own namespace plus each
   # repository binding's.
   rbac:
-    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-r-homelab-planner, factory-discord-agent, factory-discord-operator, discord-1501965852042330302]
+    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-r-homelab-planner, factory-discord-agent, factory-discord-operator, discord-1501965852042330302, discord-explorer]
   # The controller's metrics for Prometheus
   # (projects/platform-factory/prometheus): HTTPS on 8443, admitting a token
   # whose subject may GET /metrics.
@@ -426,6 +429,14 @@ discord:
     enabled: true
     guild: "1501965852042330302"
     channels: ["1575140752776757368"]
+  # Bosun's research explorer (HOME-909): Claude Code on the broker's
+  # Claude relay (Joe's subscription, which outlives the Console credits),
+  # cloning public GitHub repositories with no credential. Bosun starts and
+  # continues research with fenced explore blocks.
+  explorer:
+    enabled: true
+    # The planner's Claude harness image (2026-11-25 build).
+    harnessImage: ghcr.io/jomcgi/homelab/projects/factory/harness/claude@sha256:ff770f2257b0ec50539e758043833b795d9caed5402d2e1bf4a3a35d15535009 # ratchet-allow: image-digest (no chart images entry pins a harness image; bump it by PR)
   # The homelab server's Hermes agent (HOME-907): a persistent session that
   # suspends when idle. It answers Joe's tags in every server, in its one
   # session, in place of Bosun (Joe, 2026-11-27, HOME-909). Bosun's Agent

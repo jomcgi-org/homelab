@@ -394,6 +394,13 @@ func (k *KagentOperator) Session(ctx context.Context, threadID string) (Operator
 	return OperatorSession{}, fmt.Errorf("discord: thread %s has no usable session after %d generations", threadID, maxSessionGenerations)
 }
 
+// Forget drops a key's cached session, so its next turn looks it up again.
+func (k *KagentOperator) Forget(key string) {
+	k.mu.Lock()
+	delete(k.known, key)
+	k.mu.Unlock()
+}
+
 // Turn sends prompt in the thread's session and waits for the answer. The
 // Discord message ID makes the A2A message ID, so a resend after an
 // ambiguous outcome is the same message. A failed turn makes the next turn

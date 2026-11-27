@@ -35,13 +35,18 @@ type Actions struct {
 	Thread string
 	// Pin pins the bot's reply.
 	Pin bool
+	// Explore starts or continues research on a public GitHub repository
+	// (explore.go).
+	Explore *ExploreRequest
 }
 
 // Any reports whether a holds an action.
-func (a Actions) Any() bool { return len(a.React) > 0 || a.Thread != "" || a.Pin }
+func (a Actions) Any() bool {
+	return len(a.React) > 0 || a.Thread != "" || a.Pin || a.Explore != nil
+}
 
-// actionBlock is a fenced code block tagged react, thread or pin.
-var actionBlock = regexp.MustCompile("(?s)```[ \\t]*(react|thread|pin)[ \\t]*\\r?\\n(.*?)```")
+// actionBlock is a fenced code block tagged react, thread, pin or explore.
+var actionBlock = regexp.MustCompile("(?s)```[ \\t]*(react|thread|pin|explore)[ \\t]*\\r?\\n(.*?)```")
 
 var errAction = errors.New("discord: invalid action")
 
@@ -130,6 +135,12 @@ func TakeActions(answer string) (string, Actions) {
 			if !a.Pin && ParsePin(spec) == nil {
 				a.Pin, ok = true, true
 			}
+		case "explore":
+			if a.Explore == nil {
+				if req, err := ParseExplore(spec); err == nil {
+					a.Explore, ok = &req, true
+				}
+			}
 		}
 		if !ok {
 			continue
@@ -153,6 +164,9 @@ func (a Actions) Tags() string {
 	}
 	if a.Pin {
 		tags = append(tags, "[pinned]")
+	}
+	if a.Explore != nil {
+		tags = append(tags, "[research "+a.Explore.Research+": "+a.Explore.Repo+"]")
 	}
 	return strings.Join(tags, " ")
 }

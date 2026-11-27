@@ -92,6 +92,8 @@ def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
         "planner.enabled=false",
         "--set",
         "broker.claude.enabled=false",
+        "--set",
+        "discord.explorer.enabled=false",
     ]
     for override in overrides or []:
         argv += ["--set", override]

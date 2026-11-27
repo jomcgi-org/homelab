@@ -114,6 +114,7 @@ func run(log *slog.Logger) error {
 	}
 	wireOperatorUser(log, bridge)
 	wireServerAgents(log, bridge, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions)
+	wireExplorer(log, bridge, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions)
 	if err := wireOperator(log, bridge, rest, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions); err != nil {
 		return err
 	}
@@ -161,6 +162,8 @@ func run(log *slog.Logger) error {
 			close(ready)
 		})
 	}
+	// Explorer sessions past the TTL or the cap are deleted each hour.
+	go bridge.RunExploreSweep(ctx, time.Hour)
 	backfillDone := make(chan struct{})
 	if backfill != nil {
 		go func() {
