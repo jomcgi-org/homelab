@@ -7,7 +7,8 @@ allow-same-origin: the page runs in an opaque origin, with no cookies, no
 storage and no same-origin reads of other artifacts. Without allow-forms and
 allow-top-navigation it can post no form and cannot navigate a frame above
 it. Pages must inline their assets: CORP same-origin also stops them from
-loading other artifacts. The backend gets no cookie and can set none.
+loading other artifacts, and the fetch directives (values.yaml) stop a page from
+reaching any other origin. The backend gets no cookie and can set none.
 */}}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -40,7 +41,7 @@ spec:
           responseHeaderModifier:
             set:
               - name: Content-Security-Policy
-                value: sandbox allow-scripts allow-popups
+                value: {{ .Values.artifacts.contentSecurityPolicy | quote }}
               - name: X-Content-Type-Options
                 value: nosniff
               - name: Referrer-Policy

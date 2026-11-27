@@ -14,7 +14,10 @@ go_library(
 
 go_test(
     name = "artifacts_test",
-    srcs = ["artifacts_test.go"],
+    srcs = [
+        "artifacts_test.go",
+        "sigv4_test.go",
+    ],
     embed = [":artifacts"],
     deps = ["//projects/factory/broker/actorjwt"],
 )
