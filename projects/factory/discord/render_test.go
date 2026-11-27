@@ -53,9 +53,36 @@ func TestVisualsStopsAtTheImageLimitAndWithoutARenderer(t *testing.T) {
 	}
 }
 
+func TestWithImagesPlacesImagesWhereTheyWereDrawn(t *testing.T) {
+	r := &fakeRenderer{}
+	answer := "Polished:\n```svg\n<svg/>\n```\n\nWant a storm version?\n```svg\n<svg/>\n```\n```svg\n<svg/>\n```"
+	text, _, files := Visuals(context.Background(), r, answer)
+	got := WithImages(NewReply(text, "9"), text, files).Components
+	if len(got) != 4 || got[0].Content != "Polished:" || len(got[1].Items) != 1 ||
+		got[2].Content != "Want a storm version?" || len(got[3].Items) != 2 ||
+		got[3].Items[1].Media.URL != "attachment://image-3.png" {
+		t.Errorf("components = %+v", got)
+	}
+}
+
+func TestVisualsDropsMarksTheAgentWrote(t *testing.T) {
+	text, _, files := Visuals(context.Background(), &fakeRenderer{}, "a"+imageMark+"b")
+	if text != "ab" || files != nil {
+		t.Errorf("text %q, files %v", text, files)
+	}
+}
+
+func TestWithImagesKeepsImagesWhenTextIsCut(t *testing.T) {
+	text := strings.Repeat("x", maxReplyChars+10) + imageMark + "after"
+	got := WithImages(NewReply(text, "9"), text, []File{{Name: "image-1.png"}}).Components
+	if len(got) != 2 || len([]rune(got[0].Content)) != maxReplyChars || len(got[1].Items) != 1 {
+		t.Errorf("components = %d", len(got))
+	}
+}
+
 func TestWithImagesAddsOneGalleryAndDropsEmptyText(t *testing.T) {
 	files := []File{{Name: "image-1.png", Data: []byte("a")}, {Name: "image-2.png", Data: []byte("b")}}
-	r := WithImages(NewReply("", "9"), "", files)
+	r := WithImages(NewReply("", "9"), imageMark+imageMark, files)
 	raw, _ := json.Marshal(r)
 	want := `"components":[{"type":12,"items":[{"media":{"url":"attachment://image-1.png"}},{"media":{"url":"attachment://image-2.png"}}]}]`
 	if !strings.Contains(string(raw), want) || !strings.Contains(string(raw), `"attachments":[{"id":0,"filename":"image-1.png"},{"id":1,"filename":"image-2.png"}]`) {
@@ -64,7 +91,7 @@ func TestWithImagesAddsOneGalleryAndDropsEmptyText(t *testing.T) {
 	if strings.Contains(string(raw), "no answer") || strings.Contains(string(raw), "Data") {
 		t.Errorf("reply = %s", raw)
 	}
-	if r := WithImages(NewReply("hi", "9"), "hi", files); len(r.Components) != 2 || r.Components[0].Content != "hi" {
+	if r := WithImages(NewReply("hi", "9"), "hi"+imageMark+imageMark, files); len(r.Components) != 2 || r.Components[0].Content != "hi" {
 		t.Errorf("components = %+v", r.Components)
 	}
 }
@@ -91,7 +118,7 @@ func TestSendUploadsFilesAsMultipart(t *testing.T) {
 	defer srv.Close()
 	rest := &REST{Base: srv.URL, Token: func() (string, error) { return "t", nil }}
 	files := []File{{Name: "image-1.png", Data: []byte("a")}, {Name: "image-2.png", Data: []byte("b")}}
-	if err := rest.Send(context.Background(), "5", WithImages(NewReply("x", "9"), "x", files)); err != nil {
+	if err := rest.Send(context.Background(), "5", WithImages(NewReply("x", "9"), "x"+imageMark+imageMark, files)); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(got, ",") != "image-1.png=a,image-2.png=b" || !strings.Contains(payload, `"allowed_mentions":{"parse":[]`) {

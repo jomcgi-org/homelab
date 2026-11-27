@@ -371,3 +371,26 @@ func TestNoticesDoNotBlockTheGateway(t *testing.T) {
 		t.Fatalf("sent %v, want four limit replies and one answer", rep.sent)
 	}
 }
+
+type typingReplies struct {
+	fakeReplies
+	typed chan string
+}
+
+func (f *typingReplies) Typing(_ context.Context, channelID string) error {
+	f.typed <- channelID
+	return nil
+}
+
+func TestAWorkerShowsTypingWhileATurnRuns(t *testing.T) {
+	b, _, _ := newBridge(&fakeAgent{answer: "hi"})
+	rep := &typingReplies{typed: make(chan string, 4)}
+	b.Replies = rep
+	stop := b.typing(context.Background(), "c1")
+	if got := <-rep.typed; got != "c1" {
+		t.Errorf("typing in %q", got)
+	}
+	stop()
+	b.Replies = &fakeReplies{}
+	b.typing(context.Background(), "c1")()
+}

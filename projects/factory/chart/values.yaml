@@ -529,7 +529,8 @@ discord:
       search, change anything, moderate or ping anyone. To show a diagram,
       chart or picture, put it in a fenced code block tagged mermaid,
       vega-lite (inline data only) or svg (no links, images or scripts);
-      the server posts each block, at most four, as an image.
+      the server shows each block, at most four, as an image in its place in
+      the answer, so write about it as if it is there.
   bridge:
     # Enable after all eligible bridge nodes redact Authorization in Hubble.
     enforceAgentPath: false
@@ -665,7 +666,8 @@ discord:
         run code, search, change anything, moderate or ping anyone. To show
         a diagram, chart or picture, put it in a fenced code block tagged
         mermaid, vega-lite (inline data only) or svg (no links, images or
-        scripts); the server posts each block, at most four, as an image.
+        scripts); the server shows each block, at most four, as an image
+        in its place in the answer, so write about it as if it is there.
   # The history backfill (HOME-164, HOME-836): the bridge replays the history
   # of each server whose policy entry has `history: true` into its bank, one
   # document per channel-day. It runs one pass after the gateway is ready,

@@ -16,6 +16,12 @@ type Replier interface {
 	Send(ctx context.Context, channelID string, reply Reply) error
 }
 
+// Typer shows the bot as typing in a channel. A Replier that is one shows
+// it while a turn runs.
+type Typer interface {
+	Typing(ctx context.Context, channelID string) error
+}
+
 // Limit allows Count turns per Window.
 type Limit struct {
 	Count  int
@@ -293,9 +299,42 @@ func (b *Bridge) worker(ctx context.Context, q chan Message, turn func(context.C
 		case <-ctx.Done():
 			return
 		case m := <-q:
+			stop := b.typing(ctx, m.ChannelID)
 			turn(ctx, m)
+			stop()
 		}
 	}
+}
+
+// typingEvery renews Discord's typing indicator, which lasts 10 seconds or
+// until the bot posts.
+const typingEvery = 8 * time.Second
+
+// typing shows the bot as typing in a channel until stop is called. A failed
+// call only loses the indicator.
+func (b *Bridge) typing(ctx context.Context, channelID string) (stop func()) {
+	t, ok := b.Replies.(Typer)
+	if !ok {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(typingEvery)
+		defer tick.Stop()
+		for {
+			if err := t.Typing(ctx, channelID); err != nil && ctx.Err() == nil {
+				b.Log.DebugContext(ctx, "typing failed", "channel", channelID, "error", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
 }
 
 // Turn runs one turn for an accepted message.
