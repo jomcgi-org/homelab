@@ -1,5 +1,6 @@
 # Mounted read-only over /config/configuration.yaml. Home Assistant keeps
-# its UI-made state, such as the ZHA config entry, in /config/.storage.
+# its UI-made state in /config/.storage. Add the MQTT integration once in
+# the UI, with broker mosquitto and port 1883, to see Zigbee2MQTT devices.
 default_config:
 
 http:
