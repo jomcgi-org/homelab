@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
@@ -503,7 +504,12 @@ func (b *Bridge) deliver(ctx context.Context, l *slog.Logger, actor Actor, m Mes
 		if ok {
 			done.Event = acts.Event
 		}
-		text = strings.TrimSpace(text + "\n\n" + line)
+		if utf8.RuneCountInString(text)+utf8.RuneCountInString(line)+2 > maxReplyChars {
+			// A long answer is clipped at its end: keep the link.
+			text = strings.TrimSpace(line + "\n\n" + text)
+		} else {
+			text = strings.TrimSpace(text + "\n\n" + line)
+		}
 	}
 	replyID := ""
 	if text != "" || len(files) > 0 || (poll == nil && !acts.Any()) {

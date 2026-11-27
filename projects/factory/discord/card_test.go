@@ -33,7 +33,7 @@ func shape(cs []ReplyComponent) string {
 }
 
 func TestACardWrapsTheAnswerAndSplitsItAtRules(t *testing.T) {
-	text := "Plan for <t:1798761600:F> (<t:1798761600:R>)\n\n---\n\n```\n---\n```\n***\n-# sources: met office"
+	text := "Plan for <t:1798761600:F> (<t:1798761600:R>)\n\n---\n\n```\n---\n```\n```x```\n***\n-# sources: met office"
 	r := NewReply(text, "9").Card()
 	if len(r.Components) != 1 || r.Components[0].Type != componentContainer || r.Components[0].AccentColor != AccentAnswer {
 		t.Fatalf("components = %+v", r.Components)
@@ -43,7 +43,7 @@ func TestACardWrapsTheAnswerAndSplitsItAtRules(t *testing.T) {
 		t.Fatalf("shape = %s, parts %+v", got, parts)
 	}
 	// Timestamps stay intact; the rule in the code block stays.
-	if parts[0].Content != "Plan for <t:1798761600:F> (<t:1798761600:R>)" || parts[2].Content != "```\n---\n```" || parts[4].Content != "-# sources: met office" {
+	if parts[0].Content != "Plan for <t:1798761600:F> (<t:1798761600:R>)" || parts[2].Content != "```\n---\n```\n```x```" || parts[4].Content != "-# sources: met office" {
 		t.Errorf("parts = %+v", parts)
 	}
 }

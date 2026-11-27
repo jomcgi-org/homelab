@@ -89,7 +89,9 @@ func splitRules(text string) []string {
 		cur = nil
 	}
 	for _, line := range strings.Split(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+		// A fence line opens or closes a block; ```code``` on one line
+		// does neither.
+		if t := strings.TrimSpace(line); strings.HasPrefix(t, "```") && strings.Count(t, "```") == 1 {
 			fenced = !fenced
 		}
 		if !fenced && ruleLine.MatchString(line) {
