@@ -558,6 +558,12 @@ discord:
     tokenItemPath: vaults/k8s-homelab/items/factory-discord
     hindsightURL: http://hindsight-api.hindsight-discord.svc.cluster.local:8888
     hindsightKeySecret: hindsight-discord-key
+    # On SIGTERM the bridge takes no new turn and waits this long for the
+    # in-flight turns and replies. The pod's grace period is 30 s more.
+    drainSeconds: 300
+    # After a restart, the bridge answers Joe's tags from this far back that
+    # have no reply from Bosun.
+    catchUpWindow: 15m
     # The server allowlist and limits (HOME-162 rules 7 and 8): guild IDs as
     # keys, each with optional `channels`, quoted (a bare snowflake loses
     # digits). Every limit is required; the bridge refuses to start without

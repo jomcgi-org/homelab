@@ -143,13 +143,17 @@ type Bridge struct {
 	Explorer *Explorer
 	Repos    RepoChecker
 
-	mu      sync.Mutex
-	botID   string
-	queues  map[string]chan Message
-	seen    map[string]time.Time
-	turns   map[string][]time.Time
-	notices chan notice
-	wg      sync.WaitGroup
+	mu    sync.Mutex
+	botID string
+	// draining refuses new turns (drain.go); active counts the queued and
+	// running turns, notices and explorer turns.
+	draining bool
+	active   int
+	queues   map[string]chan Message
+	seen     map[string]time.Time
+	turns    map[string][]time.Time
+	notices  chan notice
+	wg       sync.WaitGroup
 	// parents maps a channel in the operator's server to its parent: a
 	// thread's parent channel, or "" for a channel that is not a thread.
 	parents map[string]string
@@ -213,43 +217,57 @@ func (b *Bridge) Handle(ctx context.Context, m Message) {
 		return // The operator's channels: no ingest and no public turn.
 	}
 	b.ingest(m)
+	b.answer(ctx, m)
+}
+
+// answer queues a turn for m when the bridge answers it: Accept, the
+// operator-only gate, the dedupe window and the limits. The catch-up after a
+// restart (catchup.go) enters here too, so a message never gets two turns.
+// It reports whether m was queued.
+func (b *Bridge) answer(ctx context.Context, m Message) bool {
+	// Counted from here, so a drain that starts meanwhile either waits for
+	// this turn or makes admit refuse it.
+	b.track(1)
+	defer b.track(-1)
 	if !b.Accept(m) {
-		return
+		return false
 	}
 	if b.Config.OperatorOnly && !b.fromOperator(m) {
-		return // Joe alone is answered; others get no turn and no reply.
+		return false // Joe alone is answered; others get no turn and no reply.
 	}
-	now := b.now()
-	if now.Sub(SentAt(m)) > dedupeWindow {
-		return // Older than the IDs the bridge remembers.
+	notices, ok := b.admit(ctx, m)
+	if !ok {
+		return false // A repeat, too old, or the bridge is draining.
 	}
 	b.mu.Lock()
-	b.start(ctx)
-	if _, dup := b.seen[m.ID]; dup {
-		b.mu.Unlock()
-		return // A resumed gateway can replay a message.
-	}
-	b.seen[m.ID] = now
-	b.prune(now)
-	allowed := b.take(now, m)
+	allowed := b.take(b.now(), m)
 	key := m.ChannelID
-	q, ok := b.queues[key]
-	if !ok && allowed {
+	q, exists := b.queues[key]
+	if !exists && allowed {
 		q = make(chan Message, max(b.Config.QueueDepth, 1))
 		b.queues[key] = q
 		b.wg.Add(1)
 		go b.worker(ctx, q, b.Turn)
 	}
-	notices := b.notices
 	b.mu.Unlock()
 	if !allowed {
 		b.queueNotice(ctx, notices, m, ReplyLimited)
-		return
+		return false
 	}
+	return b.enqueue(ctx, notices, q, m)
+}
+
+// enqueue puts m on a channel queue and counts it as in flight until its
+// turn ends; a full queue answers busy.
+func (b *Bridge) enqueue(ctx context.Context, notices chan notice, q chan Message, m Message) bool {
+	b.track(1)
 	select {
 	case q <- m:
+		return true
 	default:
+		b.track(-1)
 		b.queueNotice(ctx, notices, m, ReplyBusy)
+		return false
 	}
 }
 
@@ -305,9 +323,11 @@ func (b *Bridge) ingest(m Message) {
 // queueNotice never blocks the gateway: when the notice queue is full, the
 // notice is dropped.
 func (b *Bridge) queueNotice(ctx context.Context, notices chan notice, m Message, text string) {
+	b.track(1)
 	select {
 	case notices <- notice{m, text}:
 	default:
+		b.track(-1)
 		b.Log.WarnContext(ctx, "notice dropped", "channel", m.ChannelID, "message", m.ID)
 	}
 }
@@ -322,6 +342,7 @@ func (b *Bridge) notify(ctx context.Context) {
 			return
 		case n := <-b.notices:
 			b.reply(ctx, n.m, n.text)
+			b.track(-1)
 		}
 	}
 }
@@ -339,6 +360,7 @@ func (b *Bridge) worker(ctx context.Context, q chan Message, turn func(context.C
 			stop := b.typing(ctx, m.ChannelID)
 			turn(ctx, m)
 			stop()
+			b.track(-1)
 		}
 	}
 }
@@ -398,12 +420,6 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 			}
 		}
 	}
-	memories, err := b.Memory.Recall(ctx, m.GuildID, text)
-	if err != nil {
-		// Answer without memory rather than not at all.
-		l.WarnContext(ctx, "recall failed", "error", err)
-	}
-	research := b.takeResults(m.ChannelID)
 	if r := m.Referenced; r != nil {
 		// A Components V2 message, such as Bosun's own reply, has its
 		// text in its components; Content carries the text from here on.
@@ -412,6 +428,18 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 		resolved.Components, resolved.Attachments = nil, nil
 		m.Referenced = &resolved
 	}
+	var memories []string
+	var err error
+	if q := recallQuery(text, m, since); q != "" {
+		memories, err = b.Memory.Recall(ctx, m.GuildID, q)
+		if err != nil {
+			// Answer without memory rather than not at all.
+			l.WarnContext(ctx, "recall failed", "error", err)
+		}
+	} else {
+		l.InfoContext(ctx, "recall skipped: no words to search")
+	}
+	research := b.takeResults(m.ChannelID)
 	prompt := Prompt(m, b.Places.Lookup(m.GuildID, m.ChannelID), text, memories, since, b.bot(), research...)
 	var answer string
 	if a, ok := b.Servers[m.GuildID]; ok {

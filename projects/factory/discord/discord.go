@@ -25,11 +25,26 @@ func SentAt(m Message) time.Time {
 	if !m.Timestamp.IsZero() {
 		return m.Timestamp
 	}
-	id, err := strconv.ParseUint(m.ID, 10, 64)
+	return snowflakeTime(m.ID)
+}
+
+// Snowflake is the smallest message ID sent at t or later.
+func Snowflake(t time.Time) string {
+	ms := t.UnixMilli() - discordEpoch
+	if ms < 0 {
+		ms = 0
+	}
+	return strconv.FormatUint(uint64(ms)<<22, 10)
+}
+
+// snowflakeTime is when snowflake id was made; an unreadable ID is the zero
+// time.
+func snowflakeTime(id string) time.Time {
+	n, err := strconv.ParseUint(id, 10, 64)
 	if err != nil {
 		return time.Time{}
 	}
-	return time.UnixMilli(int64(id>>22) + discordEpoch)
+	return time.UnixMilli(int64(n>>22) + discordEpoch)
 }
 
 // User is the subset of a Discord user the bridge reads.
@@ -97,9 +112,10 @@ func (m Message) RepliesTo(id string) bool {
 }
 
 // Reference is the subset of a received message_reference the bridge reads.
-// Type 1 is a forward.
+// Type 1 is a forward; MessageID is the message a reply answers.
 type Reference struct {
-	Type int `json:"type"`
+	Type      int    `json:"type"`
+	MessageID string `json:"message_id,omitempty"`
 }
 
 // Forwarded reports whether m forwards another message.

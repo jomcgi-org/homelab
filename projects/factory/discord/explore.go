@@ -618,8 +618,10 @@ func (b *Bridge) startExplore(ctx context.Context, l *slog.Logger, m Message, re
 	}
 	b.send(ctx, l, channelID, fmt.Sprintf("Researching %s%s (research %s). I'll post here when it's done.", req.Repo, chose, research))
 	b.wg.Add(1)
+	b.track(1)
 	go func() {
 		defer b.wg.Done()
+		defer b.track(-1)
 		defer b.Explorer.release(research)
 		b.explore(ctx, l, m, req, research, channelID)
 	}()
