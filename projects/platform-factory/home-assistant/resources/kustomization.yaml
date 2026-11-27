@@ -6,6 +6,7 @@ resources:
   - mosquitto.yaml
   - zigbee2mqtt.yaml
   - reference-grant.yaml
+  - backup.yaml
 configMapGenerator:
   - name: home-assistant
     files:
@@ -20,3 +21,6 @@ configMapGenerator:
   - name: zigbee2mqtt-seed
     files:
       - configuration.yaml=zigbee2mqtt.yaml.seed
+  - name: home-assistant-backup
+    files:
+      - backup.sh

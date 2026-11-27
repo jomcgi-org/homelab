@@ -76,3 +76,8 @@ exports_files(
     ],
     visibility = ["//projects/platform-factory/image-audit:__pkg__"],
 )
+
+exports_files(
+    ["platform-factory/home-assistant/application.yaml"],
+    visibility = ["//projects/platform-factory/home-assistant/resources:__pkg__"],
+)

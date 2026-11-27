@@ -1,0 +1,524 @@
+# Nightly copies of the two local-path volumes into the Garage bucket
+# home-assistant-backups (README.md, "Backup and restore"). A ReadWriteOnce
+# volume mounts on one node only. The local-path volume's node affinity puts
+# each backup pod on that node, next to the running app, so the pod mounts
+# the volume read-only without a nodeSelector.
+#
+# garage-init (projects/platform-factory/garage) creates the bucket and fills
+# home-assistant-backups-s3 with a key for that bucket only. Until it does,
+# the required Secret key references keep a backup pod pending.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: home-assistant-backups-s3
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-init
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [home-assistant-backups-s3]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-init
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: garage-init
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: home-assistant-backup
+automountServiceAccountToken: false
+---
+# No ingress. Egress to the Garage S3 API only; the cluster baseline allows DNS.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: home-assistant-backup
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: home-assistant-backup
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
+---
+# The network key (configuration.yaml), the paired devices (database.db) and
+# the adapter backup (coordinator_backup.json). Zigbee2MQTT keeps running, so
+# the tar can catch database.db during a write; coordinator_backup.json then
+# still restores the network and its devices.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-zigbee2mqtt
+spec:
+  schedule: "15 3 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: home-assistant-backup
+            app.kubernetes.io/component: zigbee2mqtt
+        spec:
+          serviceAccountName: home-assistant-backup
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          # The app writes its files as root, some with mode 0600.
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: docker.io/rclone/rclone@sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466
+              command: [/bin/sh, /scripts/backup.sh, backup]
+              env:
+                - name: NAME
+                  value: zigbee2mqtt
+                - name: EXCLUDES
+                  value: "./log"
+                - name: REQUIRED
+                  value: "configuration.yaml database.db coordinator_backup.json"
+                - name: KEEP_DAYS
+                  value: "30"
+                - name: BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: BUCKET
+                - name: RCLONE_CONFIG_GARAGE_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_GARAGE_PROVIDER
+                  value: Other
+                - name: RCLONE_CONFIG_GARAGE_FORCE_PATH_STYLE
+                  value: "true"
+                # The key has no owner right, so it cannot create the bucket.
+                - name: RCLONE_CONFIG_GARAGE_NO_CHECK_BUCKET
+                  value: "true"
+                - name: RCLONE_CONFIG_GARAGE_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_ACCESS_KEY_ID
+                - name: RCLONE_CONFIG_GARAGE_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: RCLONE_CONFIG_GARAGE_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_ENDPOINT_URL
+                - name: RCLONE_CONFIG_GARAGE_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_REGION
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                  readOnly: true
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: zigbee2mqtt-data
+                readOnly: true
+            - name: scripts
+              configMap:
+                name: home-assistant-backup
+            - name: tmp
+              emptyDir:
+                sizeLimit: 1Gi
+---
+# /config with .storage (users, integrations, device registry, UI
+# automations). The recorder database (history only) is a live SQLite file
+# that a tar can catch mid-write, so it stays out with logs and caches that
+# Home Assistant rebuilds.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-home-assistant
+spec:
+  schedule: "30 3 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: home-assistant-backup
+            app.kubernetes.io/component: home-assistant
+        spec:
+          serviceAccountName: home-assistant-backup
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          # The app writes its files as root, some with mode 0600.
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: docker.io/rclone/rclone@sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466
+              command: [/bin/sh, /scripts/backup.sh, backup]
+              env:
+                - name: NAME
+                  value: home-assistant
+                - name: EXCLUDES
+                  value: "./home-assistant_v2.db* ./home-assistant.log* ./deps ./.cache ./tts"
+                - name: REQUIRED
+                  value: ".storage/core.config_entries .storage/core.device_registry"
+                - name: KEEP_DAYS
+                  value: "30"
+                - name: BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: BUCKET
+                - name: RCLONE_CONFIG_GARAGE_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_GARAGE_PROVIDER
+                  value: Other
+                - name: RCLONE_CONFIG_GARAGE_FORCE_PATH_STYLE
+                  value: "true"
+                # The key has no owner right, so it cannot create the bucket.
+                - name: RCLONE_CONFIG_GARAGE_NO_CHECK_BUCKET
+                  value: "true"
+                - name: RCLONE_CONFIG_GARAGE_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_ACCESS_KEY_ID
+                - name: RCLONE_CONFIG_GARAGE_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: RCLONE_CONFIG_GARAGE_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_ENDPOINT_URL
+                - name: RCLONE_CONFIG_GARAGE_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_REGION
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                  readOnly: true
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: home-assistant-config
+                readOnly: true
+            - name: scripts
+              configMap:
+                name: home-assistant-backup
+            - name: tmp
+              emptyDir:
+                sizeLimit: 1Gi
+
+---
+# Restores for README.md, "Backup and restore". They stay suspended and their
+# schedule never occurs, so a sync starts nothing. An operator scales the app
+# to 0 and starts one run with `kubectl create job --from`. The run extracts
+# the newest archive over the volume.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: restore-zigbee2mqtt
+spec:
+  suspend: true
+  # 31 February: never, even if the CronJob is resumed.
+  schedule: "0 0 31 2 *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: home-assistant-backup
+            app.kubernetes.io/component: restore-zigbee2mqtt
+        spec:
+          serviceAccountName: home-assistant-backup
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          # The app writes its files as root, some with mode 0600.
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: docker.io/rclone/rclone@sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466
+              command: [/bin/sh, /scripts/backup.sh, restore]
+              env:
+                - name: NAME
+                  value: zigbee2mqtt
+                - name: EXCLUDES
+                  value: "./log"
+                - name: REQUIRED
+                  value: "configuration.yaml database.db coordinator_backup.json"
+                - name: KEEP_DAYS
+                  value: "30"
+                - name: BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: BUCKET
+                - name: RCLONE_CONFIG_GARAGE_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_GARAGE_PROVIDER
+                  value: Other
+                - name: RCLONE_CONFIG_GARAGE_FORCE_PATH_STYLE
+                  value: "true"
+                # The key has no owner right, so it cannot create the bucket.
+                - name: RCLONE_CONFIG_GARAGE_NO_CHECK_BUCKET
+                  value: "true"
+                - name: RCLONE_CONFIG_GARAGE_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_ACCESS_KEY_ID
+                - name: RCLONE_CONFIG_GARAGE_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: RCLONE_CONFIG_GARAGE_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_ENDPOINT_URL
+                - name: RCLONE_CONFIG_GARAGE_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_REGION
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: zigbee2mqtt-data
+            - name: scripts
+              configMap:
+                name: home-assistant-backup
+            - name: tmp
+              emptyDir:
+                sizeLimit: 1Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: restore-home-assistant
+spec:
+  suspend: true
+  # 31 February: never, even if the CronJob is resumed.
+  schedule: "0 0 31 2 *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: home-assistant-backup
+            app.kubernetes.io/component: restore-home-assistant
+        spec:
+          serviceAccountName: home-assistant-backup
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          # The app writes its files as root, some with mode 0600.
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: docker.io/rclone/rclone@sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466
+              command: [/bin/sh, /scripts/backup.sh, restore]
+              env:
+                - name: NAME
+                  value: home-assistant
+                - name: EXCLUDES
+                  value: "./home-assistant_v2.db* ./home-assistant.log* ./deps ./.cache ./tts"
+                - name: REQUIRED
+                  value: ".storage/core.config_entries .storage/core.device_registry"
+                - name: KEEP_DAYS
+                  value: "30"
+                - name: BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: BUCKET
+                - name: RCLONE_CONFIG_GARAGE_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_GARAGE_PROVIDER
+                  value: Other
+                - name: RCLONE_CONFIG_GARAGE_FORCE_PATH_STYLE
+                  value: "true"
+                # The key has no owner right, so it cannot create the bucket.
+                - name: RCLONE_CONFIG_GARAGE_NO_CHECK_BUCKET
+                  value: "true"
+                - name: RCLONE_CONFIG_GARAGE_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_ACCESS_KEY_ID
+                - name: RCLONE_CONFIG_GARAGE_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: RCLONE_CONFIG_GARAGE_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_ENDPOINT_URL
+                - name: RCLONE_CONFIG_GARAGE_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: home-assistant-backups-s3
+                      key: AWS_REGION
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: home-assistant-config
+            - name: scripts
+              configMap:
+                name: home-assistant-backup
+            - name: tmp
+              emptyDir:
+                sizeLimit: 1Gi

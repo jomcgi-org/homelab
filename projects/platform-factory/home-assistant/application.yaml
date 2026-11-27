@@ -16,6 +16,12 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: home-assistant
+  # garage-init writes the backup key.
+  ignoreDifferences:
+    - kind: Secret
+      namespace: home-assistant
+      name: home-assistant-backups-s3
+      jsonPointers: [/data]
   syncPolicy:
     # Zigbee2MQTT opens the Zigbee dongle on node-2 through a hostPath
     # character device. Only a privileged container passes the device
@@ -30,6 +36,7 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:
