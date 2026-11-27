@@ -30,5 +30,4 @@ py_test(
         "LIB_NAMES": "mermaid-12.3.0.min.js vega-6.4.0.min.js vega-lite-6.5.0.min.js vega-embed-7.3.0.min.js",
         "PAGES": "$(rootpath //projects/factory/discord/artifacts:template.html) $(rootpath selftest/architecture.html)",
     },
-    deps = ["@pip//pytest"],
 )
