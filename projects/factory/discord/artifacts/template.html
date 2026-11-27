@@ -125,6 +125,9 @@
       a {
         color: var(--accent);
       }
+      svg .bar {
+        fill: var(--s1);
+      }
       svg text {
         fill: var(--muted);
         font: 12px var(--font);
@@ -156,8 +159,8 @@
           role="img"
           aria-label="Bar chart"
         >
-          <rect x="10" y="60" width="60" height="50" rx="4" fill="var(--s1)" />
-          <rect x="90" y="20" width="60" height="90" rx="4" fill="var(--s1)" />
+          <rect x="10" y="60" width="60" height="50" rx="4" class="bar" />
+          <rect x="90" y="20" width="60" height="90" rx="4" class="bar" />
           <text x="40" y="54" text-anchor="middle">A</text>
           <text x="120" y="14" text-anchor="middle">B</text>
         </svg>

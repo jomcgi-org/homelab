@@ -182,7 +182,7 @@ func (h *Handler) call(ctx context.Context, id actorjwt.Identity, raw json.RawMe
 	case "template":
 		var a struct{}
 		if err = strictDecode(p.Arguments, &a); err == nil {
-			out = map[string]string{"html": Template}
+			out = map[string]string{"html": pageTemplate}
 		}
 	case "list":
 		var a Place
@@ -259,11 +259,11 @@ const placeSchema = `"server":{"type":"string","pattern":"^[0-9]{15,21}$","descr
 
 const pathSchema = `"path":{"type":"string","maxLength":200,"description":"File path under the channel, e.g. report.html or charts/q3.png. Letters, digits, '.', '_', '-'; up to 5 segments; extension .html .md .txt .csv .json .svg or .png."}`
 
-// Template is the house HTML page Bosun starts an artifact from: design
+// pageTemplate is the house HTML page Bosun starts an artifact from: design
 // tokens, light and dark themes, a system font stack and no external assets.
 //
 //go:embed template.html
-var Template string
+var pageTemplate string
 
 // Tools is the fixed tool list.
 var Tools = []Tool{
