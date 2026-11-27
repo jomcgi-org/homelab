@@ -2098,3 +2098,57 @@ def test_generic_memory_server_keeps_its_tools_and_secret(tmp_path: Path) -> Non
         ]["name"]
         == "store-key"
     )
+
+
+def test_discord_artifacts_admit_only_routed_actors_through_the_gateway() -> None:
+    # HOME-909: Bosun's artifact MCP server. The actor JWT check admits only
+    # routed server agents' atespaces; the gateway is the only way in; the
+    # bucket key stays in this pod.
+    base = _HOMELAB + [
+        f"kagent.rbac.namespaces={{kagent,factory-r-homelab,factory-discord-agent,{_HOMELAB_NS}}}",
+        "discord.agent.enabled=true",
+        "discord.bridge.enabled=true",
+        "string:discord.bridge.policy.guilds.1501965852042330302.ingest=true",
+        "discord.serverAgents.homelab.route=true",
+    ]
+    off = _render(base + ["discord.artifacts.enabled=false"])
+    assert not [d for d in off if d["metadata"]["name"] == "bosun-artifacts"]
+    docs = _render(base + ["discord.artifacts.enabled=true"])
+    deployment = _in(docs, "Deployment", "factory-discord", "bosun-artifacts")
+    pod = deployment["spec"]["template"]["spec"]
+    (container,) = pod["containers"]
+    env = {e["name"]: e["value"] for e in container["env"]}
+    assert env["ACTOR_JWT_AUDIENCE"] == "bosun-artifacts"
+    assert env["ACTOR_JWT_ATESPACES"] == _HOMELAB_NS
+    assert env["ACTOR_JWT_ISSUER"] == "https://idp.ate-system.svc"
+    assert env["ARTIFACT_BASE_URL"] == "https://artifact.jomcgi.dev"
+    assert "1501965852042330302" in env["ARTIFACT_SERVERS"].split(",")
+    assert container["envFrom"] == [{"secretRef": {"name": "bosun-artifacts-s3"}}]
+    assert pod["automountServiceAccountToken"] is False
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    policy = _in(docs, "CiliumNetworkPolicy", "factory-discord", "bosun-artifacts")
+    assert policy["spec"]["ingress"] == [
+        {
+            "fromEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "ate-system",
+                        "app": "atenet-egress",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}]}],
+        }
+    ]
+    # No other pod names the bucket key.
+    for d in docs:
+        if d["kind"] == "Deployment" and d["metadata"]["name"] != "bosun-artifacts":
+            assert "bosun-artifacts-s3" not in str(d)
+    with pytest.raises(RuntimeError, match="needs a routed discord.serverAgents"):
+        _render(
+            base
+            + [
+                "discord.artifacts.enabled=true",
+                "discord.serverAgents.homelab.route=false",
+            ]
+        )

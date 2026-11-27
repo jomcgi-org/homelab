@@ -10,6 +10,7 @@ resources:
   - crd.yaml
   - bootstrap.yaml
   - garage.yaml
+  - reference-grant.yaml
 
 configMapGenerator:
   - name: garage-config

@@ -53,6 +53,23 @@ spec:
       port: 3900
       targetPort: s3
 ---
+# The website endpoint (garage.toml [s3_web]), reachable only by the edge
+# proxy (network-policy.yaml), which routes artifact.jomcgi.dev here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage-web
+  namespace: garage
+  labels:
+    app.kubernetes.io/name: garage
+spec:
+  selector:
+    app.kubernetes.io/name: garage
+  ports:
+    - name: web
+      port: 3902
+      targetPort: web
+---
 # The admin API, reachable only by garage-init (network-policy.yaml).
 apiVersion: v1
 kind: Service
@@ -158,6 +175,8 @@ spec:
               containerPort: 3900
             - name: rpc
               containerPort: 3901
+            - name: web
+              containerPort: 3902
             - name: admin
               containerPort: 3903
           # /health answers 503 until a layout exists, which garage-init

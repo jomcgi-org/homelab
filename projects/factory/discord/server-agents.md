@@ -305,6 +305,86 @@ discord:
   the agent needs its own read-only service identity there.
 - Other servers get no MCP tools in the first slices.
 
+### Artifacts (HOME-909)
+
+The homelab agent can publish a page or file and give Joe a link. The
+`bosun-artifacts` MCP server (`artifacts/`, chart
+`discord-artifacts.yaml`) writes to Garage bucket `bosun-artifacts`.
+Garage's website endpoint serves it at `https://artifact.jomcgi.dev` for
+`authentik Admins` only.
+
+```mermaid
+flowchart LR
+  A["Hermes actor"] -- "MCP put, placeholder" --> G["egress gateway"]
+  G -- "actor JWT, aud bosun-artifacts" --> M["bosun-artifacts (factory-discord)"]
+  M -- "bucket key" --> S[("Garage bosun-artifacts")]
+  J["Joe's browser"] -- "Authentik sign-in" --> E["edge: CSP sandbox, nosniff, no cookies"]
+  E -- "Host bosun-artifacts.web.garage.internal" --> W["Garage web :3902"]
+  W --> S
+```
+
+| Control | Where |
+| --- | --- |
+| Only routed server agents' actors call the tools: actor JWT with audience `bosun-artifacts`, atespace in `ACTOR_JWT_ATESPACES` | `artifacts/mcp.go`, broker's `actorjwt` |
+| Files go under `<server>/<channel>/`; the server must be a `bridge.policy.guilds` key, the channel a snowflake | `artifacts/artifacts.go` |
+| Extensions `.html .md .txt .csv .json .svg .png`; the type comes from the extension; at most 2 MiB; PNG checked by magic bytes; Markdown served as plain text | `artifacts/artifacts.go` |
+| Bucket quota 2 GiB and 20,000 objects; website access on this bucket only | `garage_init.py` `WEBSITES` |
+| Every response: `Content-Security-Policy: sandbox allow-scripts allow-popups`, `nosniff`, `Referrer-Policy: no-referrer`, `CORP: same-origin`; `Set-Cookie` and `Access-Control-Allow-Origin` removed; `Cookie` and `Authorization` not sent to Garage | edge `artifact-route.yaml` |
+| Only the edge proxy reaches Garage's port 3902; only the egress gateway reaches the service | Cilium policies |
+
+The sandbox gives each page an opaque origin. Thus a page cannot read
+cookies or storage, and it cannot load other artifacts: an HTML artifact
+must inline its CSS, scripts and images. The tools' descriptions tell the
+model this.
+
+The prefix is not a security boundary. One homelab session answers Joe in
+all four servers (`servers: all`), so the actor JWT names the homelab
+atespace for every turn. The JWT does not carry the server or channel, so
+the caller states them. The server allowlist bounds them. Joe is the only
+reader.
+
+**Wiring (not live).** The server-agents template renders no MCP servers
+yet. The "Bosun Hermes: tools" work adds them. Add this entry for the
+homelab agent:
+
+```yaml
+discord:
+  serverAgents:
+    homelab:
+      mcpServers:
+        - name: artifacts
+          # The cluster domain is required: Substrate resolves actor
+          # destinations as absolute names (../ARCHITECTURE.md, "Codex relay").
+          url: http://bosun-artifacts.factory-discord.svc.cluster.local:8080/mcp
+          # No Secret: the gateway injects an actor JWT.
+          actorJwt:
+            audiences: [bosun-artifacts]
+          tools: [put, list, delete]
+```
+
+It renders to this RemoteMCPServer in `discord-1501965852042330302`, and
+the Agent's tools name it with `tools: [put, list, delete]`:
+
+```yaml
+apiVersion: api.kagent.dev/v1alpha3
+kind: RemoteMCPServer
+metadata:
+  name: artifacts
+  labels:
+    kagent.dev/discovery: disabled
+spec:
+  url: http://bosun-artifacts.factory-discord.svc.cluster.local:8080/mcp
+  protocol: STREAMABLE_HTTP
+  actorJwt:
+    audiences: [bosun-artifacts]
+```
+
+The egress gateway already reaches the service on 8080
+(`../../platform-factory/substrate/resources/network-policy.yaml`). Check
+that kagent admits the origin for the actor, as it does for a
+RemoteMCPServer with `headersFrom`. Then a `put` from the agent returns a
+URL that opens after Joe signs in.
+
 ## 5. Model and token cost
 
 **Recommendation.** A model per server in values, a hard token budget per

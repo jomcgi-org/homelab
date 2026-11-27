@@ -35,6 +35,7 @@ spec:
     - factory-explore-api.jomcgi.dev
     - t3.jomcgi.dev
     - home.jomcgi.dev
+    - artifact.jomcgi.dev
   # matches and weight are the schema defaults, stated so ArgoCD's diff owns
   # them.
   rules:

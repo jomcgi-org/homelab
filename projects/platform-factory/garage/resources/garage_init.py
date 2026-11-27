@@ -54,6 +54,7 @@ BUCKETS = [
     "kagent-pg-backups",
     "factory-db-backups",
     "authentik-pg-backups",
+    "bosun-artifacts",
 ]
 # (bucket, namespace, Secret). ate-snapshots is Substrate's snapshot store
 # (projects/platform-factory/substrate/resources/garage-snapshots.yaml).
@@ -64,7 +65,17 @@ GRANTS = [
     ("factory-db-backups", "factory-db", "factory-db-s3"),
     ("authentik-pg-backups", "authentik", "authentik-pg-s3"),
     ("ate-snapshots", "ate-system", "ate-snapshots-s3"),
+    # Bosun's artifacts (projects/factory/discord/artifacts): only the MCP
+    # service holds a key.
+    ("bosun-artifacts", "factory-discord", "bosun-artifacts-s3"),
 ]
+# Buckets Garage's website endpoint serves (garage.toml [s3_web]), each with
+# its quota (bytes, objects). Every other bucket has website access off, and
+# a bucket removed here has it turned off. The edge serves bosun-artifacts at
+# artifact.jomcgi.dev behind Authentik with a CSP sandbox.
+WEBSITES = {
+    "bosun-artifacts": (2 * 2**30, 20000),
+}
 
 
 def k8s(method, path, body=None, metadata_only=False):
@@ -213,6 +224,40 @@ def ensure_bucket(name):
     return info["id"]
 
 
+def ensure_website(bucket_id, name, info=None):
+    """Website access and quotas for WEBSITES; website off for the rest."""
+    info = info or garage("GET", "GetBucketInfo", query={"id": bucket_id})
+    if name in WEBSITES:
+        max_size, max_objects = WEBSITES[name]
+        want = {
+            "websiteAccess": {
+                "enabled": True,
+                "indexDocument": "index.html",
+                "errorDocument": None,
+            },
+            "quotas": {"maxSize": max_size, "maxObjects": max_objects},
+        }
+        current = (info.get("websiteConfig") or {}).get("indexDocument")
+        if (
+            info.get("websiteAccess")
+            and current == "index.html"
+            and info.get("quotas") == want["quotas"]
+        ):
+            return
+        garage("POST", "UpdateBucket", want, query={"id": bucket_id})
+        print(
+            f"bucket {name}: website on, quota {max_size} bytes, {max_objects} objects"
+        )
+    elif info.get("websiteAccess"):
+        garage(
+            "POST",
+            "UpdateBucket",
+            {"websiteAccess": {"enabled": False}},
+            query={"id": bucket_id},
+        )
+        print(f"bucket {name}: website off")
+
+
 def ensure_grant(bucket_id, bucket, namespace, name, access="readwrite"):
     secret = k8s("GET", secret_path(namespace, name))
     if secret is None:
@@ -352,6 +397,12 @@ def bootstrap():
     ensure_layout(nodes)
     ids = {name: ensure_bucket(name) for name in BUCKETS}
     failed = []
+    for name, bucket_id in ids.items():
+        try:
+            ensure_website(bucket_id, name)
+        except (Exception, SystemExit) as e:
+            print(f"ERROR: website {name}: {e}")
+            failed.append(f"website {name}")
     grants = [(*grant, "readwrite") for grant in GRANTS]
     try:
         grants.extend(discover_grants())

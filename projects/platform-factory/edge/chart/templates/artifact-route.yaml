@@ -1,0 +1,71 @@
+{{- /*
+Bosun's artifacts at artifact.jomcgi.dev (projects/factory/discord/artifacts):
+Garage's website endpoint for bucket bosun-artifacts, for authentik Admins
+only. Every file is untrusted: an agent wrote it from prompts that hold other
+people's Discord text. So every response gets a CSP sandbox without
+allow-same-origin: the page runs in an opaque origin, with no cookies, no
+storage and no same-origin reads of other artifacts. Without allow-forms and
+allow-top-navigation it can post no form and cannot navigate a frame above
+it. Pages must inline their assets: CORP same-origin also stops them from
+loading other artifacts. The backend gets no cookie and can set none.
+*/}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: artifact
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+      sectionName: http
+  hostnames: [{{ .Values.artifacts.hostname }}]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        # Garage picks the bucket from Host (garage.toml [s3_web]).
+        - type: URLRewrite
+          urlRewrite:
+            hostname: {{ .Values.artifacts.garageHost }}
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove: [Cookie, Authorization]
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Content-Security-Policy
+                value: sandbox allow-scripts allow-popups
+              - name: X-Content-Type-Options
+                value: nosniff
+              - name: Referrer-Policy
+                value: no-referrer
+              - name: Cross-Origin-Resource-Policy
+                value: same-origin
+            remove: [Set-Cookie, Access-Control-Allow-Origin]
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: garage-web
+          namespace: garage
+          port: 3902
+          weight: 1
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: artifact-authentik-oidc
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: artifact
+  {{- include "edge.operatorAuthorization" (dict "Values" .Values "adminOnly" true) | nindent 2 }}
+  oidc:
+    {{- include "edge.oidc" . | nindent 4 }}
