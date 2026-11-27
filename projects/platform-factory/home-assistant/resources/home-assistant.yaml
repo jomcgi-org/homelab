@@ -202,3 +202,10 @@ spec:
               protocol: TCP
             - port: "1926"
               protocol: TCP
+    # Bedroom Nest Mini (Google Cast). Cast control only; the Mini fetches
+    # the media it plays from the internet, not from Home Assistant.
+    - toCIDR: [192.168.4.36/32]
+      toPorts:
+        - ports:
+            - port: "8009"
+              protocol: TCP
