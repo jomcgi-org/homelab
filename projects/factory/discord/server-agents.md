@@ -311,7 +311,7 @@ flowchart LR
 | `web_fetch` (`web_fetch_20250910`), off until decided | Anthropic | 3 per request; only URLs already in the chat | Result tokens only |
 | `code_execution` (`code_execution_20260521`) | Anthropic sandbox, no network | none | Tokens, and container time after the organization's free monthly hours ($0.05 an hour) |
 | Scotland `plan`, `check`, `aurora`, `light` | scotland-connector, public, read-only | Hermes MCP timeout | None |
-| Artifacts `put`, `list` (no `delete`) | bosun-artifacts in factory-discord, actor JWT | 2 MiB a file; bucket quota (see "Artifacts") | None |
+| Artifacts `put`, `template`, `list` (no `delete`) | bosun-artifacts in factory-discord, actor JWT | 2 MiB a file; bucket quota (see "Artifacts") | None |
 
 - **Narrow opening.** The kagent fork's Hermes runner (jomcgi-org/kagent#6)
   names only the bound MCP servers in `platform_toolsets.api_server`, so no
@@ -443,8 +443,8 @@ reader.
 `artifacts` in `discord-1501965852042330302` with URL
 `http://bosun-artifacts.factory-discord.svc.cluster.local:8080/mcp` (the
 cluster domain is required: Substrate resolves actor destinations as
-absolute names), `actorJwt.audiences: [bosun-artifacts]` and tools `put`
-and `list`. The egress gateway already reaches the service on 8080
+absolute names), `actorJwt.audiences: [bosun-artifacts]` and tools `put`,
+`template` and `list`. The egress gateway already reaches the service on 8080
 (`../../platform-factory/substrate/resources/network-policy.yaml`).
 
 ### Visual style (HOME-909)
