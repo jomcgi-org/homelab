@@ -21,6 +21,17 @@ spec:
         - ports:
             - port: "8888"
               protocol: TCP
+    # The Hermes agent's MCP recall, through the Substrate egress gateway,
+    # which injects the recall token (HOME-909). The token reaches only MCP
+    # recall (resources/bindings.py).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ate-system
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
   egress:
     - toEndpoints:
         - matchLabels:

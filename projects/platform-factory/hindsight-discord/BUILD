@@ -27,7 +27,7 @@ py_test(
 )
 
 # Runs the deployed image with its manifest settings to check REST auth and
-# disabled MCP. PR CI runs this as the image user, without external network.
+# the MCP recall binding. PR CI runs this as the image user, without external network.
 py_test(
     name = "boundary_test",
     size = "large",
