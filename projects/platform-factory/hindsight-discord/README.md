@@ -26,8 +26,9 @@ MCP takes only the recall token (HOME-909). `resources/bindings.py`, a
 variant of the factory Hindsight's extension, binds it to the four servers'
 banks and to `recall`; `HINDSIGHT_API_MCP_ENABLED_TOOLS=recall` registers no
 other tool. The homelab Hermes agent calls the multi-bank endpoint `/mcp/`
-and names the bank in each call's `bank_id`. A call without `bank_id` falls
-to the session bank, which no binding lists, so it is refused. The token
+and names the bank in each call's `bank_id`. A middleware refuses a recall
+without `bank_id` before it runs, and a session fixed to a bank by URL path
+or `X-Bank-Id` gets no tools, because its recall ignores `bank_id`. The token
 cannot reach REST, retain, reflect or delete. Recall results come back
 wrapped as `<untrusted_memory>`. The key Job copies the token only to
 `discord-1501965852042330302/hindsight-discord-recall`, labelled for
