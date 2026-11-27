@@ -20,7 +20,9 @@ def read(path):
 
 
 BACKUP_DOCS = read(HERE / "backup.yaml")
-CRONJOBS = {doc["metadata"]["name"]: doc for doc in BACKUP_DOCS if doc["kind"] == "CronJob"}
+CRONJOBS = {
+    doc["metadata"]["name"]: doc for doc in BACKUP_DOCS if doc["kind"] == "CronJob"
+}
 # Policies in this namespace have no metadata.namespace; kustomize sets it.
 POLICIES = [
     {**doc, "metadata": {"namespace": "home-assistant", **doc["metadata"]}}
@@ -59,9 +61,7 @@ def test_backup_pods_reach_only_the_garage_s3_api():
     assert allows(BACKUP, GARAGE, 3900, "egress")
     assert allows(BACKUP, GARAGE, 3900, "ingress")
     assert not allows(BACKUP, GARAGE, 3903, "egress")
-    (policy,) = [
-        doc for doc in BACKUP_DOCS if doc["kind"] == "CiliumNetworkPolicy"
-    ]
+    (policy,) = [doc for doc in BACKUP_DOCS if doc["kind"] == "CiliumNetworkPolicy"]
     assert policy["spec"]["enableDefaultDeny"] == {"ingress": True, "egress": True}
     assert "ingress" not in policy["spec"]
     assert len(policy["spec"]["egress"]) == 1
