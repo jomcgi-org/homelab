@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: home-assistant
+resources:
+  - home-assistant.yaml
+  - mosquitto.yaml
+  - zigbee2mqtt.yaml
+  - reference-grant.yaml
+configMapGenerator:
+  - name: home-assistant
+    files:
+      - configuration.yaml
+  - name: mosquitto
+    files:
+      - mosquitto.conf
+  - name: zigbee2mqtt-seed
+    files:
+      - configuration.yaml=zigbee2mqtt.yaml.seed

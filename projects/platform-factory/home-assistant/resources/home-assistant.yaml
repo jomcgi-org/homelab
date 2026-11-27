@@ -1,0 +1,130 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: home-assistant
+automountServiceAccountToken: false
+---
+# local-path binds the volume to the node of the first pod.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: home-assistant-config
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: home-assistant
+spec:
+  replicas: 1
+  # One pod owns the SQLite database.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: home-assistant
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: home-assistant
+    spec:
+      serviceAccountName: home-assistant
+      automountServiceAccountToken: false
+      containers:
+        - name: home-assistant
+          image: ghcr.io/home-assistant/home-assistant:2026.11.3@sha256:24e541ddae5818bf8eb27898b9ba00d0c344a655aa5097e9e9bd4b19356be847
+          env:
+            - name: TZ
+              value: Europe/London
+          # The image's s6 init runs as root.
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - name: http
+              containerPort: 8123
+          startupProbe:
+            httpGet:
+              path: /manifest.json
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /manifest.json
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: configuration
+              mountPath: /config/configuration.yaml
+              subPath: configuration.yaml
+              readOnly: true
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: home-assistant-config
+        - name: configuration
+          configMap:
+            name: home-assistant
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: home-assistant
+spec:
+  selector:
+    app.kubernetes.io/name: home-assistant
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: home-assistant
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: home-assistant
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: edge
+      toPorts:
+        - ports:
+            - port: "8123"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: mosquitto
+      toPorts:
+        - ports:
+            - port: "1883"
+              protocol: TCP
+    # Integrations and version checks are on the internet.
+    - toEntities: [world]
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

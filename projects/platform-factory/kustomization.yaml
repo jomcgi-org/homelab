@@ -48,4 +48,5 @@ resources:
   - ../scotland-connector/deploy
   - ./edge-tunnel # Publishes the edge hostnames; deployed last, removed first
   - ./t3 # Relay to the node-1 T3 socket
+  - ./home-assistant # Home Assistant at home.jomcgi.dev; Zigbee2MQTT on node-2 with the Zigbee dongle
   - ./grimoire-data

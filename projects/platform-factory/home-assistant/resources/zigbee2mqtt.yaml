@@ -1,0 +1,132 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zigbee2mqtt
+automountServiceAccountToken: false
+---
+# local-path binds the volume to node-2, the node in the nodeSelector. It
+# holds the Zigbee network key and the paired devices.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zigbee2mqtt-data
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zigbee2mqtt
+spec:
+  replicas: 1
+  # One pod owns the serial device.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zigbee2mqtt
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: zigbee2mqtt
+    spec:
+      serviceAccountName: zigbee2mqtt
+      automountServiceAccountToken: false
+      # The SONOFF Dongle Max MG24 is plugged into node-2.
+      nodeSelector:
+        kubernetes.io/hostname: node-2
+      initContainers:
+        - name: seed
+          image: ghcr.io/koenkk/zigbee2mqtt:2.14.3@sha256:fb4a6b0f6868ad1cd6a9996479802b2420e599c3463b62bbff8c8cd9a908f43a
+          command:
+            - sh
+            - -c
+            - test -f /app/data/configuration.yaml || cp /seed/configuration.yaml /app/data/configuration.yaml
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, DAC_OVERRIDE, FOWNER]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: seed
+              mountPath: /seed
+              readOnly: true
+      containers:
+        - name: zigbee2mqtt
+          image: ghcr.io/koenkk/zigbee2mqtt:2.14.3@sha256:fb4a6b0f6868ad1cd6a9996479802b2420e599c3463b62bbff8c8cd9a908f43a
+          env:
+            - name: TZ
+              value: Europe/London
+          securityContext:
+            # Needed to open the hostPath character device; see the
+            # Application's Pod Security label.
+            privileged: true
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: zigbee
+              mountPath: /dev/zigbee
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: zigbee2mqtt-data
+        - name: seed
+          configMap:
+            name: zigbee2mqtt-seed
+        - name: zigbee
+          hostPath:
+            path: /dev/serial/by-id/usb-SONOFF_SONOFF_Dongle_Max_MG24_f41dd446367cf111baf8047b9507fdd7-if00-port0
+            type: CharDevice
+---
+# The web UI has no route. Reach it with
+# kubectl -n home-assistant port-forward deploy/zigbee2mqtt 8080.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: zigbee2mqtt
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: zigbee2mqtt
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: mosquitto
+      toPorts:
+        - ports:
+            - port: "1883"
+              protocol: TCP
+    # Zigbee OTA firmware images come from GitHub and vendor sites.
+    - toEntities: [world]
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

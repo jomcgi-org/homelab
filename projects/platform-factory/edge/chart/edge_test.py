@@ -190,6 +190,7 @@ def test_only_kagent_forwards_the_access_token(docs):
         "authentik-no-gateway-oidc",
         "kagent-authentik-oidc",
         "t3-authentik-oidc",
+        "home-assistant-authentik-oidc",
         "kube-api-authentik-jwt",
         "explore-api-authentik-jwt",
     }
@@ -263,6 +264,35 @@ def test_edge_may_reference_only_the_kagent_ui(docs):
         ],
         "to": [{"group": "", "kind": "Service", "name": "kagent-ui"}],
     }
+
+
+def test_home_assistant_requires_admin_group_on_the_entire_host(docs):
+    route = docs["HTTPRoute", "home-assistant"]["spec"]
+    assert route["hostnames"] == ["home.jomcgi.dev"]
+    ((backend,),) = [rule["backendRefs"] for rule in route["rules"]]
+    assert backend == {
+        "group": "",
+        "kind": "Service",
+        "name": "home-assistant",
+        "namespace": "home-assistant",
+        "port": 8123,
+        "weight": 1,
+    }
+    policy = docs["SecurityPolicy", "home-assistant-authentik-oidc"]["spec"]
+    gateway = docs["SecurityPolicy", "edge-authentik-oidc"]["spec"]
+    assert policy["targetRefs"] == [
+        {
+            "group": "gateway.networking.k8s.io",
+            "kind": "HTTPRoute",
+            "name": "home-assistant",
+        }
+    ]
+    assert policy["oidc"] == gateway["oidc"]
+    assert policy["authorization"]["defaultAction"] == "Deny"
+    (rule,) = policy["authorization"]["rules"]
+    assert rule["principal"]["jwt"]["claims"] == [
+        {"name": "groups", "valueType": "StringArray", "values": ["authentik Admins"]}
+    ]
 
 
 def test_t3_requires_admin_group_on_the_entire_host(docs):

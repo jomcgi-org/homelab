@@ -1,0 +1,9 @@
+# Mounted read-only over /config/configuration.yaml. Home Assistant keeps
+# its UI-made state, such as the ZHA config entry, in /config/.storage.
+default_config:
+
+http:
+  # The edge Envoy proxy forwards every request from the pod network.
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 10.42.0.0/16

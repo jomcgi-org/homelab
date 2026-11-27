@@ -41,6 +41,7 @@ spec:
             - factory-discord-agent
             - factory-r-homelab
             - factory-r-homelab-review
+            - home-assistant
             - kube-system
             - otel-collector
             - t3
