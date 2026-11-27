@@ -34,6 +34,8 @@ func TestParsePollAcceptsOnlyDiscordSizedPolls(t *testing.T) {
 		{"unknown field", `{"question":"q","answers":["a","b"],"layout":2}`, false},
 		{"unknown answer field", `{"question":"q","answers":[{"text":"a","id":"1"},"b"]}`, false},
 		{"custom emoji", `{"question":"q","answers":[{"text":"a","emoji":"<:x:123>"},"b"]}`, false},
+		{"digit emoji", `{"question":"q","answers":[{"text":"a","emoji":"1"},"b"]}`, false},
+		{"punctuation emoji", `{"question":"q","answers":[{"text":"a","emoji":"#-"},"b"]}`, false},
 		{"word emoji", `{"question":"q","answers":[{"text":"a","emoji":"smile"},"b"]}`, false},
 		{"trailing data", `{"question":"q","answers":["a","b"]} {}`, false},
 		{"not json", `question: q`, false},
@@ -125,6 +127,25 @@ func TestATurnPostsTheTextThenThePollAndStoresItsName(t *testing.T) {
 	b.Turn(context.Background(), tagged("2", "and Sunday"))
 	if len(rep.sent) != 1 || rep.sent[0].Poll == nil {
 		t.Errorf("poll-only answer sent %+v", rep.sent)
+	}
+}
+
+type failingPolls struct{ fakeReplies }
+
+func (f *failingPolls) Send(ctx context.Context, c string, r Reply) error {
+	if r.Poll != nil {
+		return io.ErrUnexpectedEOF
+	}
+	return f.fakeReplies.Send(ctx, c, r)
+}
+
+func TestARefusedPollIsNotNamedInMemory(t *testing.T) {
+	agent := &fakeAgent{answer: "Here:\n```poll\n{\"question\":\"Saturday?\",\"answers\":[\"Hike\",\"Pub\"]}\n```"}
+	b, mem, _ := newBridge(agent)
+	b.Replies = &failingPolls{}
+	b.Turn(context.Background(), tagged("1", "poll"))
+	if len(mem.retained) != 1 || strings.Contains(mem.retained[0], "[poll:") || !strings.HasSuffix(mem.retained[0], "Here:") {
+		t.Errorf("retained = %v", mem.retained)
 	}
 }
 

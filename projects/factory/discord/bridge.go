@@ -368,14 +368,14 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	}
 	answer, poll := Polls(answer)
 	shown, memo, files := Visuals(ctx, b.Render, answer)
-	shown, memo = PlacePoll(shown, memo, poll)
+	shown, _ = PlacePoll(shown, "", nil)
 	if shown != "" || len(files) > 0 || poll == nil {
 		b.replyWith(ctx, m, shown, files)
 	}
-	if poll != nil {
-		b.sendPoll(ctx, m, poll)
+	if poll != nil && !b.sendPoll(ctx, m, poll) {
+		poll = nil // Memory names only a poll that Discord posted.
 	}
-	answer = memo
+	_, answer = PlacePoll("", memo, poll)
 	at := m.Timestamp
 	if at.IsZero() {
 		at = b.now()
@@ -405,10 +405,12 @@ func (b *Bridge) replyWith(ctx context.Context, m Message, text string, files []
 
 // sendPoll posts a poll after a turn's text reply, as its own message. Only
 // Turn calls it: notices, failure replies and operator turns post no poll.
-func (b *Bridge) sendPoll(ctx context.Context, m Message, p *Poll) {
+func (b *Bridge) sendPoll(ctx context.Context, m Message, p *Poll) bool {
 	if err := b.Replies.Send(ctx, m.ChannelID, NewPollReply(p, m.ID)); err != nil {
 		b.Log.WarnContext(ctx, "poll failed", "channel", m.ChannelID, "message", m.ID, "error", err)
+		return false
 	}
+	return true
 }
 
 // take counts a turn against the user, server and global limits, or
