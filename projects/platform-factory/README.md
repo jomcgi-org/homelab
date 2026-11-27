@@ -11,6 +11,10 @@ Metrics API that scales a factory WorkerPool to and from zero. See
 The [t3](t3/) application relays authenticated admin browser traffic to the
 T3 socket on node-1. See [T3 browser access](../factory-cluster/README.md#t3-browser-access).
 
+The [home-assistant](home-assistant/) application runs Home Assistant at
+home.jomcgi.dev, and Zigbee2MQTT on the node-2 Zigbee dongle for the radiator
+valves.
+
 The [pod host access policy](pod-host-access/) warns and audits when application
 pods request host networking, host PID, hostPath volumes or privileged containers.
 
