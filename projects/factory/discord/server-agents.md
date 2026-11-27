@@ -329,13 +329,16 @@ flowchart LR
 | Files go under `<server>/<channel>/`; the server must be a `bridge.policy.guilds` key, the channel a snowflake | `artifacts/artifacts.go` |
 | Extensions `.html .md .txt .csv .json .svg .png`; the type comes from the extension; at most 2 MiB; PNG checked by magic bytes; Markdown served as plain text | `artifacts/artifacts.go` |
 | Bucket quota 2 GiB and 20,000 objects; website access on this bucket only | `garage_init.py` `WEBSITES` |
-| Every response: `Content-Security-Policy: sandbox allow-scripts allow-popups`, `nosniff`, `Referrer-Policy: no-referrer`, `CORP: same-origin`; `Set-Cookie` and `Access-Control-Allow-Origin` removed; `Cookie` and `Authorization` not sent to Garage | edge `artifact-route.yaml` |
+| Every response: `Content-Security-Policy: sandbox allow-scripts allow-popups` with fetch directives that allow only inline and `data:` content, `nosniff`, `Referrer-Policy: no-referrer`, `CORP: same-origin`; `Set-Cookie` and `Access-Control-Allow-Origin` removed; `Cookie` and `Authorization` not sent to Garage | edge `artifact-route.yaml` |
 | Only the edge proxy reaches Garage's port 3902; only the egress gateway reaches the service | Cilium policies |
 
 The sandbox gives each page an opaque origin. Thus a page cannot read
-cookies or storage, and it cannot load other artifacts: an HTML artifact
-must inline its CSS, scripts and images. The tools' descriptions tell the
-model this.
+cookies or storage, and it cannot load other artifacts. The fetch
+directives (`default-src 'none'`, `connect-src 'none'`) stop a page from
+reaching any origin, so it cannot send what it holds past the egress
+gateway's scanner. An HTML artifact must inline its CSS, scripts and
+images; a CDN library does not load. The tools' descriptions tell the
+model this. Residual: a page can still navigate itself to another URL.
 
 The prefix is not a security boundary. One homelab session answers Joe in
 all four servers (`servers: all`), so the actor JWT names the homelab

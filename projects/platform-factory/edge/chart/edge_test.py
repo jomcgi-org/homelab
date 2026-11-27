@@ -330,15 +330,31 @@ def test_artifacts_are_admin_only_and_sandboxed_on_every_response(docs):
     }
     response = filters["ResponseHeaderModifier"]["responseHeaderModifier"]
     headers = {h["name"]: h["value"] for h in response["set"]}
+    csp = dict(
+        (d.split()[0], d.split()[1:])
+        for d in headers.pop("Content-Security-Policy").split("; ")
+    )
+    assert csp["sandbox"] == ["allow-scripts", "allow-popups"]
+    assert csp["default-src"] == ["'none'"]
+    assert csp["connect-src"] == ["'none'"]
+    assert csp["form-action"] == ["'none'"]
+    assert csp["base-uri"] == ["'none'"]
+    # No directive names a network origin: inline and data: content only.
+    for values in csp.values():
+        for v in values:
+            assert v in {
+                "allow-scripts",
+                "allow-popups",
+                "'none'",
+                "'unsafe-inline'",
+                "data:",
+                "blob:",
+            }, v
     assert headers == {
-        "Content-Security-Policy": "sandbox allow-scripts allow-popups",
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
         "Cross-Origin-Resource-Policy": "same-origin",
     }
-    sandbox = headers["Content-Security-Policy"].split()
-    for token in ("allow-same-origin", "allow-top-navigation", "allow-forms"):
-        assert token not in sandbox
     assert response["remove"] == ["Set-Cookie", "Access-Control-Allow-Origin"]
     policy = docs["SecurityPolicy", "artifact-authentik-oidc"]["spec"]
     gateway = docs["SecurityPolicy", "edge-authentik-oidc"]["spec"]

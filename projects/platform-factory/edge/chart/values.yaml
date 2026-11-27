@@ -93,6 +93,12 @@ authentik:
 artifacts:
   hostname: artifact.jomcgi.dev
   garageHost: bosun-artifacts.web.garage.internal
+  # The sandbox, without allow-same-origin, allow-forms or
+  # allow-top-navigation, gives a page an opaque origin. The fetch
+  # directives allow inline and data: content only, so a page cannot send
+  # what it holds to another origin past the egress gateway's scanner.
+  # Residual: a page can still navigate itself.
+  contentSecurityPolicy: "sandbox allow-scripts allow-popups; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'"
 
 # kubectl at factory-kube.jomcgi.dev (templates/kube-api-route.yaml).
 kubeAPI:

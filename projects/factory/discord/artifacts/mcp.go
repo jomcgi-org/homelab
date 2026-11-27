@@ -63,8 +63,8 @@ type response struct {
 
 const instructions = "Publish files for Joe and give him the link. put writes one file under the Discord server and channel of the " +
 	"current message and returns its https://artifact.jomcgi.dev URL; only Joe can open it. HTML pages run sandboxed " +
-	"with an opaque origin: put CSS, scripts, images and data inline (data: URLs), because the page cannot load other " +
-	"artifacts or keep cookies or storage. list and delete work in the same server and channel."
+	"with an opaque origin and no network: put CSS, scripts, images and data inline (data: URLs). A page cannot load " +
+	"a CDN library, another artifact or any URL, and cannot keep cookies or storage. list and delete work in the same server and channel."
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -258,7 +258,7 @@ var Tools = []Tool{
 	{
 		Name: "put",
 		Description: fmt.Sprintf("Publish one file and return its URL for Joe. Replaces a file at the same path. At most %d bytes. "+
-			"HTML runs sandboxed: inline every style, script and image. PNG content is base64 with encoding base64; other types are UTF-8 text.", MaxBytes),
+			"HTML runs sandboxed with no network: inline every style, script and image; no CDN or remote URL loads. PNG content is base64 with encoding base64; other types are UTF-8 text.", MaxBytes),
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + placeSchema + `,` + pathSchema + `,` +
 			`"content":{"type":"string","description":"File content."},` +
 			`"encoding":{"type":"string","enum":["utf-8","base64"],"default":"utf-8"}},` +
