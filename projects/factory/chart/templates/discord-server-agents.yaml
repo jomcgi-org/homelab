@@ -16,6 +16,11 @@ Hindsight of its own yet (slice 3), so the bridge recalls for it.
 {{- $worker := printf "%s-worker" $a.name }}
 {{- $image := $d.hermesImage }}
 {{- $mcp := $a.mcpServers | default list }}
+{{- /* discord.github (templates/discord-github.yaml) binds its read-only GitHub tools to every routed agent. */}}
+{{- $github := and $d.github.enabled $d.bridge.enabled $a.route }}
+{{- if $github }}
+{{- $mcp = append $mcp (dict "name" "github" "url" (printf "http://github-mcp.%s.svc.cluster.local:8082/readonly" $d.bridge.namespace) "secret" "discord-github" "tools" $d.github.tools) }}
+{{- end }}
 {{- if and $a.serverTools (eq ($a.provider | default "openAI") "openAI") }}
 {{- fail (printf "discord.serverAgents.%s.serverTools needs provider anthropic: only the Messages API runs them" $server) }}
 {{- end }}
@@ -268,7 +273,8 @@ spec:
       {{- if or $mcp $a.serverTools }}
       {{- $web := "" }}
       {{- with $a.serverTools }}{{- if or .webSearch .webFetch }}{{- $web = $a.webToolsPrompt | default "" }}{{- end }}{{- end }}
-      systemPrompt: {{ printf "%s%s%s" $a.systemPrompt ($a.toolsPrompt | default "") $web | quote }}
+      {{- $ghPrompt := ternary ($d.github.prompt | default "") "" $github }}
+      systemPrompt: {{ printf "%s%s%s%s" $a.systemPrompt ($a.toolsPrompt | default "") $web $ghPrompt | quote }}
       {{- else }}
       systemPrompt: {{ $a.systemPrompt | quote }}
       {{- end }}

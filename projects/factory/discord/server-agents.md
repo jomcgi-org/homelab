@@ -311,6 +311,7 @@ flowchart LR
 | `web_fetch` (`web_fetch_20250910`), off until decided | Anthropic | 3 per request; only URLs already in the chat | Result tokens only |
 | `code_execution` (`code_execution_20260521`) | Anthropic sandbox, no network | none | Tokens, and container time after the organization's free monthly hours ($0.05 an hour) |
 | Scotland `plan`, `check`, `aurora`, `light` | scotland-connector, public, read-only | Hermes MCP timeout | None |
+| GitHub `search_repositories`, `search_code`, `get_file_contents`, branches, tags, commits, releases, pull requests, issues (16 read tools) | github-mcp in factory-discord, read-only, public-repositories token | GitHub's API rate limit for the token | None |
 | Artifacts `put`, `template`, `list` (no `delete`) | bosun-artifacts in factory-discord, actor JWT | 2 MiB a file; bucket quota (see "Artifacts") | None |
 
 - **Narrow opening.** The kagent fork's Hermes runner (jomcgi-org/kagent#6)
@@ -338,6 +339,52 @@ flowchart LR
 - **Scotland sources.** The prompt asks the agent to lead with the verdict
   and to credit each `meta.sources` entry, as the connector's instructions
   require.
+
+### Public GitHub
+
+Joe asked on 2026-11-27 for a public GitHub tool after Bosun answered
+"what's new in the substrate repo?" from stale memories. It is GitHub's
+own MCP server (`github/github-mcp-server` v2.3.0) in HTTP mode, in
+`factory-discord` (`chart/templates/discord-github.yaml`), behind
+`discord.github.enabled`.
+
+```mermaid
+flowchart LR
+  H["Hermes actor (placeholder)"] --> G["egress gateway"]
+  G -- "Authorization: discord-github token" --> M["github-mcp /readonly"]
+  M -- "same token" --> A["api.github.com"]
+```
+
+- **Read only, three times.** The server runs with `--read-only` and
+  `--tools` set to the 16 read tools, Hermes registers only those, and the
+  URL path `/readonly` sets read-only mode per request. A request header can
+  only narrow these settings.
+- **Token.** A fine-grained token with "Public repositories (read-only)" and
+  no permissions, from 1Password item `factory-discord-github-public`, field
+  `token`, which holds `Bearer ` and the token. It only raises the rate
+  limit: it cannot read a private repository or write. The OnePasswordItem
+  `discord-github` in the agent's namespace is injectable, so the gateway
+  sends it as `Authorization`; the actor and the server hold none.
+- **Egress.** The server reaches only `api.github.com`; only the egress
+  gateway reaches the server.
+- **Rule.** The system prompt tells the agent that memories may be stale:
+  for code, repositories, releases or anything current, check with a tool
+  (GitHub for quick facts, an explore block for a deep dive) and say what it
+  checked.
+
+Turning it on, in order:
+
+1. Joe creates the token and the 1Password item.
+2. A change sets `discord.github.enabled: true` in deploy values.
+3. After Argo CD syncs it, check that kagent shows the homelab Agent's new
+   revision as the latest successful one and that the actor's compiled
+   tools include `mcp__github__*`.
+4. Only then a second change sets a new bridge `sessionEpoch`, so existing
+   channels start on that revision. The bridge syncs before the Agent, so
+   setting both in one change can pin a new session to the old revision.
+
+The same order moves existing channels onto any prompt change, such as the
+check-current-facts rule.
 
 ### Tool security
 
