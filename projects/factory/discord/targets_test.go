@@ -35,7 +35,7 @@ func targetBridge(t *testing.T, answer string) (*actingReplies, *fakeAgent) {
 	b.History = &channelHistory{msgs: []HistoryMessage{said("50", "dave", "I'm moving to Leith", 1)}}
 	rep := &actingReplies{}
 	b.Replies = rep
-	m := tagged("60", "answer this")
+	m := tagged("60", "what do you think?")
 	m.Type = 19
 	m.Referenced = &Referenced{ID: "40", Author: User{ID: "9", Username: "dave"}, Content: "when is the pub?"}
 	b.Turn(context.Background(), m)
