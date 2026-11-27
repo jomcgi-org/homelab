@@ -216,7 +216,8 @@ automation:
     triggers:
       - trigger: mqtt
         topic: zigbee2mqtt/0x001788010e4a2b1b
-        value_template: "{{ value_json.action }}"
+        # State messages without a press carry no action key.
+        value_template: "{{ value_json.get('action', '') }}"
         payload: hue_press
     actions:
       - if:
