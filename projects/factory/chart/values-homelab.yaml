@@ -71,9 +71,9 @@ kagent:
   controller:
     metrics:
       enabled: true
-    # kagent v1.0.1 built from jomcgi-org/kagent commit 75914efa79f6
+    # kagent v1.0.1 built from jomcgi-org/kagent commit 91e862974d4d
     # (branch jomcgi/codex-6.2, build run
-    # https://github.com/jomcgi-org/kagent/actions/runs/45899832034). Commit
+    # https://github.com/jomcgi-org/kagent/actions/runs/46056477440). Commit
     # 2c2fc329a8d8 sets PinnedCodexVersion and the harness Dockerfile to Codex
     # 0.169.1, the first stable Codex whose bundled catalogue has
     # gpt-6.2-astra and gpt-6.2-sol (agents.*.model below). Upstream kagent
@@ -94,10 +94,12 @@ kagent:
     # model.base_url to a custom runtime with no key. Commit 75914efa79f6
     # (jomcgi-org/kagent#3) adds Harness spec.idleSuspendDelay: a settled
     # Session stays running for that delay instead of suspending at once.
+    # Commit 91e862974d4d (jomcgi-org/kagent#4) adds Harness
+    # spec.hermes.compression: threshold, verbatim user tail and summary model.
     image:
       registry: ghcr.io
       repository: jomcgi-org/kagent/controller
-      tag: 1.0.1-jomcgi.75914efa79f6@sha256:435650b6b236bf2d31245e6e7ce5e333feeeb69db417e872923a4f1724e35b02
+      tag: 1.0.1-jomcgi.91e862974d4d@sha256:c6585487b2c4b275a48013a9389ee4877b12722cbd6054934ccf57eb2484e9b1
   # The UI peaked at 4Mi over two days (2026-11-16) against the chart's
   # 256Mi request.
   ui:
@@ -111,8 +113,8 @@ kagent:
     # 0.169.1 in place of 0.161.0. The controller starts only when `release`
     # equals its own version, so it names the fork build, not 1.0.1.
     harnessImages:
-      release: 1.0.1-jomcgi.75914efa79f6
-      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:601c2900e8815674b88b6e0500b1593e9ff1803dd33973837eb4fe83ee8be7f9
+      release: 1.0.1-jomcgi.91e862974d4d
+      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:2730fc99513dd0768ae672ab137ad50a378302550160b958e00007b7dcc5fb78
     runtimeDefaults:
       cpu: "4"
       memory: 8Gi
@@ -408,6 +410,9 @@ discord:
       guildLimit: {count: 60, window: 1h}
       globalLimit: {count: 300, window: 24h}
       queueDepth: 3
+      # The bot answers Joe alone, in every server (Joe, 2026-11-27,
+      # HOME-909); other authors' tags get no turn and no reply.
+      users: operator
   # The bridge backfills each server's history (HOME-164), in place of the
   # import Job (Joe, 2026-11-26, HOME-836).
   backfill:
@@ -420,12 +425,14 @@ discord:
     guild: "1501965852042330302"
     channels: ["1575140752776757368"]
   # The homelab server's Hermes agent (HOME-907): a persistent session that
-  # suspends when idle. It answers the server's tagged messages in place of
-  # Bosun (Joe, 2026-11-27, HOME-909); the other servers keep Bosun.
+  # suspends when idle. It answers Joe's tags in every server, in its one
+  # session, in place of Bosun (Joe, 2026-11-27, HOME-909). Bosun's Agent
+  # stays rendered for a later friends' app.
   serverAgents:
     homelab:
       enabled: true
       route: true
+      servers: all
 
 semgrepSync:
   enabled: false

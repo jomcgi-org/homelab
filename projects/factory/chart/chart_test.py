@@ -81,6 +81,10 @@ def _render(
             "--set",
             "discord.serverAgents.homelab.enabled=false",
             "--set",
+            "discord.serverAgents.homelab.servers=own",
+            "--set",
+            "discord.bridge.policy.users=all",
+            "--set",
             "kagent.rbac.namespaces={kagent,factory-r-homelab}",
             # The scheduled planner and its Claude relay (HOME-40) need the
             # reviewer, which these tests turn off; planner_test.py and
@@ -133,10 +137,11 @@ def test_binding_codex_code_mode_image() -> None:
 
 # CRDs that the kagent fork controller (deploy values) changes, by the sha256
 # of the fork's helm/kagent-crds/templates file. jomcgi-org/kagent adds
-# `spec.hermes` (5bff0419a464) and `spec.idleSuspendDelay` (PR #3) to the
+# `spec.hermes` (5bff0419a464), `spec.idleSuspendDelay` (PR #3) and
+# `spec.hermes.compression` (PR #4) to the
 # Harness CRD; the rest stay upstream's.
 _FORK_CRDS = {
-    "api.kagent.dev_harnesses.yaml": "8b6b35a98f1b48e77db072562eb3f1ece9cc6f01b63c0a6ba20160ef037884d5",
+    "api.kagent.dev_harnesses.yaml": "5c80c5a60ffe6f87dd7d27b964e3c96d1fc0a683c6622b908dfd46bff88585bf",
 }
 
 
@@ -1771,7 +1776,15 @@ def test_discord_server_agent_runs_hermes_with_no_tools() -> None:
     assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-discord-llm"
     assert item["metadata"]["labels"]["substrate.ate.dev/injectable"] == "true"
     harness = _in(docs, "Harness", ns, "hermes")["spec"]
-    assert harness["hermes"] == {}
+    # Joe chose a 256k-token backstop, 3 verbatim user turns and a Flash
+    # summary (HOME-909).
+    assert harness["hermes"] == {
+        "compression": {
+            "thresholdTokens": 256000,
+            "minTailUserMessages": 3,
+            "model": "deepseek/deepseek-v4.1-flash-1017",
+        }
+    }
     # Joe chose to keep the agent awake during active chats.
     assert harness["idleSuspendDelay"] == "10m"
     assert harness["workload"] == {
@@ -1883,6 +1896,61 @@ def test_discord_server_agent_takes_its_server_turns_only_when_routed() -> None:
                 "string:discord.serverAgents.homelab.guild=999",
             ]
         )
+
+
+def test_discord_server_agent_answers_only_joe_in_every_server() -> None:
+    # HOME-909: servers: all routes every allowlisted server to the homelab
+    # Agent in the homelab session; users: operator mounts Joe's ID and the
+    # bridge answers him alone.
+    guilds = ["1501965852042330302", "185442367703220224"]
+    values = (
+        _HOMELAB
+        + [
+            f"kagent.rbac.namespaces={{kagent,factory-r-homelab,factory-discord-agent,{_HOMELAB_NS}}}",
+            "discord.agent.enabled=true",
+            "discord.bridge.enabled=true",
+            "discord.bridge.enforceAgentPath=true",
+            "discord.serverAgents.homelab.route=true",
+            "discord.serverAgents.homelab.servers=all",
+            "discord.bridge.policy.users=operator",
+        ]
+        + [f"string:discord.bridge.policy.guilds.{g}.ingest=true" for g in guilds]
+    )
+    docs = _render(values)
+    policy = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory-discord", "discord-bridge-policy")["data"][
+            "policy.json"
+        ]
+    )
+    assert policy["users"] == "operator"
+    every = sorted(policy["guilds"])
+    assert set(guilds) <= set(every)
+    assert policy["serverAgents"] == {g: f"{_HOMELAB_NS}/homelab" for g in every}
+    assert policy["serverSessions"] == {g: guilds[0] for g in every if g != guilds[0]}
+    pod = _in(docs, "Deployment", "factory-discord", "discord-bridge")["spec"][
+        "template"
+    ]["spec"]
+    env = {e["name"]: e.get("value") for e in pod["containers"][0]["env"]}
+    assert (
+        env["DISCORD_OPERATOR_USER_FILE"] == "/var/run/secrets/discord-operator/user-id"
+    )
+    assert "DISCORD_OPERATOR_AGENT" not in env
+    volume = next(v for v in pod["volumes"] if v["name"] == "operator")
+    assert volume["secret"] == {
+        "secretName": "discord-bot",
+        "optional": True,
+        "items": [{"key": "operator-user-id", "path": "user-id"}],
+    }
+    rules = _controller_egress(
+        _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")["spec"]
+    )["toPorts"][0]["rules"]["http"]
+    agent = {"method": "POST", "path": f"^/agents/{_HOMELAB_NS}/homelab$"}
+    assert rules.count(agent) == 1
+    deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    assert deploy["discord"]["bridge"]["policy"]["users"] == "operator"
+    assert deploy["discord"]["serverAgents"]["homelab"]["servers"] == "all"
+    with pytest.raises(RuntimeError, match="must be own or all"):
+        _render(values + ["discord.serverAgents.homelab.servers=some"])
 
 
 def test_discord_server_agent_image_needs_the_published_digest() -> None:

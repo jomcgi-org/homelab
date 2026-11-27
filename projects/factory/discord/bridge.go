@@ -70,6 +70,13 @@ type Config struct {
 	// ServerAgents maps a server to its own persistent agent (HOME-909). A
 	// server without an entry answers from Agent.
 	ServerAgents map[string]kagent.AgentRef `json:"-"`
+	// ServerSessions maps a server in ServerAgents to the server whose
+	// session its turns join; absent means its own.
+	ServerSessions map[string]string `json:"-"`
+	// OperatorOnly answers Joe alone (HOME-909): any other author's tag
+	// starts no turn and gets no reply. Without Operator.UserID nobody is
+	// answered.
+	OperatorOnly bool `json:"-"`
 }
 
 // dedupeWindow is how long a message ID is remembered. An older message
@@ -188,6 +195,9 @@ func (b *Bridge) Handle(ctx context.Context, m Message) {
 	if !b.Accept(m) {
 		return
 	}
+	if b.Config.OperatorOnly && !b.fromOperator(m) {
+		return // Joe alone is answered; others get no turn and no reply.
+	}
 	now := b.now()
 	if now.Sub(SentAt(m)) > dedupeWindow {
 		return // Older than the IDs the bridge remembers.
@@ -203,8 +213,9 @@ func (b *Bridge) Handle(ctx context.Context, m Message) {
 	allowed := b.take(now, m)
 	key := m.ChannelID
 	if _, ok := b.Servers[m.GuildID]; ok {
-		// One session serves the whole server, so its turns run one at a time.
-		key = "server:" + m.GuildID
+		// One session serves the whole server, or several servers, so its
+		// turns run one at a time.
+		key = "server:" + b.sessionKey(m.GuildID)
 	}
 	q, ok := b.queues[key]
 	if !ok && allowed {
@@ -363,7 +374,7 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	prompt := Prompt(m, b.Places.Lookup(m.GuildID, m.ChannelID), text, memories, recent)
 	var answer string
 	if a, ok := b.Servers[m.GuildID]; ok {
-		answer, err = a.Turn(ctx, m.GuildID, m.ID, prompt)
+		answer, err = a.Turn(ctx, b.sessionKey(m.GuildID), m.ID, prompt)
 	} else {
 		answer, err = b.Agent.Turn(ctx, m.ID, prompt)
 	}
@@ -410,6 +421,14 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	if err := b.Memory.Retain(ctx, m.GuildID, m.ChannelID, at, exchange); err != nil {
 		l.WarnContext(ctx, "retain failed", "error", err)
 	}
+}
+
+// sessionKey is the server whose session a server agent's turn joins.
+func (b *Bridge) sessionKey(guild string) string {
+	if s, ok := b.Config.ServerSessions[guild]; ok {
+		return s
+	}
+	return guild
 }
 
 func (b *Bridge) reply(ctx context.Context, m Message, text string) {

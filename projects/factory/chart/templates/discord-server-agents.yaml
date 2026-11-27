@@ -135,7 +135,23 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
+  {{- with $a.compression }}
+  hermes:
+    # Compact before a long chat resends its whole history each turn
+    # (server-agents.md, "Model and token cost").
+    compression:
+      {{- with .thresholdTokens }}
+      thresholdTokens: {{ int . }}
+      {{- end }}
+      {{- with .minTailUserMessages }}
+      minTailUserMessages: {{ int . }}
+      {{- end }}
+      {{- with .model }}
+      model: {{ . | quote }}
+      {{- end }}
+  {{- else }}
   hermes: {}
+  {{- end }}
   workload:
     image: {{ ternary (printf "%s@%s" $image.repository $image.digest) (printf "%s:%s" $image.repository $image.tag) (not (empty $image.digest)) | quote }}
   substrate:

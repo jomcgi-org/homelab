@@ -81,6 +81,37 @@ spec:
                   HermesHarness selects the Hermes Agent runtime adapter. Kagent publishes no
                   built-in Hermes image, so workload.image must name one that contains Hermes
                   Agent and the kagent-hermes adapter.
+                properties:
+                  compression:
+                    description: |-
+                      Compression tunes Hermes context compression. Unset keeps Hermes's
+                      defaults: compress at half the model window, summarised by the main model.
+                    properties:
+                      minTailUserMessages:
+                        description: |-
+                          MinTailUserMessages is how many of the newest user messages a
+                          compression keeps verbatim. Unset keeps Hermes's default of 1.
+                        format: int32
+                        maximum: 20
+                        minimum: 1
+                        type: integer
+                      model:
+                        description: |-
+                          Model is the model ID that writes the summary. Hermes calls it through
+                          the ModelConfig's endpoint and credential, like the main model. Unset
+                          means the main model.
+                        maxLength: 256
+                        minLength: 1
+                        pattern: ^[^[:space:]]+$
+                        type: string
+                      thresholdTokens:
+                        description: |-
+                          ThresholdTokens compresses the session when its prompt reaches this many
+                          tokens, or the default half-window ratio, whichever is lower.
+                        format: int32
+                        minimum: 8192
+                        type: integer
+                    type: object
                 type: object
               idleSuspendDelay:
                 description: |-
