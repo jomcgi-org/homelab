@@ -131,18 +131,22 @@ func pollText(s string, limit int) (string, bool) {
 	return s, n > 0 && n <= limit && !strings.ContainsAny(s, "\r\n")
 }
 
-// pollEmoji accepts a short run of non-space, non-letter characters: a
-// Unicode emoji, never a custom emoji's <:name:id> or a word.
+// pollEmoji accepts a short run of non-space, non-letter characters with
+// at least one symbol past ASCII: a Unicode emoji such as 🍕 or 1️⃣, never a
+// custom emoji's <:name:id>, a word or a bare "1", which Discord refuses.
 func pollEmoji(s string) bool {
 	if utf8.RuneCountInString(s) > maxPollEmoji {
 		return false
 	}
+	symbol := false
 	for _, r := range s {
 		if unicode.IsSpace(r) || unicode.IsLetter(r) || r == ':' || r == '<' || r == '>' {
 			return false
 		}
+		// A variation selector or joiner alone is no emoji.
+		symbol = symbol || (r > unicode.MaxASCII && r != 0xFE0F && r != 0x200D)
 	}
-	return true
+	return symbol
 }
 
 // Polls takes the first valid poll block out of an answer and leaves
