@@ -1,0 +1,68 @@
+{
+  "title": "Renders per hour",
+  "data": {
+    "values": [
+      {
+        "h": 0,
+        "s": "mermaid",
+        "n": 4
+      },
+      {
+        "h": 1,
+        "s": "mermaid",
+        "n": 7
+      },
+      {
+        "h": 2,
+        "s": "mermaid",
+        "n": 5
+      },
+      {
+        "h": 3,
+        "s": "mermaid",
+        "n": 9
+      },
+      {
+        "h": 0,
+        "s": "vega-lite",
+        "n": 2
+      },
+      {
+        "h": 1,
+        "s": "vega-lite",
+        "n": 3
+      },
+      {
+        "h": 2,
+        "s": "vega-lite",
+        "n": 6
+      },
+      {
+        "h": 3,
+        "s": "vega-lite",
+        "n": 4
+      }
+    ]
+  },
+  "mark": {
+    "type": "line",
+    "point": true
+  },
+  "encoding": {
+    "x": {
+      "field": "h",
+      "type": "quantitative",
+      "title": "Hour"
+    },
+    "y": {
+      "field": "n",
+      "type": "quantitative",
+      "title": "Renders"
+    },
+    "color": {
+      "field": "s",
+      "type": "nominal",
+      "title": null
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "theme": "modern",
+  "themeVariables": {
+    "fontFamily": "Inter, \"DejaVu Sans\", sans-serif, \"Noto Color Emoji\"",
+    "fontSize": 15,
+    "background": "#FFFFFF",
+    "primaryColor": "#EEF2F7",
+    "primaryBorderColor": "#94A3B8",
+    "primaryTextColor": "#0F172A",
+    "secondaryColor": "#E0F2FE",
+    "tertiaryColor": "#F8FAFC",
+    "lineColor": "#64748B",
+    "textColor": "#0F172A",
+    "edgeLabelBackground": "#FFFFFF",
+    "clusterBkg": "#F8FAFC",
+    "clusterBorder": "#CBD5E1",
+    "actorBkg": "#EEF2F7",
+    "actorBorder": "#94A3B8",
+    "actorLine": "#94A3B8",
+    "noteBkgColor": "#FEF3C7",
+    "noteBorderColor": "#F59E0B",
+    "pie1": "#2A78D6",
+    "pie2": "#EB6834",
+    "pie3": "#1BAF7A",
+    "pie4": "#EDA100",
+    "pie5": "#E87BA4",
+    "pie6": "#008300",
+    "pie7": "#6250D6",
+    "pie8": "#E34948",
+    "pieStrokeColor": "#FFFFFF",
+    "pieStrokeWidth": 2,
+    "pieOuterStrokeWidth": 0,
+    "pieOpacity": 1,
+    "pieTitleTextSize": 18,
+    "pieSectionTextColor": "#FFFFFF",
+    "pieSectionTextSize": 14,
+    "pieLegendTextSize": 14
+  },
+  "flowchart": {
+    "nodeSpacing": 40,
+    "rankSpacing": 56
+  }
+}

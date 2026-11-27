@@ -113,6 +113,28 @@ http_archive(
     urls = ["https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.tar.bz2"],
 )
 
+# Renderer house fonts: Inter for text, Noto Color Emoji for emoji.
+http_archive(
+    name = "discord_render_inter",
+    build_file_content = 'exports_files(["LICENSE.txt"])\nfilegroup(name = "fonts", srcs = ["extras/ttf/Inter-%s.ttf" % w for w in ["Regular", "Medium", "SemiBold", "Bold"]], visibility = ["//visibility:public"])',
+    sha256 = "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e",
+    urls = ["https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip"],
+)
+
+http_file(
+    name = "discord_render_emoji",
+    downloaded_file_path = "NotoColorEmoji.ttf",
+    sha256 = "72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b",
+    urls = ["https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/NotoColorEmoji.ttf"],
+)
+
+http_file(
+    name = "discord_render_emoji_license",
+    downloaded_file_path = "LICENSE",
+    sha256 = "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+    urls = ["https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/LICENSE"],
+)
+
 # Private API server for the factory credential admission test. Match the
 # factory cluster's Kubernetes minor; CI executors are Linux amd64. Checksums
 # come from controller-tools/envtest-releases.yaml and the ESO chart index.

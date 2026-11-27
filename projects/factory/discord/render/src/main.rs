@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::fs::{self, File};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tiny_http::{Header, Method, Request, Response, Server};
 
@@ -13,6 +13,17 @@ const INTERNAL: Failure = (500, "Renderer unavailable");
 // Largest drawing side the renderers accept before they run: a larger one
 // can exhaust the pod's memory before the output check.
 const MAX_SIDE: f64 = 4096.0;
+
+// The house theme. The renderer applies it to every diagram and chart, so
+// the agent cannot pick a different font, palette or background. Mermaid
+// source cannot carry its own theme: diagram_allowed refuses "%%{" and
+// front matter.
+const MERMAID_THEME: &str = include_str!("../theme/mermaid.json");
+const VEGA_LITE_THEME: &str = include_str!("../theme/vega-lite.json");
+
+// A drawing up to half of MAX_SIDE rasterizes at twice its size, for sharp
+// images on high-density phone screens.
+const SCALE: f64 = 2.0;
 
 fn inline_chart(value: &Value) -> bool {
     match value {
@@ -101,13 +112,18 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
 // MAX_SIDE. A missing or percentage side takes the viewBox's, which must
 // also fit; without a viewBox resvg draws 100 px.
 fn svg_size_allowed(lower: &str) -> bool {
-    let Some(start) = lower.find("<svg") else {
-        return false;
-    };
+    svg_side(lower).is_some()
+}
+
+// svg_side returns the longer side of the drawing, or None when a side does
+// not fit.
+fn svg_side(lower: &str) -> Option<f64> {
+    let start = lower.find("<svg")?;
     let root = &lower[start..];
     let root = &root[..root.find('>').unwrap_or(root.len())];
     let fits = |n: f64| n > 0.0 && n <= MAX_SIDE;
     let mut from_view_box = false;
+    let mut side: f64 = 0.0;
     for name in ["width", "height"] {
         match attribute(root, name) {
             // Relative sizes, as icons use, draw at the viewBox's size.
@@ -116,68 +132,124 @@ fn svg_size_allowed(lower: &str) -> bool {
             }
             Some(v) => {
                 let number = v.strip_suffix("px").unwrap_or(&v).trim();
-                if !number.parse::<f64>().is_ok_and(fits) {
-                    return false;
-                }
+                let number = number.parse::<f64>().ok().filter(|n| fits(*n))?;
+                side = side.max(number);
             }
             None => from_view_box = true,
         }
     }
     if !from_view_box {
-        return true;
+        return Some(side);
     }
     match attribute(root, "viewbox") {
-        None => true,
+        None => Some(side.max(100.0)),
         Some(v) => {
             let numbers: Vec<f64> = v
                 .split(|c: char| c.is_ascii_whitespace() || c == ',')
                 .filter(|part| !part.is_empty())
                 .filter_map(|part| part.parse().ok())
                 .collect();
-            numbers.len() == 4 && fits(numbers[2]) && fits(numbers[3])
+            (numbers.len() == 4 && fits(numbers[2]) && fits(numbers[3]))
+                .then(|| side.max(numbers[2]).max(numbers[3]))
         }
     }
 }
 
+// merge_theme writes each house value over the chart's config, so a chart
+// keeps its own settings for everything the house theme does not set.
+fn merge_theme(target: &mut Value, house: Value) {
+    match (target, house) {
+        (Value::Object(target), Value::Object(house)) => {
+            for (key, value) in house {
+                merge_theme(target.entry(key).or_insert(Value::Null), value);
+            }
+        }
+        (target, house) => *target = house,
+    }
+}
+
+// A request becomes an SVG drawing, then a PNG. Job.input is the file the
+// renderer writes; Job.command, when present, turns it into the SVG.
+#[derive(Debug)]
+struct Job {
+    input: Vec<u8>,
+    command: Option<Command>,
+}
+
+fn deadline(seconds: &str) -> Command {
+    let mut process = Command::new("timeout");
+    process.args(["-s", "KILL", seconds]);
+    process
+}
+
 // invariant: HOME-585-2
-fn worker(route: &str, body: &[u8], input: &Path, output: &Path) -> Result<Command, Failure> {
+fn worker(route: &str, body: &[u8], input: &Path, svg: &Path) -> Result<Job, Failure> {
     if body.len() > LIMIT {
         return Err((413, "Spec exceeds 64 KiB"));
     }
-    let mut process = Command::new("timeout");
-    process.args(["-s", "KILL", "5"]);
-    match route {
+    // The drawing step and the raster step share the five-second deadline.
+    let mut process = deadline("3");
+    let spec = match route {
         "/vega-lite" => {
-            let chart: Value = serde_json::from_slice(body).map_err(|_| INVALID)?;
+            let mut chart: Value = serde_json::from_slice(body).map_err(|_| INVALID)?;
             if !chart.is_object() || !inline_chart(&chart) {
                 return Err(INVALID);
             }
+            let house = serde_json::from_str(VEGA_LITE_THEME).map_err(|_| INTERNAL)?;
+            let map = chart.as_object_mut().ok_or(INVALID)?;
+            map.remove("background");
+            merge_theme(map.entry("config").or_insert(Value::Null), house);
             process.args([
                 "vl-convert",
-                "vl2png",
+                "vl2svg",
                 "--allowed-base-url",
                 "urn:disabled:",
                 "-i",
             ]);
+            serde_json::to_vec(&chart).map_err(|_| INTERNAL)?
         }
         "/mermaid" => {
             let spec = std::str::from_utf8(body).map_err(|_| INVALID)?;
             if !diagram_allowed(spec) {
                 return Err(INVALID);
             }
-            process.args(["mmdr", "-e", "png", "-i"]);
+            process.arg("mmdr").arg("-c").arg(input.with_file_name("mermaid.json"));
+            process.args(["-e", "svg", "-i"]);
+            body.to_vec()
         }
         "/svg" => {
             let spec = std::str::from_utf8(body).map_err(|_| INVALID)?;
             if !svg_allowed(spec) {
                 return Err(INVALID);
             }
-            process.args(["vl-convert", "svg2png", "-i"]);
+            return Ok(Job {
+                input: body.to_vec(),
+                command: None,
+            });
         }
         _ => return Err((404, "Unknown renderer")),
+    };
+    process.arg(input).arg("-o").arg(svg);
+    Ok(Job {
+        input: spec,
+        command: Some(process),
+    })
+}
+
+fn run(mut process: Command) -> Result<(), Failure> {
+    let status = process
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|_| INTERNAL)?;
+    if status.success() {
+        return Ok(());
     }
-    process.arg(input).arg("-o").arg(output);
-    Ok(process)
+    Err(match status.code() {
+        Some(124 | 137) | None => (504, "Render deadline exceeded"),
+        Some(125..=127) => INTERNAL,
+        _ => INVALID,
+    })
 }
 
 fn render(req: &mut Request, dir: &Path) -> Result<File, Failure> {
@@ -193,21 +265,28 @@ fn render(req: &mut Request, dir: &Path) -> Result<File, Failure> {
         .read_to_end(&mut body)
         .map_err(|_| (400, "Incomplete request"))?;
     let input = dir.join("spec");
+    let drawing = dir.join("drawing.svg");
     let output = dir.join("output.png");
-    let mut cmd = worker(req.url(), &body, &input, &output)?;
-    fs::write(&input, body).map_err(|_| INTERNAL)?;
-    let status = cmd
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|_| INTERNAL)?;
-    if !status.success() {
-        return Err(match status.code() {
-            Some(124 | 137) | None => (504, "Render deadline exceeded"),
-            Some(125..=127) => INTERNAL,
-            _ => INVALID,
-        });
-    }
+    let job = worker(req.url(), &body, &input, &drawing)?;
+    fs::write(&input, &job.input).map_err(|_| INTERNAL)?;
+    let drawing: PathBuf = match job.command {
+        Some(process) => {
+            run(process)?;
+            drawing
+        }
+        None => input,
+    };
+    let svg = fs::read(&drawing).map_err(|_| INTERNAL)?;
+    let side = svg_side(&String::from_utf8_lossy(&svg).to_ascii_lowercase())
+        .ok_or((422, "PNG exceeds output bounds"))?;
+    let scale = if side * SCALE <= MAX_SIDE { "2" } else { "1" };
+    let mut raster = deadline("2");
+    raster
+        .args(["vl-convert", "svg2png", "--scale", scale, "-i"])
+        .arg(&drawing)
+        .arg("-o")
+        .arg(&output);
+    run(raster)?;
     let mut header = [0u8; 24];
     let mut png = File::open(&output).map_err(|_| INTERNAL)?;
     png.read_exact(&mut header).map_err(|_| INTERNAL)?;
@@ -229,9 +308,10 @@ fn main() {
     // The private scratch volume and single worker bound simultaneous render cost.
     let dir = std::env::temp_dir().join(format!("render-{}", std::process::id()));
     fs::create_dir_all(&dir).expect("create scratch directory");
+    fs::write(dir.join("mermaid.json"), MERMAID_THEME).expect("write Mermaid theme");
     for mut req in server.incoming_requests() {
         let result = render(&mut req, &dir);
-        for name in ["spec", "output.png"] {
+        for name in ["spec", "drawing.svg", "output.png"] {
             let _ = fs::remove_file(dir.join(name));
         }
         match result {
@@ -323,6 +403,28 @@ mod tests {
     fn svg_may_reference_its_own_fragments() {
         let svg = r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g"/></defs><rect fill="url(#g)"/><a href="#g"><text>pelican</text></a></svg>"##;
         assert!(worker("/svg", svg.as_bytes(), Path::new("in"), Path::new("out")).is_ok());
+    }
+
+    #[test]
+    fn house_theme_wins_over_the_chart_config() {
+        let chart = r##"{"background":"#000","mark":"bar","config":{"font":"Comic Sans MS","axis":{"labelAngle":45,"labelColor":"red"}}}"##;
+        let job = worker("/vega-lite", chart.as_bytes(), Path::new("in"), Path::new("out")).unwrap();
+        let themed: Value = serde_json::from_slice(&job.input).unwrap();
+        assert_eq!(themed.get("background"), None);
+        assert_eq!(themed["config"]["font"], "Inter");
+        assert_eq!(themed["config"]["background"], "#FFFFFF");
+        assert_eq!(themed["config"]["axis"]["labelAngle"], 45);
+        assert_eq!(themed["config"]["axis"]["labelColor"], "#475569");
+        let mermaid: Value = serde_json::from_str(MERMAID_THEME).unwrap();
+        assert_eq!(mermaid["theme"], "modern");
+    }
+
+    #[test]
+    fn drawing_side_sets_the_raster_scale() {
+        assert_eq!(svg_side(r#"<svg width="300" height="1500.5">"#), Some(1500.5));
+        assert_eq!(svg_side(r#"<svg viewbox="0 0 24 24" width="1em">"#), Some(24.0));
+        assert_eq!(svg_side("<svg>"), Some(100.0));
+        assert_eq!(svg_side(r#"<svg width="5000" height="10">"#), None);
     }
 
     #[test]
