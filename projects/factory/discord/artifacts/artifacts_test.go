@@ -163,8 +163,27 @@ func TestInitializeAndToolsList(t *testing.T) {
 	for _, tool := range out["result"].(map[string]any)["tools"].([]any) {
 		names = append(names, tool.(map[string]any)["name"].(string))
 	}
-	if strings.Join(names, ",") != "put,list,delete" {
+	if strings.Join(names, ",") != "put,template,list,delete" {
 		t.Fatalf("tools %v", names)
+	}
+}
+
+// The template is a whole page that loads nothing from outside, so it works
+// under the artifact CSP.
+func TestTemplateIsSelfContained(t *testing.T) {
+	srv, _ := setup(t)
+	res := call(t, srv.URL, "template", map[string]any{})
+	html := res["structuredContent"].(map[string]any)["html"].(string)
+	if !strings.HasPrefix(html, "<!doctype html>") || !strings.Contains(html, "prefers-color-scheme: dark") {
+		t.Fatalf("template %.80q", html)
+	}
+	for _, external := range []string{"http:", "https:", "<link", "<script", "<img", "@import", "url("} {
+		if strings.Contains(html, external) {
+			t.Fatalf("template loads %q", external)
+		}
+	}
+	if res := call(t, srv.URL, "template", map[string]any{"name": "x"}); res["isError"] != true {
+		t.Fatalf("template took an unknown argument: %v", res)
 	}
 }
 
