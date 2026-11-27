@@ -147,6 +147,12 @@ func (r *REST) Send(ctx context.Context, channelID string, reply Reply) error {
 	return r.send(ctx, http.MethodPost, path, body.Bytes(), w.FormDataContentType(), nil)
 }
 
+// Typing shows the bot as typing in a channel for 10 seconds or until it
+// posts.
+func (r *REST) Typing(ctx context.Context, channelID string) error {
+	return r.do(ctx, http.MethodPost, "/channels/"+channelID+"/typing", nil, nil)
+}
+
 // Me is the bot's own user.
 func (r *REST) Me(ctx context.Context) (User, error) {
 	var u User
