@@ -10,11 +10,17 @@ type Failure = (u16, &'static str);
 const INVALID: Failure = (422, "Unsupported or external input");
 const INTERNAL: Failure = (500, "Renderer unavailable");
 
+// Largest drawing side the renderers accept before they run: a larger one
+// can exhaust the pod's memory before the output check.
+const MAX_SIDE: f64 = 4096.0;
+
 fn inline_chart(value: &Value) -> bool {
     match value {
         Value::Object(map) => map.iter().all(|(key, value)| {
             !matches!(key.as_str(), "url" | "href")
                 && !(matches!(key.as_str(), "mark" | "type") && value == "image")
+                && !(matches!(key.as_str(), "width" | "height")
+                    && value.as_f64().is_some_and(|side| side > MAX_SIDE))
                 && inline_chart(value)
         }),
         Value::Array(items) => items.iter().all(inline_chart),
@@ -41,8 +47,18 @@ fn svg_allowed(input: &str) -> bool {
     let lower = input.to_ascii_lowercase();
     let compact: String = lower.split_whitespace().collect();
     let unsafe_tokens = [
-        "<image", "<foreignobject", "<script", "@import", "<!entity", "<!doctype",
-        "xi:include", "<feimage", "<iframe", "<object", "<embed", "javascript:",
+        "<image",
+        "<foreignobject",
+        "<script",
+        "@import",
+        "<!entity",
+        "<!doctype",
+        "xi:include",
+        "<feimage",
+        "<iframe",
+        "<object",
+        "<embed",
+        "javascript:",
     ];
     if unsafe_tokens.iter().any(|token| compact.contains(token)) {
         return false;
@@ -53,7 +69,69 @@ fn svg_allowed(input: &str) -> bool {
             rest.starts_with('#')
         })
     };
-    fragment_only("href=") && fragment_only("url(")
+    fragment_only("href=") && fragment_only("url(") && svg_size_allowed(&lower)
+}
+
+// attribute reads a quoted attribute of one tag: the name must follow
+// whitespace, and whitespace may surround the '='.
+fn attribute(tag: &str, name: &str) -> Option<String> {
+    let mut from = 0;
+    while let Some(found) = tag[from..].find(name) {
+        let at = from + found;
+        from = at + name.len();
+        if !tag[..at].ends_with(|c: char| c.is_ascii_whitespace()) {
+            continue;
+        }
+        let rest = tag[from..].trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+        let value = &rest[1..];
+        return Some(value[..value.find(quote)?].trim().to_string());
+    }
+    None
+}
+
+// The root element's width and height, else its viewBox, set the drawing
+// size. An explicit side must be a plain or px number no larger than
+// MAX_SIDE. A missing or percentage side takes the viewBox's, which must
+// also fit; without a viewBox resvg draws 100 px.
+fn svg_size_allowed(lower: &str) -> bool {
+    let Some(start) = lower.find("<svg") else {
+        return false;
+    };
+    let root = &lower[start..];
+    let root = &root[..root.find('>').unwrap_or(root.len())];
+    let fits = |n: f64| n > 0.0 && n <= MAX_SIDE;
+    let mut from_view_box = false;
+    for name in ["width", "height"] {
+        match attribute(root, name) {
+            Some(v) if v.ends_with('%') => from_view_box = true,
+            Some(v) => {
+                let number = v.strip_suffix("px").unwrap_or(&v).trim();
+                if !number.parse::<f64>().is_ok_and(fits) {
+                    return false;
+                }
+            }
+            None => from_view_box = true,
+        }
+    }
+    if !from_view_box {
+        return true;
+    }
+    match attribute(root, "viewbox") {
+        None => true,
+        Some(v) => {
+            let numbers: Vec<f64> = v
+                .split(|c: char| c.is_ascii_whitespace() || c == ',')
+                .filter(|part| !part.is_empty())
+                .filter_map(|part| part.parse().ok())
+                .collect();
+            numbers.len() == 4 && fits(numbers[2]) && fits(numbers[3])
+        }
+    }
 }
 
 // invariant: HOME-585-2
@@ -176,15 +254,61 @@ mod tests {
             ),
             ("/mermaid", "flowchart LR\nA-->B\nclick A \"/report\""),
             ("/mermaid", "sequenceDiagram\nlink Alice: Chart @ /relative"),
-            ("/svg", r#"<svg><image href="https://example.org/a.png"/></svg>"#),
-            ("/svg", r#"<svg><rect fill="url(https://example.org/p)"/></svg>"#),
-            ("/svg", r#"<svg><a xlink:href = "file:///etc/hostname"><text>x</text></a></svg>"#),
+            (
+                "/svg",
+                r#"<svg><image href="https://example.org/a.png"/></svg>"#,
+            ),
+            (
+                "/svg",
+                r#"<svg><rect fill="url(https://example.org/p)"/></svg>"#,
+            ),
+            (
+                "/svg",
+                r#"<svg><a xlink:href = "file:///etc/hostname"><text>x</text></a></svg>"#,
+            ),
             ("/svg", r#"<svg><style>@import url(x.css)</style></svg>"#),
-            ("/svg", r#"<!DOCTYPE svg [<!ENTITY x SYSTEM "file:///etc/hostname">]><svg/>"#),
+            (
+                "/svg",
+                r#"<!DOCTYPE svg [<!ENTITY x SYSTEM "file:///etc/hostname">]><svg/>"#,
+            ),
         ] {
             assert_eq!(
                 worker(route, body.as_bytes(), Path::new("in"), Path::new("out")).unwrap_err(),
                 INVALID
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_drawings_are_refused_before_starting_worker() {
+        for (route, body) in [
+            ("/svg", r#"<svg width="16000" height="10"/>"#),
+            ("/svg", r#"<svg width = '10cm' height="10"/>"#),
+            (
+                "/svg",
+                r#"<svg width="100%" height="100%" viewBox="0 0 20000 10"/>"#,
+            ),
+            ("/svg", r#"<svg viewBox="0,0,10,9000"/>"#),
+            ("/vega-lite", r#"{"width":16000,"mark":"bar"}"#),
+            (
+                "/vega-lite",
+                r#"{"vconcat":[{"height":5000,"mark":"bar"}]}"#,
+            ),
+        ] {
+            assert_eq!(
+                worker(route, body.as_bytes(), Path::new("in"), Path::new("out")).unwrap_err(),
+                INVALID,
+                "{body}"
+            );
+        }
+        for body in [
+            r#"<svg width="400px" height="300"/>"#,
+            r#"<svg stroke-width="9000" viewBox="0 0 200 200"/>"#,
+            r#"<svg/>"#,
+        ] {
+            assert!(
+                worker("/svg", body.as_bytes(), Path::new("in"), Path::new("out")).is_ok(),
+                "{body}"
             );
         }
     }
