@@ -265,11 +265,13 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
-    # The Discord bot's model calls (factory chart `discord.agent`), with the
-    # dedicated OpenRouter key the gateway injects. kagent admits this origin
-    # only for actors whose ModelConfig names it.
+    # The Discord agents' model calls (factory chart `discord.agent` and
+    # `discord.serverAgents`), with the key the gateway injects: OpenRouter,
+    # or Anthropic's Messages API. kagent admits each origin only for actors
+    # whose ModelConfig names it.
     - toFQDNs:
         - matchName: openrouter.ai
+        - matchName: api.anthropic.com
       toPorts:
         - ports:
             - port: "443"

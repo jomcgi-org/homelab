@@ -1764,25 +1764,32 @@ def test_discord_server_agent_runs_hermes_with_no_tools() -> None:
     assert labels["factory.jomcgi.dev/substrate-workers"] == "true"
     assert "helm.sh/resource-policy" in namespace["metadata"]["annotations"]
     model = _in(docs, "ModelConfig", ns, "homelab")["spec"]
+    # Joe chose Opus 5.5 on his Anthropic Console key, with a 1 h prompt
+    # cache (2026-11-27, HOME-909).
     assert model == {
-        "provider": "OpenAI",
-        "model": "deepseek/deepseek-v4.1-flash-1017",
+        "provider": "Anthropic",
+        "model": "claude-opus-5-5",
         "apiKeySecret": "discord-llm",
         "apiKeySecretKey": "api-key",
-        "openAI": {"baseUrl": "https://openrouter.ai/api/v1"},
+        "anthropic": {
+            "baseUrl": "https://api.anthropic.com",
+            "promptCaching": True,
+            "cacheTTL": "1h",
+        },
     }
-    # Joe chose one shared key: Bosun's item.
     item = _in(docs, "OnePasswordItem", ns, "discord-llm")
-    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-discord-llm"
+    assert (
+        item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-discord-anthropic"
+    )
     assert item["metadata"]["labels"]["substrate.ate.dev/injectable"] == "true"
     harness = _in(docs, "Harness", ns, "hermes")["spec"]
-    # Joe chose a 256k-token backstop, 3 verbatim user turns and a Flash
-    # summary (HOME-909).
+    # Joe chose a 256k-token backstop, 3 verbatim user turns and a Sonnet
+    # summary on the same key (HOME-909).
     assert harness["hermes"] == {
         "compression": {
             "thresholdTokens": 256000,
             "minTailUserMessages": 3,
-            "model": "deepseek/deepseek-v4.1-flash-1017",
+            "model": "claude-sonnet-5-5",
         }
     }
     # Joe chose to keep the agent awake during active chats.
@@ -1896,6 +1903,35 @@ def test_discord_server_agent_takes_its_server_turns_only_when_routed() -> None:
                 "string:discord.serverAgents.homelab.guild=999",
             ]
         )
+
+
+def test_discord_server_agent_model_provider() -> None:
+    # The chart default is an OpenAI-compatible ModelConfig on OpenRouter;
+    # provider anthropic renders the Messages API, and a bad provider or a
+    # cache TTL off Anthropic fails the render.
+    openai = [
+        "discord.serverAgents.homelab.provider=openAI",
+        "discord.serverAgents.homelab.model=deepseek/deepseek-v4.1-flash-1017",
+        "discord.serverAgents.homelab.baseUrl=https://openrouter.ai/api/v1",
+        "discord.serverAgents.homelab.cacheTTL=",
+    ]
+    model = _in(_render(_HOMELAB + openai), "ModelConfig", _HOMELAB_NS, "homelab")
+    assert model["spec"] == {
+        "provider": "OpenAI",
+        "model": "deepseek/deepseek-v4.1-flash-1017",
+        "apiKeySecret": "discord-llm",
+        "apiKeySecretKey": "api-key",
+        "openAI": {"baseUrl": "https://openrouter.ai/api/v1"},
+    }
+    defaults = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
+    assert defaults["discord"]["serverAgents"]["homelab"]["provider"] == "openAI"
+    uncached = _HOMELAB + ["discord.serverAgents.homelab.cacheTTL="]
+    spec = _in(_render(uncached), "ModelConfig", _HOMELAB_NS, "homelab")["spec"]
+    assert spec["anthropic"] == {"baseUrl": "https://api.anthropic.com"}
+    with pytest.raises(RuntimeError, match="provider must be openAI or anthropic"):
+        _render(_HOMELAB + ["discord.serverAgents.homelab.provider=gemini"])
+    with pytest.raises(RuntimeError, match="for provider anthropic only"):
+        _render(_HOMELAB + openai[:3] + ["discord.serverAgents.homelab.cacheTTL=1h"])
 
 
 def test_discord_server_agent_answers_only_joe_in_every_server() -> None:

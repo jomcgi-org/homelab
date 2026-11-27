@@ -379,9 +379,11 @@ def test_claude_planner_stays_read_only(claude: list[dict]) -> None:
     broker = _config(claude, "factory-broker")
     assert all(b["namespace"] != _NS for b in broker["reviewBindings"])
     assert _NS in broker["actorJwt"]["allowedAtespaces"]
-    # The coding and review bindings stay on Codex.
+    # The coding and review bindings stay on Codex. The Discord server
+    # agents pick their own provider (discord.serverAgents).
     for d in claude:
-        if d["kind"] == "ModelConfig" and d["metadata"]["namespace"] != _NS:
+        ns = d["metadata"].get("namespace", "")
+        if d["kind"] == "ModelConfig" and ns != _NS and not ns.startswith("discord-"):
             assert d["spec"]["provider"] == "OpenAI"
 
 
