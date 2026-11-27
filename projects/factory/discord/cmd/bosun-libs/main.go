@@ -60,11 +60,13 @@ func run(log *slog.Logger) error {
 	for _, o := range objects {
 		stored[o.Key] = o.Size
 	}
-	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	shipped := map[string]bool{}
+	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
 		key := filepath.ToSlash(strings.TrimPrefix(path, filepath.Clean(dir)+string(filepath.Separator)))
+		shipped[key] = true
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -81,4 +83,17 @@ func run(log *slog.Logger) error {
 		log.Info("uploaded", "key", key, "bytes", len(body))
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	// Old versions go, so the bucket's quota holds only what pages load.
+	for key := range stored {
+		if !shipped[key] {
+			if err := s3.Delete(ctx, key); err != nil {
+				return fmt.Errorf("%s: %w", key, err)
+			}
+			log.Info("deleted", "key", key)
+		}
+	}
+	return nil
 }
