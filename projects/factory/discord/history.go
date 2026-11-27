@@ -35,16 +35,102 @@ var threadParentTypes = map[int]bool{0: true, 5: true, 15: true, 16: true}
 // other system messages are left out.
 var conversationTypes = map[int]bool{0: true, 19: true}
 
-// Attachment is a message attachment; the import keeps only its file name.
+// Attachment is a message attachment; the bridge keeps only its file name
+// and whether it is an image.
 type Attachment struct {
-	Filename string `json:"filename"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type,omitempty"`
 }
 
-// Component is a message component; containers nest others.
+// Components V2 types that hold text or media: a section holds text
+// displays and an accessory, a thumbnail and a gallery hold images, a file
+// holds a file.
+const (
+	componentSection   = 9
+	componentThumbnail = 11
+	componentFile      = 13
+)
+
+// Component is a message component; containers and sections nest others.
 type Component struct {
-	Type       int         `json:"type"`
-	Content    string      `json:"content"`
-	Components []Component `json:"components"`
+	Type       int            `json:"type"`
+	Content    string         `json:"content"`
+	Components []Component    `json:"components"`
+	Accessory  *Component     `json:"accessory,omitempty"`
+	Items      []ComponentMed `json:"items,omitempty"`
+	Media      *MediaRef      `json:"media,omitempty"`
+	File       *MediaRef      `json:"file,omitempty"`
+}
+
+// ComponentMed is one media gallery item.
+type ComponentMed struct {
+	Media MediaRef `json:"media"`
+}
+
+// MediaRef is a component's media: an attachment://name or a URL.
+type MediaRef struct {
+	URL string `json:"url"`
+}
+
+// mediaName is a media's file name, never its URL: a URL is not passed on
+// to fetch.
+func mediaName(r MediaRef) string {
+	u := r.URL
+	if i := strings.IndexAny(u, "?#"); i >= 0 {
+		u = u[:i]
+	}
+	if i := strings.LastIndex(u, "/"); i >= 0 {
+		u = u[i+1:]
+	}
+	u = strings.TrimPrefix(u, "attachment:")
+	if u == "" {
+		return "image"
+	}
+	return clipRunes(u, 80)
+}
+
+// componentsText is the text of Components V2 components, in order: text
+// displays as text, gallery items and thumbnails as [image: name], files
+// as [file: name]. It walks containers, sections and their accessories.
+// names collects the files that the components show.
+func componentsText(cs []Component, names map[string]bool) string {
+	var parts []string
+	var walk func([]Component)
+	media := func(kind string, r MediaRef) {
+		n := mediaName(r)
+		if names != nil {
+			names[n] = true
+		}
+		parts = append(parts, "["+kind+": "+n+"]")
+	}
+	walk = func(cs []Component) {
+		for _, c := range cs {
+			switch c.Type {
+			case componentText:
+				if t := strings.TrimSpace(c.Content); t != "" {
+					parts = append(parts, t)
+				}
+			case componentGallery:
+				for _, it := range c.Items {
+					media("image", it.Media)
+				}
+			case componentThumbnail:
+				if c.Media != nil {
+					media("image", *c.Media)
+				}
+			case componentFile:
+				if c.File != nil {
+					media("file", *c.File)
+				}
+			}
+			walk(c.Components)
+			if c.Accessory != nil {
+				walk([]Component{*c.Accessory})
+			}
+		}
+	}
+	walk(cs)
+	return strings.Join(parts, "\n")
 }
 
 // HistoryMessage is a message read from a channel's history.
@@ -57,23 +143,13 @@ type HistoryMessage struct {
 }
 
 // Text is a message's text: its content, or for a Components V2 message,
-// such as Bosun's replies (NewReply), its text displays.
+// such as Bosun's replies (NewReply), its text displays and media
+// (componentsText).
 func (m HistoryMessage) Text() string {
 	if s := strings.TrimSpace(m.Content); s != "" {
 		return s
 	}
-	var parts []string
-	var walk func([]Component)
-	walk = func(cs []Component) {
-		for _, c := range cs {
-			if c.Type == componentText && strings.TrimSpace(c.Content) != "" {
-				parts = append(parts, strings.TrimSpace(c.Content))
-			}
-			walk(c.Components)
-		}
-	}
-	walk(m.Components)
-	return strings.Join(parts, "\n")
+	return componentsText(m.Components, nil)
 }
 
 // HistoryDocumentID is an imported channel-day's document. It is apart from

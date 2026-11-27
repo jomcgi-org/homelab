@@ -64,12 +64,13 @@ func (b *Bridge) sinceLastTurn(ctx context.Context, m Message) (lines []ChannelL
 	b.mu.Unlock()
 	limit, found := maxSinceLines, false
 	var keep []HistoryMessage
+	var last HistoryMessage
 	for _, h := range msgs { // Newest first.
 		if h.ChannelID != "" && h.ChannelID != m.ChannelID {
 			continue
 		}
 		if bot != "" && h.Author.ID == bot {
-			found = true
+			found, last = true, h
 			break
 		}
 		keep = append(keep, h)
@@ -77,9 +78,10 @@ func (b *Bridge) sinceLastTurn(ctx context.Context, m Message) (lines []ChannelL
 	if !found {
 		limit = maxFirstLines
 	}
-	chars := 0
+	chars, complete := 0, true
 	for _, h := range keep {
 		if len(lines) == limit {
+			complete = false
 			break
 		}
 		l, ok := b.channelLine(m.GuildID, h)
@@ -91,10 +93,18 @@ func (b *Bridge) sinceLastTurn(ctx context.Context, m Message) (lines []ChannelL
 			n += len(l.ReplyTo.Text)
 		}
 		if chars+n > maxSinceChars {
+			complete = false
 			break
 		}
 		chars += n
 		lines = append(lines, l)
+	}
+	if found && complete && len(lines) < limit {
+		// Bosun's last message starts the lines, so Bosun sees what it
+		// posted: its text and images, not an empty message.
+		if l, ok := b.ownLine(m.GuildID, last); ok && chars+len(l.Text) <= maxSinceChars {
+			lines = append(lines, l)
+		}
 	}
 	slices.Reverse(lines)
 	return lines, true
@@ -107,16 +117,13 @@ func (b *Bridge) channelLine(guildID string, h HistoryMessage) (ChannelLine, boo
 		return ChannelLine{}, false
 	}
 	b.Places.Learn(guildID, h.Message.Users()...)
-	text := clipRunes(b.Places.Resolve(guildID, h.Text(), h.Mentions), maxLineChars)
-	if p := placeholders(h); p != "" {
-		text = strings.TrimSpace(text + " " + p)
-	}
+	text := b.lineText(guildID, h, maxLineChars)
 	if text == "" {
 		return ChannelLine{}, false
 	}
 	l := ChannelLine{Author: h.Author.Username, SentAt: SentAt(h.Message).UTC().Format(time.RFC3339), Text: text}
 	if r := h.Referenced; h.Type == 19 && r != nil {
-		l.ReplyTo = &LineReply{Author: r.Author.Username, Text: clipRunes(b.Places.Resolve(guildID, r.Content, r.Mentions), maxQuoteChars)}
+		l.ReplyTo = &LineReply{Author: b.authorName(r.Author), Text: clipRunes(b.Places.Resolve(guildID, r.Text(), r.Mentions), maxQuoteChars)}
 		if r.Author.Username == "" {
 			l.ReplyTo.Author = "unknown"
 		}
@@ -124,12 +131,51 @@ func (b *Bridge) channelLine(guildID string, h HistoryMessage) (ChannelLine, boo
 	return l, true
 }
 
-// placeholders names a message's attachments, embeds and stickers briefly,
-// with no URL to fetch.
-func placeholders(h HistoryMessage) string {
+// ownLine is Bosun's own message as a prompt line, by "Bosun (you)".
+func (b *Bridge) ownLine(guildID string, h HistoryMessage) (ChannelLine, bool) {
+	text := b.lineText(guildID, h, maxOwnChars)
+	if text == "" {
+		return ChannelLine{}, false
+	}
+	return ChannelLine{Author: OwnAuthor, SentAt: SentAt(h.Message).UTC().Format(time.RFC3339), Text: text}, true
+}
+
+// OwnAuthor names Bosun's own messages in a prompt.
+const OwnAuthor = "Bosun (you)"
+
+// maxOwnChars bounds Bosun's own message in the lines: the session holds
+// the full answer.
+const maxOwnChars = 400
+
+// authorName is how a prompt names a message's author: OwnAuthor for Bosun.
+func (b *Bridge) authorName(u User) string {
+	if bot := b.bot(); bot != "" && u.ID == bot {
+		return OwnAuthor
+	}
+	return u.Username
+}
+
+// lineText is a history message's text with its mentions named and its
+// media as placeholders, at most n runes of text.
+func (b *Bridge) lineText(guildID string, h HistoryMessage, n int) string {
+	shown := map[string]bool{}
+	text := strings.TrimSpace(h.Content)
+	if text == "" {
+		text = componentsText(h.Components, shown)
+	}
+	text = clipRunes(b.Places.Resolve(guildID, text, h.Mentions), n)
+	if p := placeholders(h, shown); p != "" {
+		text = strings.TrimSpace(text + " " + p)
+	}
+	return text
+}
+
+// placeholders names a message's attachments that no component shows,
+// embeds and stickers briefly, with no URL to fetch.
+func placeholders(h HistoryMessage, shown map[string]bool) string {
 	var parts []string
-	for _, a := range h.Attachments {
-		parts = append(parts, "[attachment: "+clipRunes(a.Filename, 80)+"]")
+	if a := attachmentNames(h.Attachments, shown); a != "" {
+		parts = append(parts, a)
 	}
 	for _, e := range h.Embeds {
 		if e.Title != "" {
