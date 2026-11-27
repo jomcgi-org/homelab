@@ -65,6 +65,48 @@ Home Assistant keeps its HTTP settings in `/config/.storage/http`. The
 every start, so the edge proxy stays trusted. Change those settings in git;
 a change in Settings → System → Network is lost at the next restart.
 
+## Backup and restore
+
+Two CronJobs copy each volume to the Garage bucket `home-assistant-backups`
+(`resources/backup.yaml`). Garage keeps a copy on each of the three nodes.
+
+| CronJob | Volume | UTC | Object |
+| --- | --- | --- | --- |
+| `backup-zigbee2mqtt` | `zigbee2mqtt-data` | 03:15 | `zigbee2mqtt/zigbee2mqtt-<time>.tar.gz` |
+| `backup-home-assistant` | `home-assistant-config` | 03:30 | `home-assistant/home-assistant-<time>.tar.gz` |
+
+Each run deletes the archives older than 30 days, after its upload succeeds.
+The Zigbee2MQTT archive must hold `configuration.yaml` (the network key),
+`database.db` and `coordinator_backup.json`, or the run fails. Zigbee2MQTT
+keeps running during the copy. If `database.db` is incomplete,
+`coordinator_backup.json` still restores the network. The Home Assistant
+archive leaves out the recorder database (history only), logs, `deps`,
+`.cache` and `tts`. Home Assistant creates them again.
+
+An off-site copy in R2 is not configured yet: it needs a private R2 bucket
+and a token for it.
+
+To restore a volume from its newest archive (Zigbee2MQTT shown; for Home
+Assistant use `home-assistant`), with an operator kubeconfig:
+
+1. Stop ArgoCD self-heal for the app:
+   `kubectl -n argocd annotate application home-assistant argocd.argoproj.io/skip-reconcile=true`.
+2. Stop the app:
+   `kubectl -n home-assistant scale deploy/zigbee2mqtt --replicas=0`.
+3. Start the restore:
+   `kubectl -n home-assistant create job --from=cronjob/restore-zigbee2mqtt restore-1`.
+4. Wait for `restored <archive> into /data` in
+   `kubectl -n home-assistant logs job/restore-1`.
+5. Delete the Job: `kubectl -n home-assistant delete job restore-1`.
+6. Start ArgoCD again; it scales the app back to 1:
+   `kubectl -n argocd annotate application home-assistant argocd.argoproj.io/skip-reconcile-`.
+
+The restore extracts over the volume and keeps files that the archive does
+not hold. A new local-path volume binds on the node of the first pod that
+mounts it, so let the app start once before step 1. If the adapter then
+holds a different network, Zigbee2MQTT writes `coordinator_backup.json` back
+to the adapter at its next start.
+
 ## Moving the dongle
 
 The zigbee2mqtt-data volume holds the network key and paired devices on

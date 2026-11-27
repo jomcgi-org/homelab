@@ -78,6 +78,10 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory-discord
             app.kubernetes.io/name: bosun-artifacts
+        # Home Assistant's nightly volume archives (home-assistant/resources/backup.yaml).
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: home-assistant
+            app.kubernetes.io/name: home-assistant-backup
         # The connector's evidence (factory chart).
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory

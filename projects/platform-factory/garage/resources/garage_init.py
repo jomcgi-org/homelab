@@ -55,6 +55,7 @@ BUCKETS = [
     "factory-db-backups",
     "authentik-pg-backups",
     "bosun-artifacts",
+    "home-assistant-backups",
 ]
 # (bucket, namespace, Secret). ate-snapshots is Substrate's snapshot store
 # (projects/platform-factory/substrate/resources/garage-snapshots.yaml).
@@ -68,6 +69,8 @@ GRANTS = [
     # Bosun's artifacts (projects/factory/discord/artifacts): only the MCP
     # service holds a key.
     ("bosun-artifacts", "factory-discord", "bosun-artifacts-s3"),
+    # Nightly Home Assistant and Zigbee2MQTT volume archives.
+    ("home-assistant-backups", "home-assistant", "home-assistant-backups-s3"),
 ]
 # Buckets Garage's website endpoint serves (garage.toml [s3_web]), each with
 # its quota (bytes, objects). Every other bucket has website access off, and
