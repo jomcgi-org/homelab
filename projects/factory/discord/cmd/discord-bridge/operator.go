@@ -88,3 +88,24 @@ func wireServerAgents(log *slog.Logger, b *discord.Bridge, a2a *kagent.A2A, sess
 		log.Info("server agent on", "guild", guild, "agent", agent.Namespace+"/"+agent.Name, "sessions", "per channel")
 	}
 }
+
+// wireExplorer runs explore blocks on the policy's explorer Agent
+// (HOME-909): one persistent session per research, and a public-repository
+// check against GitHub's API without credentials.
+func wireExplorer(log *slog.Logger, b *discord.Bridge, a2a *kagent.A2A, sessions *kagent.Sessions) {
+	cfg := b.Config.Explore
+	if cfg.Agent.Name == "" {
+		return
+	}
+	op := &discord.KagentOperator{
+		A2A:       a2a,
+		Sessions:  sessions,
+		Agent:     cfg.Agent,
+		Timeout:   cfg.Timeout,
+		RequestID: discord.ExploreRequestID,
+	}
+	b.Explorer = &discord.Explorer{Agent: op, Sessions: sessions, Ref: cfg.Agent, Forget: op.Forget}
+	b.Repos = &discord.GitHubPublic{}
+	log.Info("research on", "agent", cfg.Agent.Namespace+"/"+cfg.Agent.Name, "limit", cfg.Limit.Count,
+		"window", cfg.Limit.Window.String(), "maxSessions", cfg.MaxSessions, "ttl", cfg.TTL.String())
+}

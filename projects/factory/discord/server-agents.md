@@ -388,6 +388,86 @@ that kagent admits the origin for the actor, as it does for a
 RemoteMCPServer with `headersFrom`. Then a `put` from the agent returns a
 URL that opens after Joe signs in.
 
+### Research (HOME-909)
+
+Bosun can research a public GitHub repository through an explorer agent
+that clones it in a sandbox. Bosun writes a fenced `explore` block:
+`{"repo": "owner/name", "question": "...", "research": "new"}`. For a
+follow-up, `research` is the research ID that the thread shows.
+
+```mermaid
+sequenceDiagram
+  participant J as Joe
+  participant B as bridge
+  participant H as Bosun (Hermes)
+  participant G as GitHub API
+  participant E as explorer (Claude Code)
+  J->>B: tag Bosun
+  B->>H: turn
+  H-->>B: answer + explore block
+  B->>J: answer, research thread, "Researching ..."
+  B->>G: GET /repos/owner/name, no credentials
+  G-->>B: public, size
+  B->>E: turn in session discord-explore-ID
+  E->>E: git clone --depth 1 (github.com only)
+  E-->>B: answer
+  B->>J: answer in the thread
+  J->>B: next tag in the thread
+  B->>H: turn with research_results
+```
+
+- **Explorer.** Kagent Agent `explorer` in namespace and atespace
+  `discord-explorer` (`chart/templates/discord-explorer.yaml`). It runs the
+  unmodified Claude Code harness (the planner's image) with
+  `claude-opus-5-5`. Model calls go through the broker's Claude relay with
+  an actor JWT: the relay is live, the broker admits the atespace, and
+  `broker.claude.modelAllowlist` lists `actor/discord-explorer/session-*`.
+  The relay uses Joe's Claude subscription, so research does not stop when
+  the Console key's credits end on 2026-12-03.
+- **Egress.** EgressPolicy `public-github` admits `https://github.com`,
+  `https://codeload.github.com` and `https://objects.githubusercontent.com`
+  with no credential. The relay is the only other origin. The actor gets no
+  GitHub token or placeholder, and git has no credential helper, so it can
+  read only what GitHub serves to anyone and can push nothing.
+- **Public check.** Before each explorer turn the bridge calls
+  `GET https://api.github.com/repos/owner/name` with no credentials. It
+  refuses unless GitHub answers 200 with `private: false` and `visibility:
+  public`. The bridge's egress policy admits `api.github.com` for this.
+- **Validation.** The block must be strict JSON: `repo` in GitHub's
+  owner/name syntax (no URL, no `.git`), a question of 1 to 2,000
+  characters, and `research` either `new` or a Discord snowflake.
+- **Sessions.** One kagent session per research, with request ID
+  `discord-explore-<research>` and the research ID as its name. A new
+  research's ID is the ID of Joe's tagged message. The actor suspends 10 min
+  after a turn; a follow-up restores it with its clone and context from the
+  snapshot under `s3://ate-snapshots/discord-explorer/`.
+- **Thread.** A new research starts a thread `Research: owner/name` from
+  Bosun's reply. Inside a thread, Discord refuses a new thread, so the
+  research stays in that thread. A follow-up posts where Joe asked.
+- **Answer.** The bridge posts it as text that pings nobody and runs no
+  action, in at most 3 messages of 3,800 characters, then clips it.
+  Artifacts are an MCP tool of Bosun's actor; the bridge holds no actor
+  JWT, so it cannot publish a long answer as an artifact.
+- **Back to Bosun.** The bridge holds the last 3 answers per channel, in
+  memory, for the research thread and the channel of the tag. Bosun's next
+  turn there gets them as `research_results`, at most 6,000 characters
+  each. The prompt and Bosun's system prompt say that they are untrusted
+  data. A bridge restart drops held answers; the thread still shows them.
+- **Bounds.**
+
+  | Bound | Value | Where |
+  | --- | --- | --- |
+  | Explorer turns | 20 per hour, all research | `discord.explorer.limit` |
+  | Turns at once | 2, one worker each | `concurrency` |
+  | Turn time | 15 min | `timeout` |
+  | One turn per research | a second gets "still running" | bridge |
+  | Repository size | 512 MB by GitHub's `size`, shallow clone | `maxRepoMB` |
+  | Sessions kept | 10; a new research deletes the oldest idle one | `maxSessions` |
+  | Session TTL | 7 days after the last turn, swept each hour | `ttl` |
+
+  After a bridge restart, the TTL counts from the session's creation until
+  its next turn.
+
 ## 5. Model and token cost
 
 **Recommendation.** A model per server in values, a hard token budget per

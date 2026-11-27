@@ -34,6 +34,10 @@ gets no planner binding.
 {{- if .Values.discord.operator.enabled }}
 {{- $atespaces = append $atespaces .Values.discord.operator.namespace }}
 {{- end }}
+{{- /* Bosun's research explorer (discord.explorer) runs Claude Code through the relay. */}}
+{{- if .Values.discord.explorer.enabled }}
+{{- $atespaces = append $atespaces .Values.discord.explorer.namespace }}
+{{- end }}
 {{- /* The connector's own ServiceAccount fetches connector tokens. */}}
 {{- $connectorSubjects := $b.connectorSubjects }}
 {{- if .Values.connector.enabled }}

@@ -77,6 +77,8 @@ def _helm(*sets: str, planner: bool = True, schedules: bool = True) -> list[dict
         "--set",
         "broker.claude.enabled=false",
         "--set",
+        "discord.explorer.enabled=false",
+        "--set",
         f"planner.enabled={str(planner).lower()}",
     ]
     # Off, the controller does not watch the planner namespace either.

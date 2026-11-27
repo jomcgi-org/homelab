@@ -23,6 +23,45 @@ type policyFile struct {
 	// Users is who may start a turn: "all" (or absent) or "operator", Joe
 	// alone (HOME-909).
 	Users string `json:"users"`
+	// Explore turns on research of public GitHub repositories (HOME-909).
+	Explore *exploreFile `json:"explore"`
+}
+
+// exploreFile bounds research (explore.go). Every field is required.
+type exploreFile struct {
+	Agent       string    `json:"agent"`
+	Limit       limitFile `json:"limit"`
+	Concurrency int       `json:"concurrency"`
+	Timeout     string    `json:"timeout"`
+	MaxSessions int       `json:"maxSessions"`
+	TTL         string    `json:"ttl"`
+	MaxRepoMB   int64     `json:"maxRepoMB"`
+}
+
+func (e exploreFile) config() (ExploreConfig, error) {
+	ns, name, ok := strings.Cut(e.Agent, "/")
+	if !ok || ns == "" || name == "" || strings.Contains(name, "/") {
+		return ExploreConfig{}, fmt.Errorf("explore: agent %q is not namespace/name", e.Agent)
+	}
+	lim, err := e.Limit.limit("explore.limit")
+	if err != nil {
+		return ExploreConfig{}, err
+	}
+	timeout, err := time.ParseDuration(e.Timeout)
+	if err != nil || timeout < time.Minute || timeout > time.Hour {
+		return ExploreConfig{}, fmt.Errorf("explore: timeout %q is not 1m to 1h", e.Timeout)
+	}
+	ttl, err := time.ParseDuration(e.TTL)
+	if err != nil || ttl < time.Hour {
+		return ExploreConfig{}, fmt.Errorf("explore: ttl %q is under 1h", e.TTL)
+	}
+	if e.Concurrency < 1 || e.MaxSessions < 1 || e.MaxRepoMB < 1 {
+		return ExploreConfig{}, fmt.Errorf("explore: concurrency, maxSessions and maxRepoMB must be positive")
+	}
+	return ExploreConfig{
+		Agent: kagent.AgentRef{Namespace: ns, Name: name}, Limit: lim, Concurrency: e.Concurrency,
+		Timeout: timeout, MaxSessions: e.MaxSessions, TTL: ttl, MaxRepoKB: e.MaxRepoMB * 1024,
+	}, nil
 }
 
 // operatorFile is the operator session's place (HOME-314). Joe's user ID is
@@ -106,6 +145,11 @@ func ParsePolicy(data []byte) (Config, error) {
 			c.ServerAgents = map[string]kagent.AgentRef{}
 		}
 		c.ServerAgents[guild] = kagent.AgentRef{Namespace: ns, Name: name}
+	}
+	if p.Explore != nil {
+		if c.Explore, err = p.Explore.config(); err != nil {
+			return Config{}, err
+		}
 	}
 	switch p.Users {
 	case "", "all":

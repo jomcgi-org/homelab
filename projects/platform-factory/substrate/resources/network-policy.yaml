@@ -311,6 +311,16 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+    # Public GitHub reads for Bosun's research explorer (factory chart
+    # `discord.explorer`, EgressPolicy public-github), with no credential;
+    # github.com is admitted above.
+    - toFQDNs:
+        - matchName: codeload.github.com
+        - matchName: objects.githubusercontent.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
 ---
 # The k8s.io credential provider reads the Secrets each actor's atespace is
 # granted (credentialProvider.namespacePolicies in ../values/substrate.yaml).

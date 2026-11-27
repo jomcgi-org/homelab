@@ -79,6 +79,8 @@ def _render(
             "--set",
             "discord.operator.enabled=false",
             "--set",
+            "discord.explorer.enabled=false",
+            "--set",
             "discord.serverAgents.homelab.enabled=false",
             "--set",
             "discord.serverAgents.homelab.servers=own",
@@ -675,6 +677,8 @@ def test_claude_token_is_mounted_only_in_broker() -> None:
                 "claude-opus-5-5",
                 "claude-fable-5-2",
             ],
+            # The deploy values' research explorer entry (HOME-909).
+            "actor/discord-explorer/session-*": ["claude-opus-5-5"],
         },
     }
     for d in docs:
@@ -2155,3 +2159,147 @@ def test_discord_artifacts_admit_only_routed_actors_through_the_gateway() -> Non
     assert not [d for d in unrouted if d["metadata"]["name"] == "bosun-artifacts"]
     deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
     assert deploy["discord"]["artifacts"]["enabled"] is True
+
+
+_EXPLORER_NS = "discord-explorer"
+_EXPLORER = [
+    "discord.explorer.enabled=true",
+    "discord.explorer.harnessImage=ghcr.io/jomcgi/homelab/projects/factory/harness/claude@sha256:"
+    + "f" * 64,
+]
+
+
+def _render_explorer(extra: list[str] | None = None) -> list[dict[str, Any]]:
+    # The deploy values as they are: they list the explorer's actors in
+    # broker.claude.modelAllowlist, which a dotted --set key cannot hold.
+    argv = [
+        os.environ.get("HELM_BIN", "helm"),
+        "template",
+        "factory",
+        str(_CHART_DIR),
+        "--namespace",
+        "kagent",
+        "--values",
+        str(_DEPLOY_VALUES),
+    ]
+    for override in _EXPLORER + (extra or []):
+        if override.startswith("string:"):
+            argv += ["--set-string", override.removeprefix("string:")]
+        else:
+            argv += ["--set", override]
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr)
+    return [d for d in yaml.safe_load_all(result.stdout) if d]
+
+
+def test_discord_explorer_ships_off_in_the_chart() -> None:
+    values = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
+    assert values["discord"]["explorer"]["enabled"] is False
+    off = _render(_DISCORD)
+    assert not [d for d in off if d["metadata"].get("namespace") == _EXPLORER_NS]
+    policy = _in(off, "ConfigMap", "factory-discord", "discord-bridge-policy")
+    assert "explore" not in yaml.safe_load(policy["data"]["policy.json"])
+    assert _EXPLORER_NS not in _broker_atespaces(off)
+
+
+def test_discord_explorer_reads_only_public_github() -> None:
+    docs = _render_explorer()
+    ns = _EXPLORER_NS
+    # Claude Code on the broker's relay, with an actor JWT and no key.
+    model = _in(docs, "ModelConfig", ns, "explorer")["spec"]
+    assert model["provider"] == "Anthropic"
+    assert model["anthropic"] == {
+        "baseUrl": "http://factory-broker.factory.svc.cluster.local/anthropic"
+    }
+    assert model["actorJwt"] == {"audiences": ["factory-broker"]}
+    assert "apiKeySecret" not in model
+    harness = _in(docs, "Harness", ns, "claude")["spec"]
+    assert harness["claude"] == {}
+    assert harness["idleSuspendDelay"] == "10m"
+    # git holds no credential, header or placeholder.
+    env = {e["name"]: e["value"] for e in harness["env"]}
+    assert env == {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "credential.helper",
+        "GIT_CONFIG_VALUE_0": "",
+    }
+    # Egress: exactly the three public GitHub origins, unauthenticated.
+    egress = _in(docs, "EgressPolicy", ns, "public-github")["spec"]
+    assert egress == {
+        "destinations": [
+            {"origin": "https://github.com"},
+            {"origin": "https://codeload.github.com"},
+            {"origin": "https://objects.githubusercontent.com"},
+        ]
+    }
+    agent = _in(docs, "Agent", ns, "explorer")["spec"]
+    assert agent["egressPolicyRefs"] == [{"name": "public-github"}]
+    assert "tools" not in agent["template"]["inline"]
+    assert [
+        d["kind"]
+        for d in docs
+        if d["metadata"].get("namespace") == ns and d["kind"] == "EgressPolicy"
+    ] == ["EgressPolicy"]
+    # No credential in the namespace; the broker admits the atespace.
+    assert not [
+        d
+        for d in docs
+        if d["metadata"].get("namespace") == ns
+        and d["kind"] in ("Secret", "OnePasswordItem")
+    ]
+    assert ns in _broker_atespaces(docs)
+    # The bridge gets the policy, the GitHub API and the explorer's paths.
+    policy = _in(docs, "ConfigMap", "factory-discord", "discord-bridge-policy")
+    explore = yaml.safe_load(policy["data"]["policy.json"])["explore"]
+    assert explore == {
+        "agent": "discord-explorer/explorer",
+        "limit": {"count": 20, "window": "1h"},
+        "concurrency": 2,
+        "timeout": "15m",
+        "maxSessions": 10,
+        "ttl": "168h",
+        "maxRepoMB": 512,
+    }
+    bridge = _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")[
+        "spec"
+    ]
+    fqdns = [f for rule in bridge["egress"] for f in rule.get("toFQDNs", [])]
+    assert {"matchName": "api.github.com"} in fqdns
+    rules = _controller_egress(bridge)["toPorts"][0]["rules"]["http"]
+    assert {"method": "POST", "path": "^/agents/discord-explorer/explorer$"} in rules
+    assert {
+        "method": "POST",
+        "path": "^/kagent\\.api\\.v1\\.SessionService/(ListSessions|NameSession)$",
+    } in rules
+
+
+def test_discord_explorer_checks_its_wiring() -> None:
+    with pytest.raises(RuntimeError, match="modelAllowlist"):
+        _render_explorer(
+            [
+                "discord.explorer.namespace=discord-explorer-2",
+                "kagent.rbac.namespaces={kagent,factory-r-homelab,factory-r-homelab-review,factory-r-homelab-planner,factory-discord-agent,discord-explorer-2}",
+            ]
+        )
+    with pytest.raises(
+        RuntimeError, match="needs discord.bridge, broker and broker.claude"
+    ):
+        _render_explorer(["broker.claude.enabled=false"])
+    with pytest.raises(RuntimeError, match="digest-pinned"):
+        _render_explorer(["discord.explorer.harnessImage=ghcr.io/x/claude:main"])
+    with pytest.raises(RuntimeError, match="kagent.rbac.namespaces"):
+        _render_explorer(
+            [
+                "kagent.rbac.namespaces={kagent,factory-r-homelab,factory-r-homelab-review,factory-r-homelab-planner}"
+            ]
+        )
+
+
+def test_discord_explorer_is_on_in_the_deploy_values() -> None:
+    deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    assert deploy["discord"]["explorer"]["enabled"] is True
+    assert deploy["broker"]["claude"]["modelAllowlist"][
+        f"actor/{_EXPLORER_NS}/session-*"
+    ] == ["claude-opus-5-5"]

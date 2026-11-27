@@ -25,6 +25,33 @@ instead of silently rendering nothing.
 {{- end }}
 {{- $runtime := .Values.kagent.config.runtimeDefaults }}
 {{- $watched := .Values.kagent.rbac.namespaces }}
+{{- with .Values.discord.explorer }}
+{{- if .enabled }}
+{{- if not (and $.Values.discord.bridge.enabled $.Values.broker.enabled $.Values.broker.claude.enabled) }}
+{{- fail "discord.explorer needs discord.bridge, broker and broker.claude: the bridge runs its turns on the broker's Claude relay" }}
+{{- end }}
+{{- if not (has .namespace $watched) }}
+{{- fail (printf "discord.explorer: add namespace %s to kagent.rbac.namespaces so the controller watches it" .namespace) }}
+{{- end }}
+{{- if has .namespace (list (include "factory.kagentNamespace" $) $.Values.broker.namespace $.Values.discord.bridge.namespace $.Values.discord.agent.namespace $.Values.discord.operator.namespace) }}
+{{- fail (printf "discord.explorer: namespace %s must be the explorer Agent's alone" .namespace) }}
+{{- end }}
+{{- range $server, $a := $.Values.discord.serverAgents }}
+{{- if eq (printf "discord-%s" $a.guild) $.Values.discord.explorer.namespace }}
+{{- fail (printf "discord.explorer: namespace %s must be the explorer Agent's alone" $.Values.discord.explorer.namespace) }}
+{{- end }}
+{{- end }}
+{{- if (or (ne (toString .resources.cpu) (toString $runtime.cpu)) (ne (toString .resources.memory) (toString $runtime.memory))) }}
+{{- fail (printf "discord.explorer: resources must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $runtime.cpu $runtime.memory) }}
+{{- end }}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (.harnessImage | default "")) }}
+{{- fail "discord.explorer.harnessImage: set a digest-pinned Claude harness image" }}
+{{- end }}
+{{- if not (hasKey ($.Values.broker.claude.modelAllowlist | default dict) (printf "actor/%s/session-*" .namespace)) }}
+{{- fail (printf "discord.explorer: add actor/%s/session-* with %s to broker.claude.modelAllowlist" .namespace .model) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- $seen := dict }}
 {{- range $r := .Values.repositories }}
 {{- $a := index $.Values.agents $r.agent }}

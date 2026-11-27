@@ -1,0 +1,198 @@
+{{- /*
+Bosun's research explorer (HOME-909, discord/server-agents.md "Research").
+An unmodified Claude Code harness in its own namespace and atespace. It
+clones public GitHub repositories and answers Bosun's questions about them,
+one persistent session per research. Its model calls go through the
+broker's Claude relay with an actor JWT; it holds no GitHub credential or
+placeholder, so it can read only what GitHub serves to anyone and can push
+nothing. Its egress is the three GitHub origins below and the relay.
+*/}}
+{{- $e := .Values.discord.explorer }}
+{{- if $e.enabled }}
+{{- $ns := $e.namespace }}
+{{- $worker := printf "%s-worker" $e.name }}
+---
+# Kept: deleting it would take the WorkerPool and the sessions' snapshots.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    # Substrate's worker egress policy selects worker pods only in namespaces
+    # with this label (projects/platform-factory/substrate).
+    factory.jomcgi.dev/substrate-workers: "true"
+    # gVisor workers need SYS_ADMIN and no seccomp profile, which the cluster
+    # default (projects/factory-cluster/nodes/pod-security.yaml) forbids.
+    pod-security.kubernetes.io/enforce: privileged
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.keep" . | nindent 4 }}
+---
+# Worker pods run as this account, with no API token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $worker }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+automountServiceAccountToken: false
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: {{ $e.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    kagent.dev/worker-pool-name: {{ $e.name }}
+    kagent.dev/worker-pool-namespace: {{ $ns }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: {{ $e.concurrency }}
+  workerImage: {{ .Values.workers.image | quote }}
+  sandboxClasses:
+    - name: gvisor
+      configRef:
+        name: {{ .Values.workers.sandboxConfig }}
+  template:
+    serviceAccountName: {{ $worker }}
+    resources:
+      {{- toYaml $e.worker.resources | nindent 6 }}
+---
+# The broker's Claude relay (HOME-232). kagent binds the base URL's x-api-key
+# header to an actor JWT for audience factory-broker; Claude Code holds only
+# a placeholder ANTHROPIC_API_KEY. broker.claude.modelAllowlist must list
+# actor/<namespace>/session-* with this model.
+apiVersion: api.kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: {{ $e.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  provider: Anthropic
+  model: {{ $e.model | quote }}
+  anthropic:
+    baseUrl: {{ include "factory.brokerClaudeRelayURL" . | quote }}
+  actorJwt:
+    audiences: [factory-broker]
+---
+apiVersion: api.kagent.dev/v1alpha3
+kind: Harness
+metadata:
+  name: claude
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  claude: {}
+  workload:
+    image: {{ required "discord.explorer.harnessImage: set a digest-pinned Claude harness image" $e.harnessImage | quote }}
+  env:
+    # No credential helper or prompt: git has no credential to send, so it
+    # reads only public repositories.
+    - name: GIT_TERMINAL_PROMPT
+      value: "0"
+    - name: GIT_CONFIG_COUNT
+      value: "1"
+    - name: GIT_CONFIG_KEY_0
+      value: credential.helper
+    - name: GIT_CONFIG_VALUE_0
+      value: ""
+  substrate:
+    workerPoolRef:
+      name: {{ $e.name }}
+    snapshotPolicy:
+      location: {{ printf "%s%s/" .Values.workers.snapshotLocationPrefix $ns | quote }}
+  {{- with $e.idleSuspendDelay }}
+  # A research's follow-ups within this delay find the actor running; later
+  # ones restore it, clone included, from its snapshot.
+  idleSuspendDelay: {{ . | quote }}
+  {{- end }}
+---
+# Public GitHub reads only, with no credential: clone (github.com), archives
+# (codeload.github.com) and LFS and raw objects (objects.githubusercontent.com).
+apiVersion: api.kagent.dev/v1alpha3
+kind: EgressPolicy
+metadata:
+  name: public-github
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  destinations:
+    - origin: https://github.com
+    - origin: https://codeload.github.com
+    - origin: https://objects.githubusercontent.com
+---
+apiVersion: api.kagent.dev/v1alpha3
+kind: Agent
+metadata:
+  name: {{ $e.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  template:
+    inline:
+      description: "Bosun's research explorer for public GitHub repositories (HOME-909)"
+      modelConfig:
+        name: {{ $e.name }}
+      systemPrompt: {{ $e.systemPrompt | quote }}
+  harnessRef:
+    name: claude
+  egressPolicyRefs:
+    - name: public-github
+{{- if .Values.networkPolicy.cilium }}
+---
+# Worker pods: kagent's A2A calls reach the actor only through Substrate's
+# router, and actor traffic leaves only through its egress gateway, which
+# admits only the relay and the EgressPolicy origins for this actor.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: substrate-workers
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: ate.dev/worker-pool
+        operator: Exists
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: atenet-router
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+{{- end }}
+{{- end }}

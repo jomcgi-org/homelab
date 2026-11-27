@@ -100,6 +100,8 @@ def _helm(
         "planner.enabled=false",
         "--set",
         "broker.claude.enabled=false",
+        "--set",
+        "discord.explorer.enabled=false",
     ]
     if enable:
         args += [
