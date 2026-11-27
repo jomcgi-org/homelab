@@ -13,6 +13,7 @@ configMapGenerator:
       - http-storage.json
       - heating-dashboard.yaml
       - install-auth-oidc.py
+      - auth-oidc-requirements.lock
   - name: mosquitto
     files:
       - mosquitto.conf
