@@ -174,6 +174,10 @@ func (b *Bridge) admit(ctx context.Context, m Message) (chan notice, bool) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.draining {
+		b.Log.InfoContext(ctx, "drain: message not taken", "channel", m.ChannelID, "message", m.ID)
+		return nil, false
+	}
 	b.start(ctx)
 	if _, dup := b.seen[m.ID]; dup {
 		return nil, false
@@ -203,11 +207,7 @@ func (b *Bridge) operatorMessage(ctx context.Context, m Message) {
 		go b.worker(ctx, q, b.operatorTurn)
 	}
 	b.mu.Unlock()
-	select {
-	case q <- m:
-	default:
-		b.queueNotice(ctx, notices, m, ReplyBusy)
-	}
+	b.enqueue(ctx, notices, q, m)
 }
 
 // operatorTurn runs one operator turn in the thread's session. It recalls

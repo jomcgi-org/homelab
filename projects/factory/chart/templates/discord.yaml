@@ -329,7 +329,9 @@ metadata:
     app.kubernetes.io/name: factory-discord-bridge
 spec:
   replicas: 1
-  # One gateway connection at a time.
+  # One gateway connection at a time: the old pod closes its gateway on
+  # SIGTERM and drains its turns before the new pod connects. The new pod's
+  # catch-up answers the tags sent in between.
   strategy:
     type: Recreate
   selector:
@@ -347,6 +349,8 @@ spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false
       enableServiceLinks: false
+      # The drain, then 30 seconds to flush the ingest buffer and exit.
+      terminationGracePeriodSeconds: {{ add (int $b.drainSeconds) 30 }}
       {{- if .Values.imagePullSecret.enabled }}
       imagePullSecrets:
         - name: {{ .Values.imagePullSecret.name }}
@@ -381,6 +385,10 @@ spec:
               value: {{ printf "%s/%s" $d.agent.namespace $d.agent.name | quote }}
             - name: HEALTH_ADDR
               value: ":8080"
+            - name: DISCORD_DRAIN_TIMEOUT
+              value: {{ printf "%ds" (int $b.drainSeconds) | quote }}
+            - name: DISCORD_CATCHUP_WINDOW
+              value: {{ $b.catchUpWindow | quote }}
             {{- if .Values.networkPolicy.cilium }}
             # factory-discord-render draws an answer's diagram, chart and SVG
             # blocks as images; it runs where its deny policy does.

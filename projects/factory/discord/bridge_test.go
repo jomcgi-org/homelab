@@ -21,13 +21,15 @@ const (
 type fakeMemory struct {
 	mu       sync.Mutex
 	recalls  []string // guild
+	queries  []string
 	retained []string // guild/channel: content
 }
 
-func (f *fakeMemory) Recall(_ context.Context, g, _ string) ([]string, error) {
+func (f *fakeMemory) Recall(_ context.Context, g, q string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.recalls = append(f.recalls, g)
+	f.queries = append(f.queries, q)
 	return []string{"Earlier: the code word is heron."}, nil
 }
 

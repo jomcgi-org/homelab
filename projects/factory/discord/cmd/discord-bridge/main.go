@@ -60,6 +60,19 @@ func env(name string) (string, error) {
 	return v, nil
 }
 
+// durationEnv reads a Go duration, or def when name is unset.
+func durationEnv(name string, def time.Duration) (time.Duration, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", name, err)
+	}
+	return d, nil
+}
+
 func run(log *slog.Logger) error {
 	var cfg struct{ policy, token, hindsightURL, hindsightKey, kagentURL, kagentGRPC, kagentToken, agent, health string }
 	for name, dst := range map[string]*string{
@@ -126,6 +139,19 @@ func run(log *slog.Logger) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// Turns run on work, not ctx: on SIGTERM the gateway closes, so no new
+	// turn starts, and the bridge drains the in-flight turns before work
+	// ends (Bridge.Drain).
+	work, stopWork := context.WithCancel(context.Background())
+	defer stopWork()
+	drain, err := durationEnv("DISCORD_DRAIN_TIMEOUT", 5*time.Minute)
+	if err != nil {
+		return err
+	}
+	catchUp, err := durationEnv("DISCORD_CATCHUP_WINDOW", discord.CatchUpWindow)
+	if err != nil {
+		return err
+	}
 
 	// The bridge registers no slash commands. Clear any the old hub bot left,
 	// so the picker lists none. A failure only logs: the bridge works without it.
@@ -189,6 +215,15 @@ func run(log *slog.Logger) error {
 			close(ready)
 		})
 	}
+	// After a restart, answer Joe's tags that the old bridge left
+	// unanswered, once, after READY.
+	go func() {
+		select {
+		case <-ready:
+			bridge.CatchUp(work, rest, catchUp)
+		case <-ctx.Done():
+		}
+	}()
 	// Explorer sessions past the TTL or the cap are deleted each hour.
 	go bridge.RunExploreSweep(ctx, time.Hour)
 	backfillDone := make(chan struct{})
@@ -217,7 +252,7 @@ func run(log *slog.Logger) error {
 		REST:      rest,
 		Token:     botToken,
 		OnReady:   onReady,
-		OnMessage: func(m discord.Message) { bridge.Handle(ctx, m) },
+		OnMessage: func(m discord.Message) { bridge.Handle(work, m) },
 		Places:    bridge.Places,
 		Log:       log,
 		Intents:   intents,
@@ -229,6 +264,8 @@ func run(log *slog.Logger) error {
 		"backfill", backfill != nil, "archive", archiver != nil)
 	err = gateway.Run(ctx)
 	stop()
+	bridge.Drain(drain)
+	stopWork()
 	bridge.Wait()
 	<-backfillDone
 	stopIngest()

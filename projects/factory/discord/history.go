@@ -20,6 +20,9 @@ type Channel struct {
 	Name     string `json:"name"`
 	Type     int    `json:"type"`
 	ParentID string `json:"parent_id"`
+	// LastMessageID is the channel's newest message; the catch-up reads
+	// only channels with a recent one.
+	LastMessageID string `json:"last_message_id,omitempty"`
 }
 
 // Channels whose history the import reads: text, announcement, and
@@ -133,6 +136,12 @@ func componentsText(cs []Component, names map[string]bool) string {
 	return strings.Join(parts, "\n")
 }
 
+// Reaction is the subset of a message reaction the bridge reads: Me marks
+// the bot's own.
+type Reaction struct {
+	Me bool `json:"me"`
+}
+
 // HistoryMessage is a message read from a channel's history.
 type HistoryMessage struct {
 	Message
@@ -142,6 +151,9 @@ type HistoryMessage struct {
 	Stickers    []HistorySticker `json:"sticker_items"`
 	// Edited is when the message was last edited; nil when never.
 	Edited *time.Time `json:"edited_timestamp"`
+	// Thread is the thread started from the message, if any.
+	Thread *Channel `json:"thread,omitempty"`
+	Reactions []Reaction `json:"reactions,omitempty"`
 }
 
 // Text is a message's text: its content, or for a Components V2 message,
@@ -171,13 +183,10 @@ func (r *REST) GuildChannels(ctx context.Context, guildID string) ([]Channel, er
 // Threads lists a server's active threads and each history channel's
 // archived public threads.
 func (r *REST) Threads(ctx context.Context, guildID string, channels []Channel) ([]Channel, error) {
-	var active struct {
-		Threads []Channel `json:"threads"`
-	}
-	if err := r.do(ctx, http.MethodGet, "/guilds/"+guildID+"/threads/active", nil, &active); err != nil {
+	out, err := r.ActiveThreads(ctx, guildID)
+	if err != nil {
 		return nil, err
 	}
-	out := active.Threads
 	for _, c := range channels {
 		if !threadParentTypes[c.Type] {
 			continue
@@ -215,6 +224,24 @@ func (r *REST) Threads(ctx context.Context, guildID string, channels []Channel) 
 		}
 	}
 	return out, nil
+}
+
+// ActiveThreads lists a server's active threads.
+func (r *REST) ActiveThreads(ctx context.Context, guildID string) ([]Channel, error) {
+	var active struct {
+		Threads []Channel `json:"threads"`
+	}
+	err := r.do(ctx, http.MethodGet, "/guilds/"+guildID+"/threads/active", nil, &active)
+	return active.Threads, err
+}
+
+// MessagesAfter reads up to 100 messages newer than after, in the order
+// Discord returns them.
+func (r *REST) MessagesAfter(ctx context.Context, channelID, after string) ([]HistoryMessage, error) {
+	q := url.Values{"limit": {"100"}, "after": {after}}
+	var out []HistoryMessage
+	err := r.do(ctx, http.MethodGet, "/channels/"+channelID+"/messages?"+q.Encode(), nil, &out)
+	return out, err
 }
 
 // MessagesBefore reads up to 100 messages older than before, newest first;
