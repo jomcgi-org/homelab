@@ -138,3 +138,14 @@ func TestARefusedEventFailsSoftly(t *testing.T) {
 		}
 	}
 }
+
+func TestAnEventLinkSurvivesALongAnswer(t *testing.T) {
+	long := strings.Repeat("a", maxReplyChars) + "\n```event\n{\"name\":\"Quiz\",\"start\":\"2026-11-20T19:30:00Z\",\"location\":\"x\"}\n```"
+	b, _, _ := newBridge(&fakeAgent{answer: long})
+	rep := &eventReplies{}
+	b.Replies = rep
+	b.Turn(context.Background(), tagged("1", "book it"))
+	if got := rep.sent[0].Components[0].Content; !strings.HasPrefix(got, "📅 **Quiz**") {
+		t.Errorf("reply starts %q", got[:40])
+	}
+}
