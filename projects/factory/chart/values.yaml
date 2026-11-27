@@ -635,6 +635,9 @@ discord:
         cpu: "4"
         memory: 8Gi
       concurrency: 1
+      # Harness idleSuspendDelay (0s to 1h): how long the actor stays running
+      # after a turn. Empty suspends at once.
+      idleSuspendDelay: 10m
       worker:
         resources:
           requests:

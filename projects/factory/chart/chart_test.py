@@ -132,10 +132,11 @@ def test_binding_codex_code_mode_image() -> None:
 
 
 # CRDs that the kagent fork controller (deploy values) changes, by the sha256
-# of the fork's helm/kagent-crds/templates file. jomcgi-org/kagent commit
-# 5bff0419a464 adds `spec.hermes` to the Harness CRD; the rest stay upstream's.
+# of the fork's helm/kagent-crds/templates file. jomcgi-org/kagent adds
+# `spec.hermes` (5bff0419a464) and `spec.idleSuspendDelay` (PR #3) to the
+# Harness CRD; the rest stay upstream's.
 _FORK_CRDS = {
-    "api.kagent.dev_harnesses.yaml": "566b3a3983dc5bdd42ee62e269e3724ad61f1d439144d039a43200238170bea6",
+    "api.kagent.dev_harnesses.yaml": "8b6b35a98f1b48e77db072562eb3f1ece9cc6f01b63c0a6ba20160ef037884d5",
 }
 
 
@@ -154,9 +155,10 @@ def test_crds_match_vendored_chart() -> None:
     assert local == vendored
 
 
-def test_fork_harness_crd_only_adds_hermes() -> None:
-    # The fork CRD is upstream's plus `spec.hermes` and its CEL rules, so
-    # every existing kagent, codex and claude Harness stays valid.
+def test_fork_harness_crd_only_adds_fork_fields() -> None:
+    # The fork CRD is upstream's plus `spec.hermes`, the optional
+    # `spec.idleSuspendDelay` and their CEL rules, so every existing kagent,
+    # codex and claude Harness stays valid.
     with tarfile.open(_CHART_DIR / "charts" / "kagent-crds-1.0.1.tgz") as tgz:
         member = next(
             m
@@ -173,8 +175,13 @@ def test_fork_harness_crd_only_adds_hermes() -> None:
         return version["schema"]["openAPIV3Schema"]["properties"]["spec"]
 
     old, new = spec(upstream), spec(fork)
-    assert new["properties"].keys() - old["properties"].keys() == {"hermes"}
+    assert new["properties"].keys() - old["properties"].keys() == {
+        "hermes",
+        "idleSuspendDelay",
+    }
     assert new["properties"]["hermes"]["type"] == "object"
+    assert new["properties"]["idleSuspendDelay"]["type"] == "string"
+    assert "idleSuspendDelay" not in new.get("required", [])
     rules = {r["rule"] for r in new["x-kubernetes-validations"]}
     assert (
         "!has(self.hermes) || (has(self.workload) && has(self.workload.image))" in rules
@@ -1760,6 +1767,8 @@ def test_discord_server_agent_runs_hermes_with_no_tools() -> None:
     assert item["metadata"]["labels"]["substrate.ate.dev/injectable"] == "true"
     harness = _in(docs, "Harness", ns, "hermes")["spec"]
     assert harness["hermes"] == {}
+    # Joe chose to keep the agent awake during active chats.
+    assert harness["idleSuspendDelay"] == "10m"
     assert harness["workload"] == {
         "image": "ghcr.io/jomcgi/homelab/projects/factory/harness/hermes@sha256:"
         + "e" * 64
