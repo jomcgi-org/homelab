@@ -29,8 +29,8 @@ py_test(
         "home-assistant.yaml",
         "kustomization.yaml",
         "zigbee2mqtt.yaml",
-        "//projects/platform-factory/garage/resources:backup_resources",
         "//projects:platform-factory/home-assistant/application.yaml",
+        "//projects/platform-factory/garage/resources:backup_resources",
     ],
     deps = [
         "@pip//pytest",
