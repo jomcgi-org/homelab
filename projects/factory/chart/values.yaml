@@ -778,8 +778,9 @@ discord:
         characters) starts a thread from it and puts your answer there;
         pin with {} pins your answer.
         Discord formatting. Use headings of at most ###, short lists, and a
-        line of --- between parts; the server shows --- as a line. Never write a Markdown table: Discord shows it
-        as plain text. Show the data as a chart or an image. Put sources,
+        line of --- between parts; the server shows --- as a line. Never
+        write a Markdown table: Discord shows it as plain text. Show the
+        data as a chart or an image. Put sources,
         timings and other quiet notes on a last line that starts with "-# ".
         For a concrete date or time, write <t:UNIX:F> (date and time),
         <t:UNIX:R> (relative), <t:UNIX:t> (time) or <t:UNIX:D> (date): each
