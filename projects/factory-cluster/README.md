@@ -404,6 +404,18 @@ fetches Authentik's keys from factory-auth.jomcgi.dev, through Cloudflare. A
 watch or `logs -f` with no traffic for about 100 seconds ends at Cloudflare;
 run it again.
 
+### Pod Security
+
+The API server reads `nodes/pod-security.yaml` from
+`/etc/rancher/k3s/pod-security.yaml` at start. A namespace with no
+`pod-security.kubernetes.io` label enforces `baseline`. The file exempts
+`kube-system`, `ate-system`, `otel-collector` and `t3`; substrate worker
+namespaces carry `pod-security.kubernetes.io/enforce: privileged` where git
+declares them. The level applies when a pod is created, so a running pod is
+not stopped. A change to the file needs a k3s restart: rerun step 2 of
+"Bootstrap and rebuild". To allow one more namespace without a restart, set
+its enforce label to `privileged` in git.
+
 ### kubectl from node-1
 
 Node-1 operator sessions use the local k3s API. The node-1 helper asks k3s

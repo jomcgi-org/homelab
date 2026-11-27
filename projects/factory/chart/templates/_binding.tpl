@@ -41,6 +41,9 @@ metadata:
     # Substrate's worker egress policy selects worker pods only in namespaces
     # with this label (projects/platform-factory/substrate).
     factory.jomcgi.dev/substrate-workers: "true"
+    # gVisor workers need SYS_ADMIN and no seccomp profile, which the cluster
+    # default (projects/factory-cluster/nodes/pod-security.yaml) forbids.
+    pod-security.kubernetes.io/enforce: privileged
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
     {{- include "factory.keep" $ | nindent 4 }}
