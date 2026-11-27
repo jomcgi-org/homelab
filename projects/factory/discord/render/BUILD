@@ -14,7 +14,10 @@ exports_files([
 
 rust_binary(
     name = "factory-discord-render",
-    srcs = ["src/main.rs"],
+    srcs = [
+        "src/main.rs",
+        "src/table.rs",
+    ],
     compile_data = glob(["theme/*.json"]),
     crate_name = "factory_discord_render",
     edition = "2021",

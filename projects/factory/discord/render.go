@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -37,36 +38,74 @@ var routes = map[string]string{"mermaid": "mermaid", "vega-lite": "vega-lite", "
 // it from the answer first, so each one in its text is an image.
 const imageMark = "\x00"
 
-// Visuals renders the first maxImages diagram, chart and SVG blocks in an
-// answer. A rendered block leaves the text and becomes a PNG; imageMark keeps
-// its place, so WithImages shows it where the agent drew it. A block the
-// renderer refuses stays as text. memo is the text to store in memory: the
-// answer with each rendered block named, not its source.
+// Visuals renders the first maxImages diagram, chart, SVG and table
+// images in an answer. A rendered block or table leaves the text and becomes
+// a PNG; imageMark keeps its place, so WithImages shows it where the agent
+// drew it. A block the renderer refuses stays as text. A table the renderer
+// does not draw, past the image limit or without a renderer, becomes an
+// aligned monospace table, because Discord shows no Markdown tables. memo is
+// the text to store in memory: the answer with each rendered block named,
+// not its source, and each table as the agent wrote it.
 func Visuals(ctx context.Context, r Renderer, answer string) (text, memo string, files []File) {
 	answer = strings.ReplaceAll(answer, imageMark, "")
-	if r == nil {
+	tables := findTables(answer)
+	if r == nil && len(tables) == 0 {
 		return answer, answer, nil
+	}
+	type item struct {
+		start, end int
+		kind       string
+		spec       []byte
+		table      *markdownTable
+	}
+	var items []item
+	for _, m := range visualBlock.FindAllStringSubmatchIndex(answer, -1) {
+		items = append(items, item{start: m[0], end: m[1], kind: routes[answer[m[2]:m[3]]], spec: []byte(answer[m[4]:m[5]])})
+	}
+	for i := range tables {
+		t := &tables[i]
+		items = append(items, item{start: t.start, end: t.end, kind: "table", spec: t.spec(), table: t})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].start < items[j].start })
+	render := func(it item) []byte {
+		if r == nil || len(files) == maxImages {
+			return nil
+		}
+		rctx, cancel := context.WithTimeout(ctx, renderTimeout)
+		defer cancel()
+		png, err := r.Render(rctx, it.kind, it.spec)
+		if err != nil || len(png) == 0 || len(png) > maxImageBytes {
+			return nil
+		}
+		return png
 	}
 	var out, mem strings.Builder
 	last := 0
-	for _, m := range visualBlock.FindAllStringSubmatchIndex(answer, -1) {
-		if len(files) == maxImages {
-			break
-		}
-		kind := routes[answer[m[2]:m[3]]]
-		spec := answer[m[4]:m[5]]
-		rctx, cancel := context.WithTimeout(ctx, renderTimeout)
-		png, err := r.Render(rctx, kind, []byte(spec))
-		cancel()
-		if err != nil || len(png) == 0 || len(png) > maxImageBytes {
+	for _, it := range items {
+		if it.start < last {
 			continue
 		}
-		out.WriteString(answer[last:m[0]])
-		out.WriteString(imageMark)
-		mem.WriteString(answer[last:m[0]])
-		fmt.Fprintf(&mem, "[image %d: %s]", len(files)+1, kind)
-		files = append(files, File{Name: fmt.Sprintf("image-%d.png", len(files)+1), Data: png})
-		last = m[1]
+		source := answer[it.start:it.end]
+		out.WriteString(answer[last:it.start])
+		mem.WriteString(answer[last:it.start])
+		last = it.end
+		png := render(it)
+		switch {
+		case png != nil:
+			out.WriteString(imageMark)
+			if it.table != nil {
+				mem.WriteString(source)
+			} else {
+				fmt.Fprintf(&mem, "[image %d: %s]", len(files)+1, it.kind)
+			}
+			files = append(files, File{Name: fmt.Sprintf("image-%d.png", len(files)+1), Data: png})
+		case it.table != nil:
+			out.WriteString(it.table.monospace())
+			mem.WriteString(source)
+		default:
+			out.WriteString(source)
+			mem.WriteString(source)
+		}
 	}
 	out.WriteString(answer[last:])
 	mem.WriteString(answer[last:])

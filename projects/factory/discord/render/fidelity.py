@@ -27,9 +27,12 @@ class Renderer(unittest.TestCase):
         for path in specs:
             png = path.with_suffix(".png")
             with self.subTest(png=png.name):
-                vega = path.suffix == ".json"
+                if path.name.endswith(".table.json"):
+                    route = "/table"
+                else:
+                    route = "/vega-lite" if path.suffix == ".json" else "/mermaid"
                 spec = path.read_bytes()
-                status, result = post("/vega-lite" if vega else "/mermaid", spec)
+                status, result = post(route, spec)
                 self.assertEqual(status, 200, result[:80])
                 self.assertTrue(result == png.read_bytes(), f"{png.name} changed")
 
@@ -45,6 +48,7 @@ class Renderer(unittest.TestCase):
             ("/vega-lite", b" " * 65537, 413),
             ("/mermaid", b" " * 65537, 413),
             ("/vega-lite", b'{"width":4097,"height":10,"mark":"point"}', 422),
+            ("/table", b'{"columns":["a"],"rows":[["1","2"]]}', 422),
             ("/mermaid", b"%%{init: {'theme': 'dark'}}%%\nflowchart LR\nA-->B", 422),
         ]
         for route, body, expected in cases:

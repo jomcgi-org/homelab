@@ -1,3 +1,5 @@
+mod table;
+
 use serde_json::Value;
 use std::fs::{self, File};
 use std::io::Read;
@@ -250,6 +252,13 @@ fn worker(route: &str, body: &[u8], input: &Path, svg: &Path) -> Result<Job, Fai
                 command: None,
             });
         }
+        "/table" => {
+            let drawing = table::svg(body).ok_or(INVALID)?;
+            return Ok(Job {
+                input: drawing.into_bytes(),
+                command: None,
+            });
+        }
         _ => return Err((404, "Unknown renderer")),
     };
     process.arg(input).arg("-o").arg(svg);
@@ -292,8 +301,8 @@ fn render(req: &mut Request, dir: &Path) -> Result<File, Failure> {
     let output = dir.join("output.png");
     let job = worker(req.url(), &body, &input, &drawing)?;
     fs::write(&input, &job.input).map_err(|_| INTERNAL)?;
-    // An agent's SVG has no drawing step, so its raster gets the whole
-    // deadline.
+    // An agent's SVG and a table have no drawing step, so their raster
+    // gets the whole deadline.
     let (drawing, raster_seconds): (PathBuf, &str) = match job.command {
         Some(process) => {
             run(process)?;
@@ -485,7 +494,7 @@ mod tests {
 
     #[test]
     fn size_limit_applies_to_every_format() {
-        for route in ["/vega-lite", "/mermaid", "/svg"] {
+        for route in ["/vega-lite", "/mermaid", "/svg", "/table"] {
             let result = worker(
                 route,
                 &vec![b' '; LIMIT + 1],

@@ -1,0 +1,16 @@
+{
+  "columns": ["Capability", "Status", "Notes"],
+  "align": ["left", "center", "left"],
+  "rows": [
+    ["Mermaid diagrams", "✅", "House theme, Inter, 2x raster"],
+    ["Vega-Lite charts", "✅", "Inline data only"],
+    [
+      "Markdown tables",
+      "✅",
+      "Drawn as an image like this one; a long note wraps onto a second line inside its cell"
+    ],
+    ["Web search", "🚧", "Waits for the Hermes tools"],
+    ["Polls", "✅", "Up to 10 answers"],
+    ["Moderation", "❌", "Not planned"]
+  ]
+}
