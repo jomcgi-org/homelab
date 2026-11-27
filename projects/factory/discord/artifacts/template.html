@@ -249,7 +249,11 @@ flowchart LR
           el.after(p);
         };
         try {
-          if (window.mermaid) {
+          if (!window.mermaid) {
+            for (const el of document.querySelectorAll("pre.mermaid")) {
+              fail(el, "the Mermaid library did not load");
+            }
+          } else {
             mermaid.initialize({
               startOnLoad: false,
               securityLevel: "strict",

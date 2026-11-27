@@ -403,7 +403,8 @@ def test_artifact_libraries_are_public_read_only_and_from_their_own_bucket(docs)
     assert route["hostnames"] == ["artifact.jomcgi.dev"]
     (rule,) = route["rules"]
     assert rule["matches"] == [
-        {"path": {"type": "PathPrefix", "value": "/_lib/"}, "method": "GET"}
+        {"path": {"type": "PathPrefix", "value": "/_lib/"}, "method": "GET"},
+        {"path": {"type": "PathPrefix", "value": "/_lib/"}, "method": "HEAD"},
     ]
     filters = {f["type"]: f for f in rule["filters"]}
     # The libraries bucket, never the artifacts bucket.

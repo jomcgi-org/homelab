@@ -176,7 +176,8 @@ spec:
 # The pinned libraries artifact pages load from /_lib/
 # (projects/factory/discord/libs): the image carries them, and this Job puts
 # them in the bosun-libs bucket after each sync. Files already there with the
-# same name and size are skipped. Only this Job holds the bucket's key.
+# same name and size are skipped; files the image no longer ships are
+# deleted. Only this Job holds the bucket's key.
 apiVersion: batch/v1
 kind: Job
 metadata:
