@@ -1,6 +1,8 @@
 # keys.py runs inside the hindsight-keys Jobs (secrets.yaml mounts it from a
 # ConfigMap), and preflight.py inside the hindsight-preflight Sync hook
 # (hindsight.yaml). Neither is a Bazel target.
+# bindings.py is a Hindsight extension, loaded inside the API image.
+# gazelle:exclude bindings.py
 # gazelle:exclude keys.py
 # gazelle:exclude preflight.py
 
@@ -12,6 +14,7 @@ exports_files(
 filegroup(
     name = "keys_resources",
     srcs = [
+        "bindings.py",
         "hindsight.yaml",
         "keys.py",
         "kustomization.yaml",

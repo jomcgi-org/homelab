@@ -1,4 +1,5 @@
-# Create the future bridge's namespace and tenant-key placeholder (HOME-163).
+# Create the bridge's namespace and tenant-key placeholder (HOME-163), and
+# the homelab Hermes agent's recall-token placeholder (HOME-909).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -21,6 +22,9 @@ spec:
   ignoreDifferences:
     - kind: Secret
       name: hindsight-discord-key
+      jsonPointers: [/data]
+    - kind: Secret
+      name: hindsight-discord-recall
       jsonPointers: [/data]
   syncPolicy:
     automated:

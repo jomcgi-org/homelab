@@ -15,6 +15,13 @@ import yaml
 ROOT = Path(__file__).resolve().parent
 KEYS = ("hindsight-discord", "hindsight-keys")
 BRIDGE_KEY = ("factory-discord", "hindsight-discord-key")
+AGENT_KEY = ("discord-1501965852042330302", "hindsight-discord-recall")
+BANKS = [
+    "discord-185442367703220224",
+    "discord-1290668195249917964",
+    "discord-1501965852042330302",
+    "discord-1512814732392927463",
+]
 
 
 def read(path):
@@ -94,7 +101,7 @@ def keys(monkeypatch, rendered):
         spec.loader.exec_module(script)
     api = SecretAPI(rendered)
     monkeypatch.setattr(script, "call", api.call)
-    values = iter(["a" * 64])
+    values = iter(["a" * 64, "b" * 64])
     monkeypatch.setattr(
         script.secrets, "token_hex", Mock(side_effect=lambda _: next(values))
     )
@@ -138,25 +145,33 @@ def test_rendered_key_job_permissions_and_mounts(rendered):
         }
 
 
-def test_key_is_generated_once_and_shared_only_with_discord(keys, capsys):
+def test_keys_are_generated_once_and_each_shared_only_with_its_consumer(keys, capsys):
     script, api = keys
     script.main("init")
     data = api.secrets[KEYS]["data"]
-    assert data == {"tenant-api-key": script.b64("a" * 64)}
+    assert data == {
+        "tenant-api-key": script.b64("a" * 64),
+        "recall-token": script.b64("b" * 64),
+    }
     assert api.writes == [KEYS]
     assert api.secrets[BRIDGE_KEY]["data"] == {}
 
     script.main("discord")
-    assert api.secrets[BRIDGE_KEY]["data"] == data
-    assert api.writes == [KEYS, BRIDGE_KEY]
+    # The bridge gets only the tenant key; the agent gets only the recall token.
+    assert api.secrets[BRIDGE_KEY]["data"] == {"tenant-api-key": data["tenant-api-key"]}
+    assert api.secrets[AGENT_KEY]["data"] == {"token": data["recall-token"]}
+    assert api.writes == [KEYS, BRIDGE_KEY, AGENT_KEY]
     api.writes.clear()
     script.main("init")
     script.main("discord")
     assert api.writes == []
-    script.secrets.token_hex.assert_called_once_with(32)
-    assert "a" * 64 not in capsys.readouterr().out
+    assert script.secrets.token_hex.call_count == 2
+    out = capsys.readouterr().out
+    assert "a" * 64 not in out and "b" * 64 not in out
     assert api.permissions == {
-        (*key, verb) for key in (KEYS, BRIDGE_KEY) for verb in ("get", "update")
+        (*key, verb)
+        for key in (KEYS, BRIDGE_KEY, AGENT_KEY)
+        for verb in ("get", "update")
     }
 
 
@@ -171,8 +186,10 @@ def test_consumer_waits_for_its_application_and_repairs_a_stale_copy(keys, monke
     api.writes.clear()
     script.main("discord")
     assert api.writes == [BRIDGE_KEY]
-    assert api.secrets[BRIDGE_KEY]["data"] == api.secrets[KEYS]["data"]
-    script.secrets.token_hex.assert_called_once_with(32)
+    assert api.secrets[BRIDGE_KEY]["data"] == {
+        "tenant-api-key": api.secrets[KEYS]["data"]["tenant-api-key"]
+    }
+    assert script.secrets.token_hex.call_count == 2
 
 
 def test_api_storage_model_and_credentials(rendered):
@@ -208,8 +225,39 @@ def test_api_storage_model_and_credentials(rendered):
     assert env["HINDSIGHT_API_LLM_VISION"] == "true"
     assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
     assert env["HINDSIGHT_API_LLM_MODEL"] == "deepseek/deepseek-v4.1-flash-1017"
-    assert env["HINDSIGHT_API_MCP_ENABLED"] == "false"
+    # MCP takes only the recall binding (resources/bindings.py).
+    assert "HINDSIGHT_API_MCP_ENABLED" not in env
     assert "HINDSIGHT_API_MCP_AUTH_TOKEN" not in env
+    assert env["HINDSIGHT_API_TENANT_EXTENSION"] == "bindings:BindingTenant"
+    assert (
+        env["HINDSIGHT_API_OPERATION_VALIDATOR_EXTENSION"]
+        == "bindings:BindingValidator"
+    )
+    assert env["HINDSIGHT_API_MCP_EXTENSION"] == "bindings:MemoryTools"
+    assert env["HINDSIGHT_API_MCP_ENABLED_TOOLS"] == "recall"
+    assert json.loads(env["MCP_BINDINGS"]) == {
+        "BOSUN_RECALL_TOKEN": {"banks": BANKS, "tools": ["recall"]}
+    }
+    assert env["BOSUN_RECALL_TOKEN"] == {
+        "secretKeyRef": {"name": "hindsight-keys", "key": "recall-token"}
+    }
+    assert "HINDSIGHT_API_HTTP_EXTENSION" not in env
+    mount = next(m for m in container["volumeMounts"] if m["name"] == "bindings")
+    assert mount == {
+        "name": "bindings",
+        "mountPath": "/etc/hindsight/extensions",
+        "readOnly": True,
+    }
+    assert env["PYTHONPATH"] == mount["mountPath"]
+    bindings = next(
+        d
+        for d in rendered
+        if d["kind"] == "ConfigMap"
+        and d["metadata"]["name"].startswith("hindsight-bindings-")
+    )
+    assert (
+        bindings["data"]["bindings.py"] == (ROOT / "resources/bindings.py").read_text()
+    )
     assert "HINDSIGHT_API_SKIP_LLM_VERIFICATION" not in env
     for variable, secret, key in (
         ("FILE_STORAGE_S3_ACCESS_KEY_ID", "discord-media-s3", "AWS_ACCESS_KEY_ID"),
@@ -240,7 +288,7 @@ def test_api_storage_model_and_credentials(rendered):
     assert container["securityContext"]["allowPrivilegeEscalation"] is False
 
 
-def test_network_allows_only_bridge_database_garage_and_openrouter(rendered):
+def test_network_allows_only_bridge_gateway_database_garage_and_openrouter(rendered):
     policies = {
         d["metadata"]["name"]: d for d in rendered if d["kind"] == "CiliumNetworkPolicy"
     }
@@ -260,7 +308,18 @@ def test_network_allows_only_bridge_database_garage_and_openrouter(rendered):
                 }
             ],
             "toPorts": [{"ports": [{"port": "8888", "protocol": "TCP"}]}],
-        }
+        },
+        {
+            "fromEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "ate-system",
+                        "app": "atenet-egress",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8888", "protocol": "TCP"}]}],
+        },
     ]
     assert policy["spec"]["egress"] == [
         {
@@ -328,7 +387,11 @@ def test_argo_preserves_keys_and_jobs_use_the_tested_modes():
             "hindsight-discord",
             {"hindsight-keys", "hindsight-db", "discord-media-s3"},
         ),
-        ("application-discord.yaml", "factory-discord", {"hindsight-discord-key"}),
+        (
+            "application-discord.yaml",
+            "factory-discord",
+            {"hindsight-discord-key", "hindsight-discord-recall"},
+        ),
     ):
         (application,) = read(path)
         assert application["spec"]["destination"]["namespace"] == namespace
@@ -348,11 +411,11 @@ def test_argo_preserves_keys_and_jobs_use_the_tested_modes():
                 doc["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
                 == "Prune=false,Delete=false"
             )
-            assert (
-                not doc["metadata"]
-                .get("labels", {})
-                .get("substrate.ate.dev/injectable")
+            # Only the agent's recall token is injectable at the egress gateway.
+            injectable = (
+                doc["metadata"].get("labels", {}).get("substrate.ate.dev/injectable")
             )
+            assert bool(injectable) == (doc["metadata"]["name"] == AGENT_KEY[1])
     jobs = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Job"}
     for name, mode in (
         ("hindsight-keys-init", "init"),
@@ -433,6 +496,7 @@ def test_models_are_the_factory_hindsight_models_on_the_dedicated_key():
         ("hindsight-openrouter", "api-key"),
         ("hindsight-openrouter", "base-url"),
         ("hindsight-keys", "tenant-api-key"),
+        ("hindsight-keys", "recall-token"),
         ("hindsight-db", "DATABASE_URL"),
     }
 

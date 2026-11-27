@@ -267,6 +267,17 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
+    # hindsight-discord's MCP recall for the homelab Discord Hermes agent,
+    # with the recall token the gateway injects (HOME-909;
+    # projects/platform-factory/hindsight-discord).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: hindsight-discord
+            app.kubernetes.io/name: hindsight
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
     # git over HTTPS for factory repository bindings, with the broker-minted
     # token the gateway injects (EgressPolicy github-git).
     - toFQDNs:

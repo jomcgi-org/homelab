@@ -114,16 +114,32 @@ spec:
                 secretKeyRef:
                   name: hindsight-openrouter
                   key: api-key
-            # Only the future Discord bridge receives the REST tenant key.
+            # Only the bridge receives the REST tenant key.
             - name: HINDSIGHT_API_TENANT_EXTENSION
-              value: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
+              value: bindings:BindingTenant
+            - name: HINDSIGHT_API_OPERATION_VALIDATOR_EXTENSION
+              value: bindings:BindingValidator
+            - name: PYTHONPATH
+              value: /etc/hindsight/extensions
             - name: HINDSIGHT_API_TENANT_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: hindsight-keys
                   key: tenant-api-key
-            - name: HINDSIGHT_API_MCP_ENABLED
-              value: "false"
+            # MCP takes only the Hermes agent's recall token (HOME-909), and
+            # registers only recall: no retain, reflect or delete. The token
+            # reads the four servers' banks, each call naming its bank.
+            - name: HINDSIGHT_API_MCP_EXTENSION
+              value: bindings:MemoryTools
+            - name: MCP_BINDINGS
+              value: '{"BOSUN_RECALL_TOKEN":{"banks":["discord-185442367703220224","discord-1290668195249917964","discord-1501965852042330302","discord-1512814732392927463"],"tools":["recall"]}}'
+            - name: BOSUN_RECALL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-keys
+                  key: recall-token
+            - name: HINDSIGHT_API_MCP_ENABLED_TOOLS
+              value: recall
             # Embeddings and the decision model are the factory Hindsight's
             # (HOME-176, HOME-182), on the same dedicated Discord key: Voyage 4
             # Large, 1,024 dimensions, from providers that keep no data.
@@ -196,9 +212,15 @@ spec:
             limits:
               memory: 2Gi
           volumeMounts:
+            - name: bindings
+              mountPath: /etc/hindsight/extensions
+              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
+        - name: bindings
+          configMap:
+            name: hindsight-bindings
         - name: tmp
           emptyDir:
             sizeLimit: 1Gi

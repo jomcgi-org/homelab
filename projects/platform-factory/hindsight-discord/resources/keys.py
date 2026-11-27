@@ -1,8 +1,9 @@
-"""Generate the Discord tenant key once and copy it only to the bridge.
+"""Generate the Discord keys once and copy each only to its consumer.
 
 init fills hindsight-discord/hindsight-keys before the Deployment starts.
-discord copies tenant-api-key to factory-discord/hindsight-discord-key after
-sync. Reruns preserve the source key and repair a stale consumer copy.
+discord copies tenant-api-key to the bridge's factory-discord/hindsight-discord-key
+and recall-token to the Hermes agent's discord-<guild>/hindsight-discord-recall
+after sync. Reruns preserve the source keys and repair a stale consumer copy.
 Uses only the standard library and the pod's service account token.
 """
 
@@ -26,8 +27,18 @@ CTX = ssl.create_default_context(cafile=f"{SA}/ca.crt")
 
 NAMESPACE = "hindsight-discord"
 KEYS = "hindsight-keys"
-FIELDS = ("tenant-api-key",)
-CONSUMER = ("factory-discord", "hindsight-discord-key")
+FIELDS = ("tenant-api-key", "recall-token")
+# Source field -> (namespace, Secret, field) of its only copy.
+CONSUMERS = {
+    "tenant-api-key": ("factory-discord", "hindsight-discord-key", "tenant-api-key"),
+    # The Hermes agent's RemoteMCPServer sends it as the Authorization header;
+    # the Substrate egress gateway injects it, so the actor holds a placeholder.
+    "recall-token": (
+        "discord-1501965852042330302",
+        "hindsight-discord-recall",
+        "token",
+    ),
+}
 
 
 def call(method, path, body=None):
@@ -89,16 +100,16 @@ def ensure_keys():
     return data
 
 
-def share_key(data):
-    want = {"tenant-api-key": data["tenant-api-key"]}
-    namespace, name = CONSUMER
-    current = get_eventually(name, namespace)
-    if current.get("data") != want:
-        current["data"] = want
-        call("PUT", secret_path(name, namespace), current)
-        print(f"updated {namespace}/{name}")
-    else:
-        print(f"{namespace}/{name} current")
+def share_keys(data):
+    for field, (namespace, name, key) in CONSUMERS.items():
+        want = {key: data[field]}
+        current = get_eventually(name, namespace)
+        if current.get("data") != want:
+            current["data"] = want
+            call("PUT", secret_path(name, namespace), current)
+            print(f"updated {namespace}/{name}")
+        else:
+            print(f"{namespace}/{name} current")
 
 
 def main(mode):
@@ -106,7 +117,7 @@ def main(mode):
         raise SystemExit(f"unknown mode {mode!r}; use init or discord")
     data = ensure_keys()
     if mode == "discord":
-        share_key(data)
+        share_keys(data)
 
 
 if __name__ == "__main__":
