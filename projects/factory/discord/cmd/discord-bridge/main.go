@@ -4,7 +4,7 @@
 // sets `ingest`, it also stores every human message (HOME-833). With
 // BACKFILL_ENABLED, it also replays the history of each server with
 // `history: true` into its bank in the background (HOME-164, HOME-836).
-// With ARCHIVE_DATABASE_URL, it also keeps the verbatim archive of every
+// With ARCHIVE_DATABASE_URL_FILE, it also keeps the verbatim archive of every
 // message for Bosun's history tools (HOME-909).
 package main
 
@@ -157,14 +157,10 @@ func run(log *slog.Logger) error {
 	}
 	// The verbatim archive (HOME-909) outlives the gateway, as the ingestor
 	// does, so the last events are written.
-	archiver, archiveDB, err := newArchive(log, policy, bridge.Places, reg)
-	if err != nil {
-		return err
-	}
+	archiver, archiveStore := newArchive(log, policy, bridge.Places, reg)
 	archiveDone := make(chan struct{})
 	stopArchive := func() {}
 	if archiver != nil {
-		defer archiveDB.Close()
 		if backfill != nil {
 			backfill.Importer.Archive = archiver
 		}
@@ -172,7 +168,7 @@ func run(log *slog.Logger) error {
 		stopArchive = cancel
 		go func() {
 			defer close(archiveDone)
-			runArchive(actx, log, archiver, archiveDB, policy)
+			runArchive(actx, log, archiver, archiveStore, policy)
 		}()
 	} else {
 		close(archiveDone)

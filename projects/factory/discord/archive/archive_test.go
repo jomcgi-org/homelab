@@ -110,7 +110,8 @@ func TestUpsertIsIdempotentAndKeepsTheNewestEdit(t *testing.T) {
 	}
 	edited := first
 	edited.Content, edited.EditedAt = "edited text", day.Add(time.Hour)
-	if err := s.Upsert(ctx, []Row{edited}); err != nil {
+	// A repeat in one batch: the last row wins and the batch is not refused.
+	if err := s.Upsert(ctx, []Row{first, edited, row(2, general, "sam", "second")}); err != nil {
 		t.Fatal(err)
 	}
 	// A history page read before the edit arrives late: it must not undo it.
@@ -121,7 +122,7 @@ func TestUpsertIsIdempotentAndKeepsTheNewestEdit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Messages) != 1 || got.Messages[0].Text != "edited text" || got.Messages[0].Edited == "" {
+	if len(got.Messages) != 2 || got.Messages[0].Text != "edited text" || got.Messages[0].Edited == "" {
 		t.Fatalf("got %+v", got.Messages)
 	}
 	if got.Messages[0].Link != "https://discord.com/channels/"+guild+"/"+general+"/"+first.ID {

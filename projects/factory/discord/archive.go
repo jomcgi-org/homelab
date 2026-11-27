@@ -128,7 +128,10 @@ func (a *Archiver) Event(t string, data json.RawMessage) {
 		if json.Unmarshal(data, &d) != nil || d.GuildID == "" {
 			return
 		}
-		if _, ok := a.Config.Guilds[d.GuildID]; !ok {
+		// A delete can leave a tombstone, so it is admitted as a create is:
+		// no row ever names an operator or unlisted channel.
+		parent, known := a.Places.parentOf(d.GuildID, d.ChannelID)
+		if !a.admit(d.GuildID, d.ChannelID, parent, known) {
 			return
 		}
 		ids := d.IDs

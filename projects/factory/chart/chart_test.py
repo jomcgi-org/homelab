@@ -1467,6 +1467,7 @@ def test_discord_bridge_reaches_only_its_expected_peers() -> None:
         "hindsight": ("/var/run/secrets/hindsight", True),
         "kagent": ("/var/run/secrets/kagent", True),
         "policy": ("/etc/discord-bridge", True),
+        "archive": ("/var/run/secrets/discord-archive", True),
     }
     # Each file the bridge reads is a mounted key.
     assert env["DISCORD_TOKEN_FILE"] == "/var/run/secrets/discord/token"
@@ -2218,7 +2219,8 @@ def test_discord_archive_reads_with_its_own_login_through_the_gateway() -> None:
     off = _render(base + ["discord.archive.enabled=false"])
     assert not [d for d in off if d["metadata"]["name"] == "bosun-history"]
     bridge = _in(off, "Deployment", "factory-discord", "discord-bridge")
-    assert "ARCHIVE_DATABASE_URL" not in str(bridge)
+    assert "ARCHIVE_DATABASE_URL_FILE" not in str(bridge)
+    assert "discord-archive-db" not in str(bridge)
 
     docs = _render(
         base
@@ -2265,10 +2267,15 @@ def test_discord_archive_reads_with_its_own_login_through_the_gateway() -> None:
     benv = {
         e["name"]: e for e in bridge["spec"]["template"]["spec"]["containers"][0]["env"]
     }
-    assert benv["ARCHIVE_DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {
-        "name": "discord-archive-db",
-        "key": "DATABASE_URL",
+    assert (
+        benv["ARCHIVE_DATABASE_URL_FILE"]["value"]
+        == "/var/run/secrets/discord-archive/database-url"
+    )
+    bvolumes = {v["name"]: v for v in bridge["spec"]["template"]["spec"]["volumes"]}
+    assert bvolumes["archive"]["secret"] == {
+        "secretName": "discord-archive-db",
         "optional": True,
+        "items": [{"key": "DATABASE_URL", "path": "database-url"}],
     }
     assert benv["ARCHIVE_READER_ROLE"]["value"] == "factory_discord_archive_reader"
     assert benv["ARCHIVE_PURGE"]["value"] == "999999999999999999"

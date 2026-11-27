@@ -102,6 +102,21 @@ type Store struct {
 // newer or equal edit time replaces the text; a deleted message stays
 // deleted, so a history page read before the delete cannot restore it.
 func (s *Store) Upsert(ctx context.Context, rows []Row) error {
+	// One statement may not update a row twice (a gateway resume can repeat
+	// a message in a batch): keep each ID's last row.
+	last := make(map[string]int, len(rows))
+	for i, r := range rows {
+		last[r.ID] = i
+	}
+	if len(last) < len(rows) {
+		unique := make([]Row, 0, len(last))
+		for i, r := range rows {
+			if last[r.ID] == i {
+				unique = append(unique, r)
+			}
+		}
+		rows = unique
+	}
 	if len(rows) == 0 {
 		return nil
 	}
