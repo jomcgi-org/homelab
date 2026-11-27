@@ -283,11 +283,14 @@ def _get(url: str) -> int:
 def _hermes_config(base_url: str) -> dict:
     """config.yaml as kagent-hermes renders it (driver.RenderConfig)."""
     return {
-        "model": {
-            "default": MODEL,
-            "provider": "custom",
-            "base_url": base_url,
-            "api_key": "kagent-credential-injected",
+        "model": {"default": MODEL, "provider": "kagent"},
+        "providers": {
+            "kagent": {
+                "name": "kagent",
+                "base_url": base_url,
+                "api_key": "kagent-credential-injected",
+                "api_mode": "chat_completions",
+            }
         },
         "toolsets": [],
         "platform_toolsets": {"api_server": []},
