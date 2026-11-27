@@ -220,6 +220,7 @@ func (i *Ingestor) Recent(guildID, channelID, skipID string, maxLines, maxChars 
 func (i *Ingestor) requeue(c *ingestChannel, lines []ingestLine) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	c.sending = nil // The lines are back in c.lines; Recent must not see them twice.
 	c.lines = append(lines, c.lines...)
 	c.bytes = 0
 	for _, l := range c.lines {
