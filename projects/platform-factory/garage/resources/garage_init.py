@@ -83,6 +83,8 @@ GRANTS = [
 # artifact.jomcgi.dev/_lib/ without sign-in.
 WEBSITES = {
     "bosun-artifacts": (2 * 2**30, 20000),
+    # Old library versions stay for older pages: raise this when an upload
+    # fails on the quota.
     "bosun-libs": (64 * 2**20, 200),
 }
 
