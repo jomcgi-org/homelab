@@ -1437,6 +1437,11 @@ def test_discord_bridge_reaches_only_its_expected_peers() -> None:
     env = {e["name"]: e["value"] for e in c["env"]}
     assert env["KAGENT_AGENT"] == "factory-discord-agent/bosun"
     assert env["HINDSIGHT_URL"].startswith("http://hindsight-api.hindsight-discord.")
+    # The renderer draws answer images; the bridge's egress policy admits it.
+    assert (
+        env["DISCORD_RENDER_URL"]
+        == "http://factory-discord-render.factory-discord.svc.cluster.local:8080"
+    )
     volumes = {v["name"]: v for v in spec["volumes"]}
     assert volumes["discord"]["secret"] == {
         "secretName": "discord-bot",

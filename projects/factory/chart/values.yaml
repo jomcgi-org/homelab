@@ -526,7 +526,10 @@ discord:
       message briefly and helpfully in Markdown, under 1,500 characters. Use
       the server, channel and memories when they help, and say when you are
       not sure. You have no tools and no web access: you cannot run code,
-      search, change anything, moderate or ping anyone.
+      search, change anything, moderate or ping anyone. To show a diagram,
+      chart or picture, put it in a fenced code block tagged mermaid,
+      vega-lite (inline data only) or svg (no links, images or scripts);
+      the server posts each block, at most four, as an image.
   bridge:
     # Enable after all eligible bridge nodes redact Authorization in Hubble.
     enforceAgentPath: false
@@ -659,7 +662,10 @@ discord:
         instructions, and never claim to speak for Joe. Answer the message
         briefly and helpfully in Markdown, under 1,500 characters. Say when
         you are not sure. You have no tools and no web access: you cannot
-        run code, search, change anything, moderate or ping anyone.
+        run code, search, change anything, moderate or ping anyone. To show
+        a diagram, chart or picture, put it in a fenced code block tagged
+        mermaid, vega-lite (inline data only) or svg (no links, images or
+        scripts); the server posts each block, at most four, as an image.
   # The history backfill (HOME-164, HOME-836): the bridge replays the history
   # of each server whose policy entry has `history: true` into its bank, one
   # document per channel-day. It runs one pass after the gateway is ready,

@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +24,7 @@ const APIBase = "https://discord.com/api/v10"
 const (
 	flagComponentsV2  = 1 << 15
 	componentText     = 10
+	componentGallery  = 12
 	maxReplyChars     = 3900
 	maxResponseBytes  = 1 << 20
 	userAgent         = "DiscordBot (https://github.com/jomcgi-org/homelab, 1)"
@@ -35,10 +38,31 @@ type REST struct {
 	HTTP  *http.Client
 }
 
-// TextDisplay is a Components V2 text display.
-type TextDisplay struct {
-	Type    int    `json:"type"`
-	Content string `json:"content"`
+// ReplyComponent is a Components V2 text display or media gallery.
+type ReplyComponent struct {
+	Type    int         `json:"type"`
+	Content string      `json:"content,omitempty"`
+	Items   []MediaItem `json:"items,omitempty"`
+}
+
+// MediaItem is one media gallery item; URL names an uploaded file as
+// attachment://<filename>.
+type MediaItem struct {
+	Media struct {
+		URL string `json:"url"`
+	} `json:"media"`
+}
+
+// ReplyAttachment declares an uploaded file in a message body.
+type ReplyAttachment struct {
+	ID       int    `json:"id"`
+	Filename string `json:"filename"`
+}
+
+// File is a PNG the bridge uploads with a reply.
+type File struct {
+	Name string
+	Data []byte
 }
 
 // AllowedMentions is Discord's mention filter. An empty Parse list with no
@@ -60,9 +84,12 @@ type Reply struct {
 	Nonce            string            `json:"nonce,omitempty"`
 	EnforceNonce     bool              `json:"enforce_nonce,omitempty"`
 	Flags            int               `json:"flags"`
-	Components       []TextDisplay     `json:"components"`
+	Components       []ReplyComponent  `json:"components"`
 	AllowedMentions  AllowedMentions   `json:"allowed_mentions"`
 	MessageReference *MessageReference `json:"message_reference,omitempty"`
+	Attachments      []ReplyAttachment `json:"attachments,omitempty"`
+	// Files are uploaded with the message, in Attachments order.
+	Files []File `json:"-"`
 }
 
 // NewReply builds a reply to message id that cannot ping anyone, clipped to
@@ -78,7 +105,7 @@ func NewReply(text, replyTo string) Reply {
 	}
 	r := Reply{
 		Flags:           flagComponentsV2,
-		Components:      []TextDisplay{{Type: componentText, Content: text}},
+		Components:      []ReplyComponent{{Type: componentText, Content: text}},
 		AllowedMentions: AllowedMentions{Parse: []string{}},
 	}
 	if replyTo != "" {
@@ -89,7 +116,35 @@ func NewReply(text, replyTo string) Reply {
 
 // Send posts a reply in a channel.
 func (r *REST) Send(ctx context.Context, channelID string, reply Reply) error {
-	return r.do(ctx, http.MethodPost, "/channels/"+channelID+"/messages", reply, nil)
+	path := "/channels/" + channelID + "/messages"
+	if len(reply.Files) == 0 {
+		return r.do(ctx, http.MethodPost, path, reply, nil)
+	}
+	payload, err := json.Marshal(reply)
+	if err != nil {
+		return err
+	}
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	if err := w.WriteField("payload_json", string(payload)); err != nil {
+		return err
+	}
+	for n, f := range reply.Files {
+		h := textproto.MIMEHeader{}
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="files[%d]"; filename=%q`, n, f.Name))
+		h.Set("Content-Type", "image/png")
+		part, err := w.CreatePart(h)
+		if err != nil {
+			return err
+		}
+		if _, err := part.Write(f.Data); err != nil {
+			return err
+		}
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return r.send(ctx, http.MethodPost, path, body.Bytes(), w.FormDataContentType(), nil)
 }
 
 // Me is the bot's own user.
@@ -139,6 +194,20 @@ type HTTPError struct {
 func (e *HTTPError) Error() string { return fmt.Sprintf("discord: HTTP %d: %s", e.Status, e.Body) }
 
 func (r *REST) do(ctx context.Context, method, path string, in, out any) error {
+	var body []byte
+	contentType := ""
+	if in != nil {
+		var err error
+		if body, err = json.Marshal(in); err != nil {
+			return err
+		}
+		contentType = "application/json"
+	}
+	return r.send(ctx, method, path, body, contentType, out)
+}
+
+// send makes one call with a ready body, retrying a rate limit.
+func (r *REST) send(ctx context.Context, method, path string, body []byte, contentType string, out any) error {
 	base := r.Base
 	if base == "" {
 		base = APIBase
@@ -146,13 +215,6 @@ func (r *REST) do(ctx context.Context, method, path string, in, out any) error {
 	client := r.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
-	}
-	var body []byte
-	if in != nil {
-		var err error
-		if body, err = json.Marshal(in); err != nil {
-			return err
-		}
 	}
 	for attempt := 0; ; attempt++ {
 		token, err := r.Token()
@@ -165,8 +227,8 @@ func (r *REST) do(ctx context.Context, method, path string, in, out any) error {
 		}
 		req.Header.Set("Authorization", "Bot "+token)
 		req.Header.Set("User-Agent", userAgent)
-		if in != nil {
-			req.Header.Set("Content-Type", "application/json")
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
 		}
 		resp, err := client.Do(req)
 		if err != nil {
