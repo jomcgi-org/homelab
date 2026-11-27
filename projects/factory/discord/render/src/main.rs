@@ -108,9 +108,10 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
 // The root element's width and height, else its viewBox, set the drawing
 // size. This catches a model asking for a huge canvas; it is not a bound on
 // hostile input (a comment or pattern tile gets past it), which needs a
-// memory limit per worker. An explicit side must be a plain or px number no larger than
-// MAX_SIDE. A missing or percentage side takes the viewBox's, which must
-// also fit; without a viewBox resvg draws 100 px.
+// memory limit per worker. A side is a plain or px number, a percentage of
+// the viewBox's side, or em/ex at 16 px each; it must be no larger than
+// MAX_SIDE. A missing side takes the viewBox's, which must also fit;
+// without a viewBox resvg draws 100 px.
 fn svg_size_allowed(lower: &str) -> bool {
     svg_side(lower).is_some()
 }
@@ -134,7 +135,11 @@ fn svg_side(lower: &str) -> Option<f64> {
                 from_view_box = true
             }
             // An em or ex side is that many font sizes; count 16 px each.
+            // A root font-size would change that size, so it is refused.
             Some(v) if v.ends_with("em") || v.ends_with("ex") => {
+                if root.contains("font-size") {
+                    return None;
+                }
                 let n = v[..v.len() - 2].trim().parse::<f64>().ok()?;
                 side = side.max(n * 16.0);
                 if !fits(side) {
@@ -228,7 +233,10 @@ fn worker(route: &str, body: &[u8], input: &Path, svg: &Path) -> Result<Job, Fai
             if !diagram_allowed(spec) {
                 return Err(INVALID);
             }
-            process.arg("mmdr").arg("-c").arg(input.with_file_name("mermaid.json"));
+            process
+                .arg("mmdr")
+                .arg("-c")
+                .arg(input.with_file_name("mermaid.json"));
             process.args(["-e", "svg", "-i"]);
             body.to_vec()
         }
@@ -430,7 +438,13 @@ mod tests {
     #[test]
     fn house_theme_wins_over_the_chart_config() {
         let chart = r##"{"background":"#000","mark":"bar","config":{"font":"Comic Sans MS","axis":{"labelAngle":45,"labelColor":"red"}}}"##;
-        let job = worker("/vega-lite", chart.as_bytes(), Path::new("in"), Path::new("out")).unwrap();
+        let job = worker(
+            "/vega-lite",
+            chart.as_bytes(),
+            Path::new("in"),
+            Path::new("out"),
+        )
+        .unwrap();
         let themed: Value = serde_json::from_slice(&job.input).unwrap();
         assert_eq!(themed.get("background"), None);
         assert_eq!(themed["config"]["font"], "Inter");
@@ -443,17 +457,30 @@ mod tests {
 
     #[test]
     fn drawing_side_sets_the_raster_scale() {
-        assert_eq!(svg_side(r#"<svg width="300" height="1500.5">"#), Some(1500.5));
-        assert_eq!(svg_side(r#"<svg viewbox="0 0 24 24" width="1em">"#), Some(24.0));
+        assert_eq!(
+            svg_side(r#"<svg width="300" height="1500.5">"#),
+            Some(1500.5)
+        );
+        assert_eq!(
+            svg_side(r#"<svg viewbox="0 0 24 24" width="1em">"#),
+            Some(24.0)
+        );
         assert_eq!(svg_side("<svg>"), Some(100.0));
         assert_eq!(svg_side(r#"<svg width="5000" height="10">"#), None);
         assert_eq!(
             svg_side(r#"<svg width="200%" height="200%" viewbox="0 0 2048 2048">"#),
             Some(4096.0)
         );
-        assert_eq!(svg_side(r#"<svg width="300%" viewbox="0 0 2048 10">"#), None);
-        assert_eq!(svg_side(r#"<svg width="200em" viewbox="0 0 24 24">"#), Some(3200.0));
+        assert_eq!(
+            svg_side(r#"<svg width="300%" viewbox="0 0 2048 10">"#),
+            None
+        );
+        assert_eq!(
+            svg_side(r#"<svg width="200em" viewbox="0 0 24 24">"#),
+            Some(3200.0)
+        );
         assert_eq!(svg_side(r#"<svg width="300em">"#), None);
+        assert_eq!(svg_side(r#"<svg font-size="4096" width="4em">"#), None);
     }
 
     #[test]
