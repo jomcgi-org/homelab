@@ -7,6 +7,12 @@
 # promotes it in the UI. The init container writes http-storage.json there.
 default_config:
 
+# Routines kept in git. Each package is a file in this directory, mounted
+# read-only under /config/packages. See bedroom-package.yaml.
+homeassistant:
+  packages:
+    bedroom: !include packages/bedroom.yaml
+
 # The family dashboard. Every signed-in user sees it; Settings stays
 # admin-only. The file is mounted read-only from heating-dashboard.yaml.
 lovelace:
@@ -16,6 +22,13 @@ lovelace:
       filename: dashboards/heating.yaml
       title: Heating
       icon: mdi:radiator
+      show_in_sidebar: true
+      require_admin: false
+    family-bedroom:
+      mode: yaml
+      filename: dashboards/bedroom.yaml
+      title: Bedroom
+      icon: mdi:bed
       show_in_sidebar: true
       require_admin: false
 

@@ -58,6 +58,30 @@ To add a person:
 The owner's password login is the break-glass:
 `https://home.jomcgi.dev/?skip_oidc_redirect=true`.
 
+## Bedroom routines
+
+`resources/bedroom-package.yaml` holds the routines and
+`resources/bedroom-dashboard.yaml` the **Bedroom** dashboard. Change both in
+git.
+
+```mermaid
+flowchart LR
+  W[Wake time today] -->|30 min before| S[Sunrise on Twilight]
+  S -->|at wake time| O[Blinds open]
+  SS[Sunset] --> C[Blinds close]
+  B[Twilight Hue button] --> D[15 min wind-down, lamp off]
+  B2[Second press] --> X[Lamp off now]
+```
+
+1. On the Bedroom dashboard, set a wake time and turn on the alarm for each
+   day you want. Days with the alarm off do nothing.
+2. Turn the lamp off during the sunrise to cancel it. The blinds then stay
+   closed.
+
+The button automation listens on the Twilight's Zigbee2MQTT topic. Keep its
+Zigbee2MQTT name as the IEEE address `0x001788010e4a2b1b`, and rename it in
+Home Assistant only.
+
 ## HTTP settings
 
 Home Assistant keeps its HTTP settings in `/config/.storage/http`. The

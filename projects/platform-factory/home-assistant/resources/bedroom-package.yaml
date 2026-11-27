@@ -1,0 +1,228 @@
+# Bedroom routines: a sunrise wake-up, blinds at sunset, and a bedtime
+# wind-down. configuration.yaml loads this file as the "bedroom" package.
+#
+# Entity IDs carry each device's Zigbee IEEE address:
+#   light.0x001788010e4a2b1b_front / _back  Hue Twilight (front, back)
+#   cover.0x54ef441000c9a1da                Aqara roller shade driver E1
+# Renaming a device in the UI keeps them; "rename entity IDs" breaks this
+# file. The button trigger listens on the Twilight's Zigbee2MQTT topic, which
+# is its friendly name, so do not rename the Twilight in Zigbee2MQTT.
+
+# One alarm switch and one wake time per day, set on the Bedroom dashboard.
+# No initial values, so Home Assistant restores what was set. The switches
+# start off, so nothing runs until someone sets a wake time.
+input_boolean:
+  wake_mon:
+    name: Monday alarm
+    icon: mdi:alarm
+  wake_tue:
+    name: Tuesday alarm
+    icon: mdi:alarm
+  wake_wed:
+    name: Wednesday alarm
+    icon: mdi:alarm
+  wake_thu:
+    name: Thursday alarm
+    icon: mdi:alarm
+  wake_fri:
+    name: Friday alarm
+    icon: mdi:alarm
+  wake_sat:
+    name: Saturday alarm
+    icon: mdi:alarm
+  wake_sun:
+    name: Sunday alarm
+    icon: mdi:alarm
+
+input_datetime:
+  wake_mon:
+    name: Monday wake time
+    has_date: false
+    has_time: true
+  wake_tue:
+    name: Tuesday wake time
+    has_date: false
+    has_time: true
+  wake_wed:
+    name: Wednesday wake time
+    has_date: false
+    has_time: true
+  wake_thu:
+    name: Thursday wake time
+    has_date: false
+    has_time: true
+  wake_fri:
+    name: Friday wake time
+    has_date: false
+    has_time: true
+  wake_sat:
+    name: Saturday wake time
+    has_date: false
+    has_time: true
+  wake_sun:
+    name: Sunday wake time
+    has_date: false
+    has_time: true
+
+# Today's sunrise start: the wake time less 30 minutes, or unknown when
+# today's alarm is off. A wake time before 00:30 cannot start the day before.
+template:
+  - sensor:
+      - name: Bedroom sunrise start
+        unique_id: bedroom_sunrise_start
+        device_class: timestamp
+        icon: mdi:weather-sunset-up
+        state: >
+          {% set day = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'][now().weekday()] %}
+          {% set wake = states('input_datetime.wake_' ~ day) %}
+          {% if is_state('input_boolean.wake_' ~ day, 'on') and wake not in ['unknown', 'unavailable'] %}
+            {{ (today_at(wake) - timedelta(minutes=30)).isoformat() }}
+          {% else %}
+            {{ none }}
+          {% endif %}
+
+script:
+  # 30 minutes from a dim red glow to full cool daylight, then the blinds
+  # open at the wake time. Each step checks the lamp is still on, so turning
+  # the lamp off cancels the rest, and the blinds stay closed.
+  bedroom_sunrise:
+    alias: Bedroom sunrise
+    icon: mdi:weather-sunset-up
+    mode: restart
+    sequence:
+      - action: light.turn_on
+        target:
+          entity_id:
+            - light.0x001788010e4a2b1b_front
+            - light.0x001788010e4a2b1b_back
+        data:
+          xy_color: [0.675, 0.322]
+          brightness: 1
+      - delay: 2
+      - action: light.turn_on
+        target:
+          entity_id:
+            - light.0x001788010e4a2b1b_front
+            - light.0x001788010e4a2b1b_back
+        data:
+          xy_color: [0.58, 0.39]
+          brightness_pct: 25
+          transition: 600
+      - delay: 600
+      - condition: state
+        entity_id: light.0x001788010e4a2b1b_front
+        state: "on"
+      - action: light.turn_on
+        target:
+          entity_id:
+            - light.0x001788010e4a2b1b_front
+            - light.0x001788010e4a2b1b_back
+        data:
+          color_temp_kelvin: 2700
+          brightness_pct: 60
+          transition: 600
+      - delay: 600
+      - condition: state
+        entity_id: light.0x001788010e4a2b1b_front
+        state: "on"
+      - action: light.turn_on
+        target:
+          entity_id:
+            - light.0x001788010e4a2b1b_front
+            - light.0x001788010e4a2b1b_back
+        data:
+          color_temp_kelvin: 4000
+          brightness_pct: 100
+          transition: 600
+      - delay: 600
+      - condition: state
+        entity_id: light.0x001788010e4a2b1b_front
+        state: "on"
+      - action: cover.open_cover
+        target:
+          entity_id: cover.0x54ef441000c9a1da
+
+  # 15 minutes from a warm reading light down to off.
+  bedroom_wind_down:
+    alias: Bedroom wind-down
+    icon: mdi:weather-night
+    mode: restart
+    sequence:
+      - action: light.turn_on
+        target:
+          entity_id:
+            - light.0x001788010e4a2b1b_front
+            - light.0x001788010e4a2b1b_back
+        data:
+          color_temp_kelvin: 2200
+          brightness_pct: 40
+          transition: 3
+      - delay: 3
+      - action: light.turn_on
+        target:
+          entity_id:
+            - light.0x001788010e4a2b1b_front
+            - light.0x001788010e4a2b1b_back
+        data:
+          xy_color: [0.675, 0.322]
+          brightness: 1
+          transition: 900
+      - delay: 900
+      - action: light.turn_off
+        target:
+          entity_id:
+            - light.0x001788010e4a2b1b_front
+            - light.0x001788010e4a2b1b_back
+        data:
+          transition: 5
+
+automation:
+  - id: bedroom_morning_sunrise
+    alias: Bedroom morning sunrise
+    description: Start the sunrise 30 minutes before today's wake time.
+    triggers:
+      - trigger: time
+        at: sensor.bedroom_sunrise_start
+    actions:
+      - action: script.turn_on
+        target:
+          entity_id: script.bedroom_sunrise
+
+  - id: bedroom_blinds_sunset
+    alias: Bedroom blinds close at sunset
+    triggers:
+      - trigger: sun
+        event: sunset
+    actions:
+      - action: cover.close_cover
+        target:
+          entity_id: cover.0x54ef441000c9a1da
+
+  # The Hue button on the Twilight starts the wind-down. A second press
+  # during the wind-down turns the lamp off at once.
+  - id: bedroom_bedtime_button
+    alias: Bedroom bedtime button
+    mode: single
+    triggers:
+      - trigger: mqtt
+        topic: zigbee2mqtt/0x001788010e4a2b1b
+        value_template: "{{ value_json.action }}"
+        payload: hue_press
+    actions:
+      - if:
+          - condition: state
+            entity_id: script.bedroom_wind_down
+            state: "on"
+        then:
+          - action: script.turn_off
+            target:
+              entity_id: script.bedroom_wind_down
+          - action: light.turn_off
+            target:
+              entity_id:
+                - light.0x001788010e4a2b1b_front
+                - light.0x001788010e4a2b1b_back
+        else:
+          - action: script.turn_on
+            target:
+              entity_id: script.bedroom_wind_down
