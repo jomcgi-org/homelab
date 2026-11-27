@@ -401,7 +401,7 @@ URL that opens after Joe signs in.
 
 ### Visual style (HOME-909)
 
-Joe asked for sleek, consistent visuals (2026-11-27). These parts hold it:
+HOME-909 sets one visual style for Bosun. These parts hold it:
 
 | Part | Where |
 | --- | --- |

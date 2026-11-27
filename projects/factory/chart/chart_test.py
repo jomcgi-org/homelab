@@ -1758,9 +1758,8 @@ def test_discord_server_agent_ships_off_in_the_chart() -> None:
 
 
 def test_discord_server_agent_prompt_sets_visual_style() -> None:
-    # HOME-909: Joe asked for one diagram style and for no invented facts
-    # about real people. The renderer enforces the theme; the prompt keeps
-    # diagrams small.
+    # HOME-909: one diagram style and no invented facts about real people.
+    # The renderer enforces the theme; the prompt keeps diagrams small.
     docs = _render(_HOMELAB)
     agent = _in(docs, "Agent", _HOMELAB_NS, "homelab")["spec"]
     prompt = " ".join(agent["template"]["inline"]["systemPrompt"].split())
