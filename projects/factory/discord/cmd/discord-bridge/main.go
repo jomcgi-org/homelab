@@ -112,6 +112,7 @@ func run(log *slog.Logger) error {
 		bridge.Render = &discord.HTTPRenderer{BaseURL: u}
 		log.Info("renderer on", "url", u)
 	}
+	wireOperatorUser(log, bridge)
 	wireServerAgents(log, bridge, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions)
 	if err := wireOperator(log, bridge, rest, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions); err != nil {
 		return err

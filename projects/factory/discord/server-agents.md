@@ -5,11 +5,12 @@ Each allowlisted Discord server gets its own persistent Hermes agent on ATE.
 The agent wakes when the bridge sends it a turn and suspends when idle. It
 reads and writes only its own server's Hindsight bank, and it gets only the
 MCP tools that its server's values list. The homelab agent's image and
-chart exist (slice 2). Slice 4 (HOME-909) routes the homelab server's
-tagged messages to its agent: a policy entry `serverAgents` maps the guild to
-the Agent, and the bridge keeps one session per server with request ID
-`discord-server-<guild>` (`operator.go`, `ServerRequestID`). Until slice 3,
-the bridge still recalls and puts memories in each prompt. Actions: when
+chart exist (slice 2). Slice 4 (HOME-909) routes tagged messages to the
+homelab agent: a policy entry `serverAgents` maps each guild to the Agent,
+and the bridge keeps one session with request ID `discord-server-<guild>`
+(`operator.go`, `ServerRequestID`). Until slice 3, the bridge still recalls
+and puts memories in each prompt. See [Joe only](#joe-only-one-session) for
+who the bot answers today. Actions: when
 the agent's answer holds a fenced `poll` block (JSON, Discord's poll
 limits), the bridge posts it as a Discord poll after the text reply
 (`poll.go`). Memory stores `[poll: <question>]`, not the JSON. Fenced
@@ -93,6 +94,35 @@ v0.23.4 was published on 2026-11-24. Each fact below links its source; the
 
 Hermes fits: it runs headless behind an API, keeps sessions on disk and has
 a Hindsight provider.
+
+## Joe only, one session
+
+Joe's decision on 2026-11-27 (HOME-909) changes the per-server design
+below for now:
+
+- **Who.** The policy's `users: operator` answers only Joe, by the
+  `operator-user-id` field of the bot's 1Password item
+  (`discord.operator.userIdKey`). Another author's tag gets no turn and no
+  reply. Without a readable ID, nobody gets a turn.
+- **Where.** `discord.serverAgents.homelab.servers: all` routes Joe's tags
+  in all four allowlisted servers to the homelab agent. The policy's
+  `serverSessions` joins each other server to the homelab server's
+  session, so Joe has one session across servers.
+- **Recall.** Each turn recalls from the bank of the message's own server,
+  and the prompt names the server and channel. The session context then
+  holds turns from every server. This cross-server context is intended,
+  because only Joe drives the session.
+- **Unchanged.** Ingest and history backfill run for every server as
+  before. Bosun's Agent and template stay rendered but get no turns; Joe
+  may reuse them as a separate app for friends.
+
+```mermaid
+flowchart LR
+  M["tagged message"] --> J{"author = operator-user-id?"}
+  J -- "no, or ID missing" --> X["no turn, no reply"]
+  J -- "yes" --> R["recall from this server's bank"]
+  R --> S["homelab Hermes session (all servers)"]
+```
 
 ## 1. Gateway: keep the bridge
 
@@ -270,10 +300,36 @@ turn, and one memory owner per kind of fact.
   Bosun's `deepseek/deepseek-v4.1-flash-1017:online`; change one server at a
   time against its question set (section 7).
 - **Budget.** Each turn has a cap on output tokens and on tool calls (about
-  4). Compaction bounds input: `compression.threshold_tokens` at 32,000
-  keeps a turn's prompt near Bosun's size, with `auxiliary.compression` on a
-  cheap model. A per-turn input cap in Hermes is not confirmed, so the
-  per-server OpenRouter limit is the hard bound. The bridge's existing limits still bound
+  4). Hermes resends the whole session on each turn. Without a
+  `compression` key it compacts only at half the window, which is 500k
+  tokens on a 1M-token model. The Harness sets
+  `spec.hermes.compression` (kagent fork, jomcgi-org/kagent#4):
+
+  | Setting | Value | Effect |
+  | --- | --- | --- |
+  | `thresholdTokens` | 256,000 | Size backstop: compact when the prompt reaches it |
+  | `minTailUserMessages` | 3 | The last 3 user messages stay verbatim |
+  | `model` | `deepseek/deepseek-v4.1-flash-1017` | Summary model, through the same `kagent` provider and key |
+
+  Cost on Gemini 4 Neon ($3/M input, $0.15/M cache read, $15/M output):
+  a warm turn near 256k reads the cached prefix for about $0.04. A cold
+  turn near 256k costs about $0.80. Each compaction rewrites the prefix,
+  so it costs one cache miss on the next turn. A low trigger, such as 32k,
+  would compact almost every turn, because Hermes keeps a 25k-token tail
+  on a 1M window. That breaks caching.
+
+  Joe chose an idle trigger too: compact when the session resumes after 1 h
+  idle, when the cache is cold anyway. Hermes 0.23.4
+  `compression.idle_compact_after_seconds` does not fire on this path. The
+  API server builds a new agent for each request, so the idle gap is
+  always about 0 s. An adapter-side trigger is a follow-up. Per-turn cache
+  hits (`cached_tokens` against prompt tokens, seconds since the last turn)
+  are not logged yet: Hermes's `/v1/responses` usage has no cache fields.
+  That is a follow-up too, to tune the 1 h value against the real cache
+  lifetime.
+
+  A per-turn input cap in Hermes is not confirmed, so the per-server
+  OpenRouter limit is the hard bound. The bridge's existing limits still bound
   turns per user, server and day.
 - **Memory split.**
 

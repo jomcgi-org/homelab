@@ -203,20 +203,47 @@ spec:
 {{- if $o.enabled }}
 {{- $policy = merge (dict "operator" (dict "guild" $o.guild "channels" $o.channels)) (deepCopy $b.policy) }}
 {{- end }}
-{{- /* Each routed server agent answers its server's turns (HOME-909). */}}
+{{- /* Each routed server agent answers its server's turns (HOME-909); one
+with servers: all answers every server's, in its own server's session. */}}
 {{- $routed := dict }}
+{{- $joined := dict }}
+{{- $agents := dict }}
+{{- $all := "" }}
 {{- range $key := keys $d.serverAgents | sortAlpha }}
 {{- $a := index $d.serverAgents $key }}
 {{- if and $a.enabled $a.route }}
 {{- if not (hasKey ($b.policy.guilds | default dict) $a.guild) }}
 {{- fail (printf "discord.serverAgents.%s.route needs server %s in discord.bridge.policy.guilds" $key $a.guild) }}
 {{- end }}
-{{- $_ := set $routed $a.guild (printf "discord-%s/%s" $a.guild $a.name) }}
+{{- $ref := printf "discord-%s/%s" $a.guild $a.name }}
+{{- $_ := set $agents $ref true }}
+{{- $servers := $a.servers | default "own" }}
+{{- if eq $servers "all" }}
+{{- if $all }}
+{{- fail (printf "discord.serverAgents.%s.servers: %s already answers all servers" $key $all) }}
+{{- end }}
+{{- $all = $key }}
+{{- range $guild := keys $b.policy.guilds | sortAlpha }}
+{{- $_ := set $routed $guild $ref }}
+{{- if ne $guild $a.guild }}
+{{- $_ := set $joined $guild $a.guild }}
+{{- end }}
+{{- end }}
+{{- else if eq $servers "own" }}
+{{- $_ := set $routed $a.guild $ref }}
+{{- else }}
+{{- fail (printf "discord.serverAgents.%s.servers must be own or all" $key) }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- if $routed }}
 {{- $policy = merge (dict "serverAgents" $routed) (deepCopy $policy) }}
 {{- end }}
+{{- if $joined }}
+{{- $policy = merge (dict "serverSessions" $joined) (deepCopy $policy) }}
+{{- end }}
+{{- /* Joe's user ID is read for the operator session and for users: operator. */}}
+{{- $operatorUser := or $o.enabled (eq ($b.policy.users | default "all") "operator") }}
 ---
 # The bridge runs as this account; its only token is the projected
 # kagent-invocation token below.
@@ -369,6 +396,8 @@ spec:
             {{- if $o.enabled }}
             - name: DISCORD_OPERATOR_AGENT
               value: {{ printf "%s/%s" $o.namespace $o.name | quote }}
+            {{- end }}
+            {{- if $operatorUser }}
             - name: DISCORD_OPERATOR_USER_FILE
               value: /var/run/secrets/discord-operator/user-id
             {{- end }}
@@ -405,15 +434,16 @@ spec:
             - name: policy
               mountPath: /etc/discord-bridge
               readOnly: true
-            {{- if $o.enabled }}
+            {{- if $operatorUser }}
             - name: operator
               mountPath: /var/run/secrets/discord-operator
               readOnly: true
             {{- end }}
       volumes:
-        {{- if $o.enabled }}
+        {{- if $operatorUser }}
         # Joe's Discord user ID. Optional: without the field the bridge
-        # starts and keeps the operator channels closed.
+        # starts, keeps the operator channels closed and, under
+        # users: operator, answers nobody.
         - name: operator
           secret:
             secretName: discord-bot
@@ -534,10 +564,10 @@ spec:
               - method: POST
                 path: {{ printf "^/agents/%s/%s$" (regexQuoteMeta $o.namespace) (regexQuoteMeta $o.name) | quote }}
               {{- end }}
-              {{- range $guild := keys $routed | sortAlpha }}
-              # Server {{ $guild }}'s own Agent (HOME-909).
+              {{- range $ref := keys $agents | sortAlpha }}
+              # A server agent (HOME-909).
               - method: POST
-                path: {{ printf "^/agents/%s$" (regexQuoteMeta (index $routed $guild)) | quote }}
+                path: {{ printf "^/agents/%s$" (regexQuoteMeta $ref) | quote }}
               {{- end }}
               {{- if or $o.enabled $routed }}
               # The persistent sessions of the operator and server agents.
