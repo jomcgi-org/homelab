@@ -3,8 +3,10 @@ package discord
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -150,7 +152,7 @@ func TestIngestIsOffWithoutAnIngestor(t *testing.T) {
 	}
 }
 
-func TestATaggedTurnStoresRecentLinesFirstAndRetainsOnlyTheReply(t *testing.T) {
+func TestATaggedTurnGetsRecentLinesWithoutWaitingAndRetainsOnlyTheReply(t *testing.T) {
 	agent := &fakeAgent{answer: "heron"}
 	b, mem, rep := ingestBridge(agent)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -173,23 +175,52 @@ func TestATaggedTurnStoresRecentLinesFirstAndRetainsOnlyTheReply(t *testing.T) {
 	}
 	cancel()
 	b.Wait()
-	// The recall waits for the lines already stored, the tagged one included.
-	if len(mem.order) < 2 || mem.order[0] != "retain" || mem.order[1] != "recall" {
-		t.Fatalf("call order = %v, want retain then recall", mem.order)
+	// The turn does not wait for a retain: the unstored lines are in the
+	// prompt, without the tagged message itself.
+	if len(mem.order) == 0 || mem.order[0] != "recall" {
+		t.Fatalf("call order = %v, want recall first", mem.order)
 	}
-	first := mem.contents()[0]
-	if !strings.Contains(first, "the code word is heron") || !strings.Contains(first, "what is the code word?") || strings.Contains(first, "<@") {
-		t.Errorf("stored lines = %q", first)
+	agent.mu.Lock()
+	prompt := agent.prompts[0]
+	agent.mu.Unlock()
+	if !strings.Contains(prompt, `"recent_messages":["ann (2026-11-17T12:00:00Z): the code word is heron"]`) {
+		t.Errorf("prompt = %s", prompt)
 	}
 	if err := b.Ingest.Flush(context.Background(), guild, channel); err != nil {
 		t.Fatal(err)
 	}
 	all := strings.Join(mem.contents(), "\n")
+	if !strings.Contains(all, "the code word is heron") || strings.Contains(all, "<@") {
+		t.Errorf("stored lines = %q", all)
+	}
 	if n := strings.Count(all, "what is the code word?"); n != 1 {
 		t.Errorf("the tagged message was stored %d times, want once:\n%s", n, all)
 	}
 	if n := strings.Count(all, "Bosun (2026-11-17T12:05:00Z): heron"); n != 1 {
 		t.Errorf("the reply was stored %d times, want once:\n%s", n, all)
+	}
+}
+
+func TestRecentKeepsTheNewestLinesWithinBoundsAndSeesAFlushInProgress(t *testing.T) {
+	mem := &ingestMemory{}
+	in := &Ingestor{Memory: mem, Log: quiet}
+	at := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	for n, text := range []string{"one", "two", "three", "four"} {
+		in.Add(guild, channel, fmt.Sprint(n), at, text)
+	}
+	if got := in.Recent(guild, channel, "3", 2, 100); !slices.Equal(got, []string{"two", "three"}) {
+		t.Errorf("Recent(2 lines, skip 3) = %q", got)
+	}
+	if got := in.Recent(guild, channel, "", 10, 9); !slices.Equal(got, []string{"three", "four"}) {
+		t.Errorf("Recent(9 chars) = %q", got)
+	}
+	c := in.chans[channelKey(guild, channel)]
+	c.sending, c.lines = c.lines[:2], c.lines[2:]
+	if got := in.Recent(guild, channel, "", 10, 100); !slices.Equal(got, []string{"one", "two", "three", "four"}) {
+		t.Errorf("Recent during a flush = %q", got)
+	}
+	if got := in.Recent(guild, "other", "", 10, 100); got != nil {
+		t.Errorf("Recent(unknown channel) = %q", got)
 	}
 }
 
