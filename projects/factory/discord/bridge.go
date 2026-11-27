@@ -458,20 +458,13 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	}
 }
 
-// reply answers m with a fixed notice or failure text.
 func (b *Bridge) reply(ctx context.Context, m Message, text string) {
-	r := NewReply(text, m.ID)
-	r.Accent = noticeAccent(text)
-	b.sendReply(ctx, m, r)
+	b.replyWith(ctx, m, text, nil)
 }
 
 // replyWith answers m with text and any rendered images.
 func (b *Bridge) replyWith(ctx context.Context, m Message, text string, files []File) {
-	b.sendReply(ctx, m, WithImages(NewReply(text, m.ID), text, files))
-}
-
-func (b *Bridge) sendReply(ctx context.Context, m Message, r Reply) {
-	if err := b.Replies.Send(ctx, m.ChannelID, r); err != nil {
+	if err := b.Replies.Send(ctx, m.ChannelID, WithImages(NewReply(text, m.ID), text, files)); err != nil {
 		b.Log.WarnContext(ctx, "reply failed", "channel", m.ChannelID, "message", m.ID, "error", err)
 	}
 }

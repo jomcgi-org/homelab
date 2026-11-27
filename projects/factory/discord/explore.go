@@ -495,7 +495,7 @@ func (b *Bridge) explore(ctx context.Context, l *slog.Logger, m Message, req Exp
 	}
 	header := fmt.Sprintf("**Research %s** · %s", research, repo.FullName)
 	for _, chunk := range ExploreChunks(header, answer) {
-		b.sendCard(ctx, l, channelID, chunk, AccentResearch)
+		b.send(ctx, l, channelID, chunk)
 	}
 	r := ExploreResult{Research: research, Repo: repo.FullName, Question: req.Question, Answer: clipRunes(strings.TrimSpace(answer), maxResultChars)}
 	b.mu.Lock()
@@ -506,17 +506,9 @@ func (b *Bridge) explore(ctx context.Context, l *slog.Logger, m Message, req Exp
 	b.mu.Unlock()
 }
 
-// send posts a fixed notice that pings nobody and runs no action.
+// send posts a fixed or explorer text that pings nobody and runs no action.
 func (b *Bridge) send(ctx context.Context, l *slog.Logger, channelID, text string) {
-	b.sendCard(ctx, l, channelID, text, noticeAccent(text))
-}
-
-// sendCard posts a text card of one accent that pings nobody and runs no
-// action.
-func (b *Bridge) sendCard(ctx context.Context, l *slog.Logger, channelID, text string, accent int) {
-	r := NewReply(text, "")
-	r.Accent = accent
-	if err := b.Replies.Send(ctx, channelID, r); err != nil {
+	if err := b.Replies.Send(ctx, channelID, NewReply(text, "")); err != nil {
 		l.WarnContext(ctx, "research post failed", "channel", channelID, "error", err)
 	}
 }

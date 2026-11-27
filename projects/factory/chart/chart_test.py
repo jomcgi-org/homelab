@@ -1858,9 +1858,9 @@ def test_discord_server_agent_runs_hermes_with_no_tools() -> None:
     ):
         assert line in prompt, line
     assert "earlier turns from every server" not in prompt
-    # Components V2 cards and scheduled events (HOME-909).
+    # Components V2 formatting and scheduled events (HOME-909).
     for line in (
-        "Discord formatting. Your answer shows as a card.",
+        "Discord formatting. Use headings of at most ###",
         "Never write a Markdown table",
         'starts with "-# "',
         "write <t:UNIX:F> (date and time)",
