@@ -80,10 +80,10 @@ func TestATargetNotInTheTurnIsIgnored(t *testing.T) {
 	}
 }
 
-func TestPinWithABadTargetPinsTheAnswerAndPinWithoutOneToo(t *testing.T) {
+func TestPinWithABadTargetPinsNothingAndPinWithoutOnePinsTheAnswer(t *testing.T) {
 	rep, _ := targetBridge(t, "ok\n```pin\n{\"target\":\"m7\"}\n```")
-	if got := strings.Join(rep.actions, ","); got != "pin "+channel+"/r1" {
-		t.Errorf("bad target: actions = %s", got)
+	if len(rep.actions) != 0 {
+		t.Errorf("bad target: actions = %v, want none", rep.actions)
 	}
 	rep, _ = targetBridge(t, "ok\n```pin\n{}\n```")
 	if got := strings.Join(rep.actions, ","); got != "pin "+channel+"/r1" {
