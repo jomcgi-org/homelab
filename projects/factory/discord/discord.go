@@ -12,6 +12,7 @@ package discord
 
 import (
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -81,6 +82,10 @@ type Referenced struct {
 	ID      string `json:"id"`
 	Author  User   `json:"author"`
 	Content string `json:"content"`
+	// Components and Attachments hold a Components V2 message's text and
+	// images, such as Bosun's replies: its content is empty.
+	Components  []Component  `json:"components,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
 	// Mentions are the users its text names.
 	Mentions []User `json:"mentions"`
 }
@@ -114,4 +119,37 @@ func (m Message) MentionsUser(id string) bool {
 		}
 	}
 	return false
+}
+
+// Text is the replied-to message's text: its content, or for a Components
+// V2 message its text displays and media. Attachments that no component
+// shows are named too.
+func (r Referenced) Text() string {
+	names := map[string]bool{}
+	text := strings.TrimSpace(r.Content)
+	if text == "" {
+		text = componentsText(r.Components, names)
+	}
+	if p := attachmentNames(r.Attachments, names); p != "" {
+		text = strings.TrimSpace(text + " " + p)
+	}
+	return text
+}
+
+// attachmentNames names attachments as [image: name] or [attachment:
+// name], leaving out the ones in shown.
+func attachmentNames(as []Attachment, shown map[string]bool) string {
+	var parts []string
+	for _, a := range as {
+		n := clipRunes(a.Filename, 80)
+		if shown[n] {
+			continue
+		}
+		if strings.HasPrefix(a.ContentType, "image/") {
+			parts = append(parts, "[image: "+n+"]")
+		} else {
+			parts = append(parts, "[attachment: "+n+"]")
+		}
+	}
+	return strings.Join(parts, " ")
 }

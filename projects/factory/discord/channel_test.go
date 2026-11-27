@@ -115,7 +115,7 @@ func TestLinesStopAtBosunsLastMessageAndAreOldestFirst(t *testing.T) {
 	}}
 	b.Turn(context.Background(), tagged("20", "summary?"))
 	got := texts(sinceLines(t, lastPrompt(agent)))
-	if want := []string{"dave: middle", "cat: newest"}; fmt.Sprint(got) != fmt.Sprint(want) {
+	if want := []string{"Bosun (you): an earlier answer", "dave: middle", "cat: newest"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("lines = %q, want %q", got, want)
 	}
 }
@@ -181,7 +181,7 @@ func TestARestartedBridgeGetsTheChannelFromDiscord(t *testing.T) {
 	b, _, _ := ingestBridge(agent)
 	b.History = &channelHistory{msgs: []HistoryMessage{said("10", "dave", "anyone up for the pub", 0), bosunSaid("9", 0)}}
 	b.Turn(context.Background(), tagged("20", "who asked?"))
-	if got := texts(sinceLines(t, lastPrompt(agent))); len(got) != 1 || got[0] != "dave: anyone up for the pub" {
+	if got := texts(sinceLines(t, lastPrompt(agent))); len(got) != 2 || got[1] != "dave: anyone up for the pub" || got[0] != "Bosun (you): an earlier answer" {
 		t.Errorf("lines = %q", got)
 	}
 }

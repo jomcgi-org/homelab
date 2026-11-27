@@ -60,6 +60,7 @@ go_test(
         "render_test.go",
         "server_agents_test.go",
         "tables_test.go",
+        "v2_test.go",
     ],
     embed = [":discord"],
     deps = [

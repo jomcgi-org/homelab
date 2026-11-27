@@ -293,7 +293,7 @@ func TestAReplyToBosunIsATagAndCarriesWhatItReplies(t *testing.T) {
 		t.Fatalf("prompts = %d, want Joe's reply to Bosun and his tagged reply", len(prompts))
 	}
 	want := []map[string]any{
-		{"author": "Bosun", "message": "The plan has three steps.", "from_you": true},
+		{"author": "Bosun (you)", "message": "The plan has three steps.", "from_you": true},
 		{"author": "ann", "message": "what about dinner", "from_you": false},
 	}
 	for i, p := range prompts {
