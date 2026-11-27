@@ -307,6 +307,16 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+    # Bosun's read-only public GitHub MCP server (factory chart
+    # discord-github.yaml), with the token the gateway injects.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: github-mcp
+      toPorts:
+        - ports:
+            - port: "8082"
+              protocol: TCP
     # The homelab Discord Hermes agent's Scotland outdoors MCP server
     # (factory chart `discord.serverAgents.<key>.mcpServers`), public and
     # read-only, with no credential. kagent admits it only for that actor.

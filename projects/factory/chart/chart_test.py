@@ -1957,6 +1957,90 @@ def test_discord_bridge_starts_new_channel_sessions_for_the_tools() -> None:
     assert defaults["discord"]["bridge"]["policy"]["sessionEpoch"] == ""
 
 
+def test_discord_github_tools_are_public_read_only() -> None:
+    # HOME-915: GitHub's MCP server, read-only with only the listed tools,
+    # reached only through the egress gateway, which injects the
+    # public-repositories token; out only to api.github.com.
+    base = _HOMELAB + [
+        f"kagent.rbac.namespaces={{kagent,factory-r-homelab,factory-discord-agent,{_HOMELAB_NS}}}",
+        "discord.agent.enabled=true",
+        "discord.bridge.enabled=true",
+        "string:discord.bridge.policy.guilds.1501965852042330302.ingest=true",
+        "discord.serverAgents.homelab.route=true",
+    ]
+    off = _render(base)
+    assert not [
+        d for d in off if d["metadata"]["name"] in ("github-mcp", "discord-github")
+    ]
+    agent = _in(off, "Agent", _HOMELAB_NS, "homelab")["spec"]["template"]["inline"]
+    prompt = " ".join(agent["systemPrompt"].split())
+    # The check-current-facts rule holds without the GitHub tools too.
+    assert "Memories are hints from the past and may be stale" in prompt
+    assert "say what you checked" in prompt
+    assert "github tools read public GitHub" not in prompt
+
+    docs = _render(base + ["discord.github.enabled=true"])
+    tools = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())["discord"][
+        "github"
+    ]["tools"]
+    assert all(
+        t.startswith(("search_", "get_", "list_")) or t.endswith("_read") for t in tools
+    )
+    deploy = _in(docs, "Deployment", "factory-discord", "github-mcp")
+    (container,) = deploy["spec"]["template"]["spec"]["containers"]
+    assert container["image"].startswith(
+        "ghcr.io/github/github-mcp-server:v2.3.0@sha256:"
+    )
+    assert container["args"] == [
+        "http",
+        "--port=8082",
+        "--read-only",
+        "--tools=" + ",".join(tools),
+    ]
+    assert "env" not in container and "envFrom" not in container
+    assert deploy["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
+    policy = _in(docs, "CiliumNetworkPolicy", "factory-discord", "github-mcp")["spec"]
+    assert policy["ingress"] == [
+        {
+            "fromEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "ate-system",
+                        "app": "atenet-egress",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8082", "protocol": "TCP"}]}],
+        }
+    ]
+    assert policy["egress"] == [
+        {
+            "toFQDNs": [{"matchName": "api.github.com"}],
+            "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
+        }
+    ]
+    item = _in(docs, "OnePasswordItem", _HOMELAB_NS, "discord-github")
+    assert item["metadata"]["labels"]["substrate.ate.dev/injectable"] == "true"
+    server = _in(docs, "RemoteMCPServer", _HOMELAB_NS, "github")["spec"]
+    assert (
+        server["url"]
+        == "http://github-mcp.factory-discord.svc.cluster.local:8082/readonly"
+    )
+    assert server["headersFrom"] == [
+        {
+            "name": "Authorization",
+            "valueFrom": {"type": "Secret", "name": "discord-github", "key": "token"},
+        }
+    ]
+    agent = _in(docs, "Agent", _HOMELAB_NS, "homelab")["spec"]["template"]["inline"]
+    assert {
+        "mcp": {"server": {"kind": "RemoteMCPServer", "name": "github"}, "tools": tools}
+    } in agent["tools"]
+    prompt = " ".join(agent["systemPrompt"].split())
+    assert "The github tools read public GitHub" in prompt
+    assert "you can also look up public GitHub repositories" in prompt
+
+
 def test_discord_server_agent_web_tools_bring_their_prompt() -> None:
     # Turning web search on renders it in the Harness and appends the web
     # rules: a query comes only from Joe's message, never from memories.
