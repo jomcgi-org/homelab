@@ -321,6 +321,14 @@ func (e *Explorer) Sweep(ctx context.Context, ttl time.Duration, keep int) (int,
 	deleted := 0
 	var errs []error
 	for _, s := range old {
+		if r := e.research(s); r != "" {
+			e.mu.Lock()
+			busy := e.busy[r]
+			e.mu.Unlock()
+			if busy {
+				continue // Claimed since the snapshot.
+			}
+		}
 		if _, err := e.Sessions.DeleteSession(ctx, s.ID); err != nil && !errors.Is(err, kagent.ErrSessionNotFound) {
 			errs = append(errs, err)
 			continue
@@ -412,15 +420,16 @@ func (b *Bridge) startExplore(ctx context.Context, l *slog.Logger, m Message, re
 	if req.New() {
 		research = m.ID
 	}
+	if !b.Explorer.claim(research) {
+		b.send(ctx, l, channelID, ReplyExploreBusy)
+		return true
+	}
 	b.mu.Lock()
 	allowed := b.takeExplore(b.now())
 	b.mu.Unlock()
 	if !allowed {
+		b.Explorer.release(research)
 		b.send(ctx, l, channelID, ReplyExploreLimited)
-		return true
-	}
-	if !b.Explorer.claim(research) {
-		b.send(ctx, l, channelID, ReplyExploreBusy)
 		return true
 	}
 	// A new research gets its own thread from the reply; Discord refuses a
@@ -516,6 +525,23 @@ func (b *Bridge) addResult(channelID string, r ExploreResult) {
 	b.results[channelID] = rs
 }
 
+// restoreResults puts back answers a failed turn took, ahead of newer ones.
+func (b *Bridge) restoreResults(channelID string, rs []ExploreResult) {
+	if len(rs) == 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.results == nil {
+		b.results = map[string][]ExploreResult{}
+	}
+	all := append(append([]ExploreResult(nil), rs...), b.results[channelID]...)
+	if len(all) > maxPendingResults {
+		all = all[len(all)-maxPendingResults:]
+	}
+	b.results[channelID] = all
+}
+
 // takeResults returns and clears a channel's held answers.
 func (b *Bridge) takeResults(channelID string) []ExploreResult {
 	b.mu.Lock()
@@ -553,16 +579,18 @@ func (b *Bridge) RunExploreSweep(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
+		// The first sweep waits one interval: after a restart the bridge has
+		// no turn times yet, and a follow-up in that hour records one.
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
 		n, err := b.Explorer.Sweep(ctx, cfg.TTL, cfg.MaxSessions)
 		if err != nil {
 			b.Log.WarnContext(ctx, "explorer sweep failed", "error", err)
 		} else if n > 0 {
 			b.Log.InfoContext(ctx, "explorer sessions deleted", "count", n)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
 		}
 	}
 }

@@ -2271,7 +2271,7 @@ def test_discord_explorer_reads_only_public_github() -> None:
     assert {"method": "POST", "path": "^/agents/discord-explorer/explorer$"} in rules
     assert {
         "method": "POST",
-        "path": "^/kagent\\.api\\.v1\\.SessionService/(ListSessions|NameSession)$",
+        "path": "^/kagent\\.api\\.v1\\.SessionService/(ListSessions|UpdateSessionName)$",
     } in rules
 
 

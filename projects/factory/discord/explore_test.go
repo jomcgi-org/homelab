@@ -364,3 +364,35 @@ func TestPolicyReadsExplore(t *testing.T) {
 		}
 	}
 }
+
+func TestAFailedBosunTurnKeepsTheResearchResults(t *testing.T) {
+	b, _, _, _ := newExploreBridge("")
+	r := ExploreResult{Research: "1501965852042330301", Repo: "a/b", Question: "q", Answer: "x"}
+	b.addResult(channel, r)
+	b.Agent = &fakeAgent{err: errors.New("down")}
+	b.Turn(context.Background(), tagged("1501965852042330302", "and?"))
+	agent := &fakeAgent{answer: "ok"}
+	b.Agent = agent
+	b.Turn(context.Background(), tagged("1501965852042330303", "again"))
+	if len(agent.prompts) != 1 || !strings.Contains(agent.prompts[0], `"research_results":[{"research":"1501965852042330301"`) {
+		t.Errorf("prompts = %q", agent.prompts)
+	}
+}
+
+func TestABusyResearchSpendsNoLimit(t *testing.T) {
+	b, rep, _, _ := newExploreBridge("")
+	b.Config.Explore.Limit = Limit{Count: 1, Window: time.Hour}
+	b.Explorer.claim("1501965852042330301")
+	l := b.Log
+	req := ExploreRequest{Repo: "jomcgi-org/homelab", Question: "q", Research: "1501965852042330301"}
+	b.startExplore(context.Background(), l, tagged("1501965852042330302", "x"), req, channel, "", true)
+	if posts := rep.all(); len(posts) != 1 || posts[0] != channel+": "+ReplyExploreBusy {
+		t.Fatalf("posts = %q", posts)
+	}
+	b.mu.Lock()
+	ok := b.takeExplore(b.now())
+	b.mu.Unlock()
+	if !ok {
+		t.Error("the busy refusal spent the limit")
+	}
+}

@@ -465,8 +465,9 @@ sequenceDiagram
   | Sessions kept | 10; a new research deletes the oldest idle one | `maxSessions` |
   | Session TTL | 7 days after the last turn, swept each hour | `ttl` |
 
-  After a bridge restart, the TTL counts from the session's creation until
-  its next turn.
+  The bridge keeps turn times in memory. After a restart its first sweep
+  waits an hour, and a session with no turn since the restart counts its
+  TTL from its creation.
 
 ## 5. Model and token cost
 
