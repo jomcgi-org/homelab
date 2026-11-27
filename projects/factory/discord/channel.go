@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,10 +26,14 @@ const (
 // ChannelLine is one message of the channel since Bosun's last message
 // there. Every field is text from Discord users, so it is untrusted data.
 type ChannelLine struct {
-	Author  string     `json:"author,omitempty"`
-	SentAt  string     `json:"sent_at,omitempty"`
-	Text    string     `json:"text"`
-	ReplyTo *LineReply `json:"reply_to,omitempty"`
+	// ID labels the line for an action's target: "m1" is the oldest line.
+	// MessageID is its Discord ID, which the prompt does not carry.
+	ID        string     `json:"id,omitempty"`
+	MessageID string     `json:"-"`
+	Author    string     `json:"author,omitempty"`
+	SentAt    string     `json:"sent_at,omitempty"`
+	Text      string     `json:"text"`
+	ReplyTo   *LineReply `json:"reply_to,omitempty"`
 }
 
 // LineReply is the message a channel line replies to.
@@ -107,7 +112,26 @@ func (b *Bridge) sinceLastTurn(ctx context.Context, m Message) (lines []ChannelL
 		}
 	}
 	slices.Reverse(lines)
+	for n := range lines {
+		lines[n].ID = "m" + strconv.Itoa(n+1)
+	}
 	return lines, true
+}
+
+// turnTargets labels the messages of a turn's context that an action can
+// target: the tagged message, the message it replies to, and each channel
+// line read from Discord.
+func turnTargets(m Message, since []ChannelLine) Targets {
+	t := Targets{TargetTagged: m.ID}
+	if r := m.Referenced; m.Type == 19 && r != nil && r.ID != "" {
+		t[TargetReplied] = r.ID
+	}
+	for _, l := range since {
+		if l.ID != "" && l.MessageID != "" {
+			t[l.ID] = l.MessageID
+		}
+	}
+	return t
 }
 
 // channelLine is one history message as a prompt line. Other bots, webhooks
@@ -121,7 +145,7 @@ func (b *Bridge) channelLine(guildID string, h HistoryMessage) (ChannelLine, boo
 	if text == "" {
 		return ChannelLine{}, false
 	}
-	l := ChannelLine{Author: h.Author.Username, SentAt: SentAt(h.Message).UTC().Format(time.RFC3339), Text: text}
+	l := ChannelLine{MessageID: h.ID, Author: h.Author.Username, SentAt: SentAt(h.Message).UTC().Format(time.RFC3339), Text: text}
 	if r := h.Referenced; h.Type == 19 && r != nil {
 		l.ReplyTo = &LineReply{Author: b.authorName(r.Author), Text: clipRunes(b.Places.Resolve(guildID, r.Text(), r.Mentions), maxQuoteChars)}
 		if r.Author.Username == "" {

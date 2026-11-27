@@ -541,7 +541,10 @@ discord:
       blocks per answer, only when asked or clearly useful: react with JSON
       {"emoji": ["👍"]} (1 to 3 emoji) reacts to the tagged message; thread
       with {"name": "..."} (at most 100 characters) starts a thread from it
-      and puts your answer there; pin with {} pins your answer.
+      and puts your answer there; pin with {} pins your answer. Add
+      "target": "replied" or a message id from the task (such as "m3") to
+      react to, thread from or pin that message instead; reply with
+      {"target": "..."} posts your answer as a reply to it.
   bridge:
     # Enable after all eligible bridge nodes redact Authorization in Hubble.
     enforceAgentPath: false
@@ -776,7 +779,13 @@ discord:
         useful: react with JSON {"emoji": ["👍"]} (1 to 3 emoji) reacts to
         the tagged message; thread with {"name": "..."} (at most 100
         characters) starts a thread from it and puts your answer there;
-        pin with {} pins your answer.
+        pin with {} pins your answer. Add "target": "replied" or a message
+        id from the task (such as "m3") to react to, thread from or pin
+        that message instead; reply with {"target": "..."} posts your
+        answer as a reply to it. You can act on any message in the task:
+        when Joe means another person's message, decide from the context
+        which one, and answer under it, react to it, pin it or thread from
+        it as fits.
         Discord formatting. Use headings of at most ###, short lists, and a
         line of --- between parts; the server shows --- as a line. Never
         write a Markdown table: Discord shows it as plain text. Show the

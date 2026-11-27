@@ -13,7 +13,7 @@ import (
 
 func TestParseActionsIsStrict(t *testing.T) {
 	for _, spec := range []string{`{"emoji":["👍"]}`, `{"emoji":["👍","🎉","1️⃣"]}`} {
-		if _, err := ParseReact(spec); err != nil {
+		if _, _, err := ParseReact(spec); err != nil {
 			t.Errorf("ParseReact(%s): %v", spec, err)
 		}
 	}
@@ -21,25 +21,25 @@ func TestParseActionsIsStrict(t *testing.T) {
 		`{"emoji":[]}`, `{"emoji":["👍","🎉","🍕","🌅"]}`, `{"emoji":["👍","👍"]}`,
 		`{"emoji":["<:x:123>"]}`, `{"emoji":["ok"]}`, `{"emoji":["👍"],"x":1}`, `{"emoji":["👍"]} {}`, `["👍"]`,
 	} {
-		if _, err := ParseReact(spec); err == nil {
+		if _, _, err := ParseReact(spec); err == nil {
 			t.Errorf("ParseReact(%s) accepted", spec)
 		}
 	}
-	if name, err := ParseThread(`{"name":"  Trip plans "}`); err != nil || name != "Trip plans" {
+	if name, _, err := ParseThread(`{"name":"  Trip plans "}`); err != nil || name != "Trip plans" {
 		t.Errorf("ParseThread = %q, %v", name, err)
 	}
 	for _, spec := range []string{`{"name":""}`, `{"name":"a\nb"}`, `{"name":"` + strings.Repeat("é", 101) + `"}`, `{"title":"x"}`} {
-		if _, err := ParseThread(spec); err == nil {
+		if _, _, err := ParseThread(spec); err == nil {
 			t.Errorf("ParseThread(%s) accepted", spec)
 		}
 	}
 	for _, spec := range []string{"", " \n", "{}"} {
-		if err := ParsePin(spec); err != nil {
+		if _, err := ParsePin(spec); err != nil {
 			t.Errorf("ParsePin(%q): %v", spec, err)
 		}
 	}
 	for _, spec := range []string{`{"id":"1"}`, `[]`, `yes`} {
-		if ParsePin(spec) == nil {
+		if _, err := ParsePin(spec); err == nil {
 			t.Errorf("ParsePin(%q) accepted", spec)
 		}
 	}
