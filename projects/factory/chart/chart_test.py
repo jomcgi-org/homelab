@@ -2197,6 +2197,92 @@ def test_discord_artifacts_admit_only_routed_actors_through_the_gateway() -> Non
     assert deploy["discord"]["artifacts"]["enabled"] is True
 
 
+def test_discord_archive_reads_with_its_own_login_through_the_gateway() -> None:
+    # HOME-909: the bridge writes the message archive with the owner login;
+    # bosun-history reads it with the SELECT-only one and admits only routed
+    # server agents' actors, through the gateway.
+    base = _HOMELAB + [
+        f"kagent.rbac.namespaces={{kagent,factory-r-homelab,factory-discord-agent,{_HOMELAB_NS}}}",
+        "discord.agent.enabled=true",
+        "discord.bridge.enabled=true",
+        "string:discord.bridge.policy.guilds.1501965852042330302.ingest=true",
+        "discord.serverAgents.homelab.route=true",
+    ]
+    off = _render(base + ["discord.archive.enabled=false"])
+    assert not [d for d in off if d["metadata"]["name"] == "bosun-history"]
+    bridge = _in(off, "Deployment", "factory-discord", "discord-bridge")
+    assert "ARCHIVE_DATABASE_URL" not in str(bridge)
+
+    docs = _render(
+        base
+        + [
+            "discord.archive.enabled=true",
+            "discord.archive.purge={999999999999999999}",
+        ]
+    )
+    deployment = _in(docs, "Deployment", "factory-discord", "bosun-history")
+    pod = deployment["spec"]["template"]["spec"]
+    (container,) = pod["containers"]
+    env = {e["name"]: e for e in container["env"]}
+    assert env["ACTOR_JWT_AUDIENCE"]["value"] == "bosun-history"
+    assert env["ACTOR_JWT_ATESPACES"]["value"] == _HOMELAB_NS
+    assert "1501965852042330302" in env["HISTORY_SERVERS"]["value"].split(",")
+    assert env["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {
+        "name": "discord-archive-reader-db",
+        "key": "DATABASE_URL",
+    }
+    assert pod["automountServiceAccountToken"] is False
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    policy = _in(docs, "CiliumNetworkPolicy", "factory-discord", "bosun-history")
+    assert [r["fromEndpoints"] for r in policy["spec"]["ingress"]] == [
+        [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "ate-system",
+                    "app": "atenet-egress",
+                }
+            }
+        ]
+    ]
+    database = {
+        "k8s:io.kubernetes.pod.namespace": "factory-db",
+        "cnpg.io/cluster": "factory-db",
+    }
+    assert any(
+        e["matchLabels"] == database
+        for r in policy["spec"]["egress"]
+        for e in r.get("toEndpoints", [])
+    )
+    # The bridge writes with the owner login and may reach factory-db.
+    bridge = _in(docs, "Deployment", "factory-discord", "discord-bridge")
+    benv = {
+        e["name"]: e for e in bridge["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert benv["ARCHIVE_DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {
+        "name": "discord-archive-db",
+        "key": "DATABASE_URL",
+        "optional": True,
+    }
+    assert benv["ARCHIVE_READER_ROLE"]["value"] == "factory_discord_archive_reader"
+    assert benv["ARCHIVE_PURGE"]["value"] == "999999999999999999"
+    bpolicy = _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")
+    assert any(
+        e["matchLabels"] == database
+        for r in bpolicy["spec"]["egress"]
+        for e in r.get("toEndpoints", [])
+    )
+    # Only bosun-history names the read login, and only the bridge the owner's.
+    for d in docs:
+        if d["kind"] != "Deployment":
+            continue
+        if d["metadata"]["name"] != "bosun-history":
+            assert "discord-archive-reader-db" not in str(d)
+        if d["metadata"]["name"] != "discord-bridge":
+            assert "'discord-archive-db'" not in str(d)
+    deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    assert deploy["discord"]["archive"]["enabled"] is True
+
+
 _EXPLORER_NS = "discord-explorer"
 _EXPLORER = [
     "discord.explorer.enabled=true",

@@ -4,6 +4,7 @@ py_test(
     name = "provisioning_test",
     srcs = ["provisioning_test.py"],
     data = [
+        "discord/secrets.yaml",
         "factory/secrets.yaml",
         "//projects/platform-factory/factory-db/resources:provisioning_resources",
         "//projects/platform-factory/hindsight-discord/resources:secrets.yaml",

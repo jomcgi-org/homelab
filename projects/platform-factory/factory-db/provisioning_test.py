@@ -47,13 +47,28 @@ LOGINS = [
         "factory",
         "factory-leaderboard-db",
     ),
+    # Bosun's message archive (HOME-909): the bridge's login and
+    # bosun-history's SELECT-only login.
+    (
+        "factory-db-discord-archive-login",
+        "factory_discord_archive",
+        "factory-discord",
+        "discord-archive-db",
+    ),
+    (
+        "factory-db-discord-archive-reader-login",
+        "factory_discord_archive_reader",
+        "factory-discord",
+        "discord-archive-reader-db",
+    ),
 ]
-# These logins share the connector database and own no database.
+# These logins share another login's database and own none.
 DATABASES = {
     "factory_broker_accounting": "factory_connector",
     "factory_storyboard": "factory_connector",
     "factory_reaper": "factory_connector",
     "factory_leaderboard": "factory_connector",
+    "factory_discord_archive_reader": "factory_discord_archive",
 }
 REVIEWER_LOGIN = ("factory-db", "factory-db-reviewer-login")
 REVIEWER_CONNECTION = ("factory", "factory-reviewer-db")
@@ -62,6 +77,7 @@ CLIENT_SECRETS = [
     "factory/secrets.yaml",
     "../hindsight/resources/secrets.yaml",
     "../hindsight-discord/resources/secrets.yaml",
+    "discord/secrets.yaml",
 ]
 
 
@@ -296,6 +312,10 @@ def test_managed_roles_and_databases_use_the_provisioned_logins():
         ("hindsight-discord", "hindsight", "5432", True),
         ("hindsight-discord", "hindsight-keys", "5432", False),
         ("factory-discord", "hindsight", "5432", False),
+        ("factory-discord", "factory-discord-bridge", "5432", True),
+        ("factory-discord", "bosun-history", "5432", True),
+        ("factory-discord", "bosun-artifacts", "5432", False),
+        ("factory", "bosun-history", "5432", False),
         ("other", "factory-reviewer", "5432", False),
         ("factory", "unrelated", "5432", False),
         ("factory", "factory-reviewer", "8000", False),

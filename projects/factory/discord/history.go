@@ -54,6 +54,8 @@ type HistoryMessage struct {
 	Components  []Component      `json:"components"`
 	Embeds      []HistoryEmbed   `json:"embeds"`
 	Stickers    []HistorySticker `json:"sticker_items"`
+	// Edited is when the message was last edited; nil when never.
+	Edited *time.Time `json:"edited_timestamp"`
 }
 
 // Text is a message's text: its content, or for a Components V2 message,
@@ -205,6 +207,9 @@ type Importer struct {
 	SkipIngested bool
 	// Observe, when set, sees each channel-day as it is retained or skipped.
 	Observe func(guildID string, retained bool)
+	// Archive, when set, gets every page read, for the verbatim archive
+	// (HOME-909). It never fails the import.
+	Archive *Archiver
 
 	mu       sync.Mutex
 	retained int
@@ -378,6 +383,7 @@ func (im *Importer) channel(ctx context.Context, guildID string, c Channel, toda
 		if len(page) == 0 {
 			break
 		}
+		im.Archive.Page(ctx, guildID, c, before, page)
 		for _, m := range page {
 			before = m.ID
 			if !im.keep(m) {

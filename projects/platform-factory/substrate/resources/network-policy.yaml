@@ -267,6 +267,16 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
+    # Bosun's history tools, with the actor JWT the gateway injects (the
+    # factory chart's discord-history.yaml).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: bosun-history
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
     # hindsight-discord's MCP recall for the homelab Discord Hermes agent,
     # with the recall token the gateway injects (HOME-909;
     # projects/platform-factory/hindsight-discord).

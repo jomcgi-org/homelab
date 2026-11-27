@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "actions.go",
         "agent.go",
+        "archive.go",
         "backfill.go",
         "bridge.go",
         "card.go",
@@ -31,6 +32,7 @@ go_library(
     deps = [
         "//projects/factory/connector/kagent",
         "//projects/factory/connector/notify",
+        "//projects/factory/discord/archive",
         "@com_github_prometheus_client_golang//prometheus",
         "@io_nhooyr_websocket//:websocket",
     ],
@@ -40,6 +42,7 @@ go_test(
     name = "discord_test",
     srcs = [
         "actions_test.go",
+        "archive_test.go",
         "backfill_test.go",
         "bridge_test.go",
         "card_test.go",
@@ -61,6 +64,7 @@ go_test(
     embed = [":discord"],
     deps = [
         "//projects/factory/connector/kagent",
+        "//projects/factory/discord/archive",
         "@com_github_prometheus_client_golang//prometheus",
         "@com_github_prometheus_client_golang//prometheus/testutil",
         "@io_nhooyr_websocket//:websocket",
