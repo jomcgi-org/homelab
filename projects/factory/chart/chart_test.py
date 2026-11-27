@@ -1768,6 +1768,7 @@ def test_discord_server_agent_prompt_sets_visual_style() -> None:
         "Tell one story per diagram: at most about 10 nodes",
         "no emoji in Mermaid",
         "start from the template tool's HTML",
+        "Discord shows no Markdown tables, headings below ###, or HTML",
         "Never invent motives, quotes or facts about real people",
     ):
         assert line in prompt, line
