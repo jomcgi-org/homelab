@@ -1,0 +1,66 @@
+{
+  "background": "#FFFFFF",
+  "padding": 16,
+  "font": "Inter",
+  "view": { "stroke": null },
+  "title": {
+    "font": "Inter",
+    "fontSize": 16,
+    "fontWeight": 600,
+    "color": "#0F172A",
+    "anchor": "start",
+    "offset": 12
+  },
+  "axis": {
+    "labelFont": "Inter",
+    "titleFont": "Inter",
+    "labelFontSize": 12,
+    "titleFontSize": 12,
+    "titleFontWeight": 500,
+    "labelColor": "#475569",
+    "titleColor": "#334155",
+    "domainColor": "#CBD5E1",
+    "tickColor": "#CBD5E1",
+    "gridColor": "#E2E8F0",
+    "labelPadding": 6,
+    "titlePadding": 10
+  },
+  "axisX": { "grid": false },
+  "legend": {
+    "labelFont": "Inter",
+    "titleFont": "Inter",
+    "labelFontSize": 12,
+    "titleFontSize": 12,
+    "labelColor": "#475569",
+    "titleColor": "#334155",
+    "symbolType": "circle"
+  },
+  "header": {
+    "labelFont": "Inter",
+    "titleFont": "Inter",
+    "labelColor": "#334155",
+    "titleColor": "#0F172A"
+  },
+  "text": { "font": "Inter", "color": "#334155" },
+  "mark": { "color": "#2A78D6" },
+  "bar": { "color": "#2A78D6", "cornerRadiusEnd": 4 },
+  "line": { "color": "#2A78D6", "strokeWidth": 2 },
+  "point": { "color": "#2A78D6", "size": 64, "filled": true },
+  "area": { "color": "#2A78D6", "opacity": 0.8 },
+  "arc": { "stroke": "#FFFFFF", "strokeWidth": 2 },
+  "range": {
+    "category": [
+      "#2A78D6",
+      "#EB6834",
+      "#1BAF7A",
+      "#EDA100",
+      "#E87BA4",
+      "#008300",
+      "#6250D6",
+      "#E34948"
+    ],
+    "ramp": { "scheme": "blues" },
+    "heatmap": { "scheme": "blues" },
+    "diverging": { "scheme": "blueorange" }
+  }
+}
