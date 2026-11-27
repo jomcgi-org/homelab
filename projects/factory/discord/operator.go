@@ -230,7 +230,8 @@ func (b *Bridge) operatorTurn(ctx context.Context, m Message) {
 		b.reply(ctx, m, ReplyFailed)
 		return
 	}
-	b.reply(ctx, m, answer)
+	text, _, files := Visuals(ctx, b.Render, answer)
+	b.replyWith(ctx, m, text, files)
 }
 
 // OperatorLine is one of Joe's earlier messages in a session thread.

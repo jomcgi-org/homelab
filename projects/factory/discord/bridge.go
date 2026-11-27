@@ -101,6 +101,9 @@ type Bridge struct {
 	Operator OperatorAgent
 	Channels ChannelReader
 	History  ThreadHistory
+	// Render draws the diagram, chart and SVG blocks of an answer as
+	// images; nil sends every answer as text.
+	Render Renderer
 	// Servers runs the turns of each server in Config.ServerAgents in that
 	// server's one persistent session, keyed by guild ID.
 	Servers map[string]SessionAgent
@@ -324,7 +327,9 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 		b.reply(ctx, m, ReplyFailed)
 		return
 	}
-	b.reply(ctx, m, answer)
+	shown, memo, files := Visuals(ctx, b.Render, answer)
+	b.replyWith(ctx, m, shown, files)
+	answer = memo
 	at := m.Timestamp
 	if at.IsZero() {
 		at = b.now()
@@ -342,7 +347,12 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 }
 
 func (b *Bridge) reply(ctx context.Context, m Message, text string) {
-	if err := b.Replies.Send(ctx, m.ChannelID, NewReply(text, m.ID)); err != nil {
+	b.replyWith(ctx, m, text, nil)
+}
+
+// replyWith answers m with text and any rendered images.
+func (b *Bridge) replyWith(ctx context.Context, m Message, text string, files []File) {
+	if err := b.Replies.Send(ctx, m.ChannelID, WithImages(NewReply(text, m.ID), text, files)); err != nil {
 		b.Log.WarnContext(ctx, "reply failed", "channel", m.ChannelID, "message", m.ID, "error", err)
 	}
 }

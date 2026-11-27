@@ -35,6 +35,27 @@ fn diagram_allowed(input: &str) -> bool {
             .any(|word| matches!(word, "click" | "link" | "links" | "callback"))
 }
 
+// An SVG may reference only its own elements: every href and url() points
+// at a fragment, and nothing loads images, scripts, style sheets or entities.
+fn svg_allowed(input: &str) -> bool {
+    let lower = input.to_ascii_lowercase();
+    let compact: String = lower.split_whitespace().collect();
+    let unsafe_tokens = [
+        "<image", "<foreignobject", "<script", "@import", "<!entity", "<!doctype",
+        "xi:include", "<feimage", "<iframe", "<object", "<embed", "javascript:",
+    ];
+    if unsafe_tokens.iter().any(|token| compact.contains(token)) {
+        return false;
+    }
+    let fragment_only = |marker: &str| {
+        compact.match_indices(marker).all(|(at, _)| {
+            let rest = compact[at + marker.len()..].trim_start_matches(['"', '\'', '=']);
+            rest.starts_with('#')
+        })
+    };
+    fragment_only("href=") && fragment_only("url(")
+}
+
 // invariant: HOME-585-2
 fn worker(route: &str, body: &[u8], input: &Path, output: &Path) -> Result<Command, Failure> {
     if body.len() > LIMIT {
@@ -62,6 +83,13 @@ fn worker(route: &str, body: &[u8], input: &Path, output: &Path) -> Result<Comma
                 return Err(INVALID);
             }
             process.args(["mmdr", "-e", "png", "-i"]);
+        }
+        "/svg" => {
+            let spec = std::str::from_utf8(body).map_err(|_| INVALID)?;
+            if !svg_allowed(spec) {
+                return Err(INVALID);
+            }
+            process.args(["vl-convert", "svg2png", "-i"]);
         }
         _ => return Err((404, "Unknown renderer")),
     }
@@ -148,6 +176,11 @@ mod tests {
             ),
             ("/mermaid", "flowchart LR\nA-->B\nclick A \"/report\""),
             ("/mermaid", "sequenceDiagram\nlink Alice: Chart @ /relative"),
+            ("/svg", r#"<svg><image href="https://example.org/a.png"/></svg>"#),
+            ("/svg", r#"<svg><rect fill="url(https://example.org/p)"/></svg>"#),
+            ("/svg", r#"<svg><a xlink:href = "file:///etc/hostname"><text>x</text></a></svg>"#),
+            ("/svg", r#"<svg><style>@import url(x.css)</style></svg>"#),
+            ("/svg", r#"<!DOCTYPE svg [<!ENTITY x SYSTEM "file:///etc/hostname">]><svg/>"#),
         ] {
             assert_eq!(
                 worker(route, body.as_bytes(), Path::new("in"), Path::new("out")).unwrap_err(),
@@ -157,8 +190,14 @@ mod tests {
     }
 
     #[test]
-    fn size_limit_applies_to_both_formats() {
-        for route in ["/vega-lite", "/mermaid"] {
+    fn svg_may_reference_its_own_fragments() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g"/></defs><rect fill="url(#g)"/><a href="#g"><text>pelican</text></a></svg>"##;
+        assert!(worker("/svg", svg.as_bytes(), Path::new("in"), Path::new("out")).is_ok());
+    }
+
+    #[test]
+    fn size_limit_applies_to_every_format() {
+        for route in ["/vega-lite", "/mermaid", "/svg"] {
             let result = worker(
                 route,
                 &vec![b' '; LIMIT + 1],

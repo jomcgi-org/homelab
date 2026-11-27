@@ -108,6 +108,10 @@ func run(log *slog.Logger) error {
 		// Only allowlisted servers are cached: anyone can add the bot.
 		Places: &discord.Places{Keep: func(id string) bool { _, ok := policy.Guilds[id]; return ok }},
 	}
+	if u := os.Getenv("DISCORD_RENDER_URL"); u != "" {
+		bridge.Render = &discord.HTTPRenderer{BaseURL: u}
+		log.Info("renderer on", "url", u)
+	}
 	wireServerAgents(log, bridge, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions)
 	if err := wireOperator(log, bridge, rest, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions); err != nil {
 		return err

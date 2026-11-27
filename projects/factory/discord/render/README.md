@@ -1,7 +1,9 @@
 # factory-discord-render
 
-POST a raw Vega-Lite JSON document to `/vega-lite` or UTF-8 Mermaid source to
-`/mermaid` on port 8080. A successful request returns `image/png`. Requests
+POST a raw Vega-Lite JSON document to `/vega-lite`, UTF-8 Mermaid source to
+`/mermaid` or an SVG document to `/svg` on port 8080. vl-convert's `svg2png`
+draws the SVG; every `href` and `url()` in it must name a fragment (`#id`),
+and images, scripts, foreign objects, `@import` and entities are refused. A successful request returns `image/png`. Requests
 over 65,536 bytes receive HTTP 413. External inputs, unsupported specs and
 outputs over 4096 pixels on either side receive HTTP 422. A conversion killed
 at the five-second deadline receives HTTP 504.

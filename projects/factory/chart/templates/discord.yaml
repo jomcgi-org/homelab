@@ -348,6 +348,12 @@ spec:
               value: {{ printf "%s/%s" $d.agent.namespace $d.agent.name | quote }}
             - name: HEALTH_ADDR
               value: ":8080"
+            {{- if .Values.networkPolicy.cilium }}
+            # factory-discord-render draws an answer's diagram, chart and SVG
+            # blocks as images; it runs where its deny policy does.
+            - name: DISCORD_RENDER_URL
+              value: {{ printf "http://factory-discord-render.%s.svc.cluster.local:8080" $ns | quote }}
+            {{- end }}
             {{- if $d.backfill.enabled }}
             # The history backfill (HOME-836): one pass after the gateway is
             # ready, then one each interval, for each server with `history`.
