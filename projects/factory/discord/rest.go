@@ -79,12 +79,14 @@ type MessageReference struct {
 }
 
 // Reply is the body the bridge posts. Components V2 messages carry their
-// text in components; content must stay empty.
+// text in components; content must stay empty. A poll message (NewPollReply)
+// has no flags and no components.
 type Reply struct {
 	Nonce            string            `json:"nonce,omitempty"`
 	EnforceNonce     bool              `json:"enforce_nonce,omitempty"`
 	Flags            int               `json:"flags"`
-	Components       []ReplyComponent  `json:"components"`
+	Components       []ReplyComponent  `json:"components,omitempty"`
+	Poll             *Poll             `json:"poll,omitempty"`
 	AllowedMentions  AllowedMentions   `json:"allowed_mentions"`
 	MessageReference *MessageReference `json:"message_reference,omitempty"`
 	Attachments      []ReplyAttachment `json:"attachments,omitempty"`

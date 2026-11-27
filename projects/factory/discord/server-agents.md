@@ -9,7 +9,10 @@ chart exist (slice 2). Slice 4 (HOME-909) routes the homelab server's
 tagged messages to its agent: a policy entry `serverAgents` maps the guild to
 the Agent, and the bridge keeps one session per server with request ID
 `discord-server-<guild>` (`operator.go`, `ServerRequestID`). Until slice 3,
-the bridge still recalls and puts memories in each prompt. Other controls
+the bridge still recalls and puts memories in each prompt. Actions: when
+the agent's answer holds a fenced `poll` block (JSON, Discord's poll
+limits), the bridge posts it as a Discord poll after the text reply
+(`poll.go`). Memory stores `[poll: <question>]`, not the JSON. Other controls
 below are not seen live yet, so each one is `designed`.
 
 Joe's decisions are on
