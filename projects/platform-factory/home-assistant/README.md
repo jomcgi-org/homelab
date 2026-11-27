@@ -78,6 +78,12 @@ flowchart LR
 2. Turn the lamp off during the sunrise to cancel it. The blinds then stay
    closed.
 
+The Bedroom Nest Mini is at 192.168.4.36 (Cast port 8009). mDNS does not
+reach the pod, so the Google Cast integration needs that address under
+**Known hosts**. Keep a DHCP reservation for it. The Mini can play only
+media it can fetch itself, such as internet streams: Home Assistant is
+behind Authentik, so text-to-speech and local media do not play.
+
 The button automation listens on the Twilight's Zigbee2MQTT topic. Keep its
 Zigbee2MQTT name as the IEEE address `0x001788010e4a2b1b`, and rename it in
 Home Assistant only.
