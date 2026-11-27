@@ -105,6 +105,15 @@ spec:
         - ports:
             - port: "8123"
               protocol: TCP
+    # Garage's website endpoint, for artifact.jomcgi.dev.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3902"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: scotland-connector

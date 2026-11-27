@@ -1,0 +1,175 @@
+{{- /*
+Bosun's artifact tools (HOME-909, projects/factory/discord/artifacts): an MCP
+server that puts, lists and deletes files in the bosun-artifacts Garage
+bucket, served at https://artifact.jomcgi.dev behind Authentik
+(projects/platform-factory/edge/chart/templates/artifact-route.yaml).
+
+Callers are the routed server agents' actors only. Substrate's egress gateway
+injects an actor JWT with audience bosun-artifacts; the service verifies it
+against the issuer's keys and admits only the atespaces of routed
+discord.serverAgents. The bucket key (bosun-artifacts-s3, filled by
+garage-init) is in this pod only; the actor holds none.
+*/}}
+{{- $d := .Values.discord }}
+{{- $art := $d.artifacts }}
+{{- if and $art.enabled $d.bridge.enabled }}
+{{- $ns := $d.bridge.namespace }}
+{{- $name := "bosun-artifacts" }}
+{{- $atespaces := list }}
+{{- range $key := keys $d.serverAgents | sortAlpha }}
+{{- $a := index $d.serverAgents $key }}
+{{- if and $a.enabled $a.route }}
+{{- $atespaces = append $atespaces (printf "discord-%s" $a.guild) }}
+{{- end }}
+{{- end }}
+{{- if not $atespaces }}
+{{- fail "discord.artifacts needs a routed discord.serverAgents entry: no actor could call it" }}
+{{- end }}
+{{- $servers := keys ($d.bridge.policy.guilds | default dict) | sortAlpha }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          image: {{ include "factory.connectorImage" . | quote }}
+          imagePullPolicy: {{ .Values.connector.image.pullPolicy }}
+          command: [/usr/local/bin/bosun-artifacts]
+          # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL,
+          # AWS_REGION and BUCKET.
+          envFrom:
+            - secretRef:
+                name: bosun-artifacts-s3
+          env:
+            - name: ADDR
+              value: ":8080"
+            - name: ARTIFACT_BASE_URL
+              value: {{ $art.baseURL | quote }}
+            - name: ARTIFACT_SERVERS
+              value: {{ join "," $servers | quote }}
+            - name: ACTOR_JWT_ISSUER
+              value: {{ .Values.kagent.config.substrate.actorJwtIssuer | quote }}
+            - name: ACTOR_JWT_AUDIENCE
+              value: {{ $name }}
+            - name: ACTOR_JWT_CA_FILE
+              value: /run/substrate-servicedns/trust-bundle.pem
+            - name: ACTOR_JWT_ATESPACES
+              value: {{ join "," $atespaces | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml $art.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: substrate-servicedns
+              mountPath: /run/substrate-servicedns
+              readOnly: true
+      volumes:
+        # Substrate's service-DNS trust bundle, to verify the actor JWT
+        # issuer (idp.<substrate>.svc), as the broker does.
+        - name: substrate-servicedns
+          projected:
+            sources:
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+{{- if .Values.networkPolicy.cilium }}
+---
+# Only Substrate's egress gateway connects in. Out: Garage's S3 API and the
+# actor JWT issuer. DNS is the cluster baseline's.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: ate-idp-server
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+{{- end }}
+{{- end }}

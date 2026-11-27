@@ -74,6 +74,10 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: grimoire
             cnpg.io/cluster: grimoire-recovered
+        # Bosun's artifact tools (projects/factory/chart, discord-artifacts.yaml).
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: bosun-artifacts
         # The connector's evidence (factory chart).
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
@@ -94,6 +98,16 @@ spec:
       toPorts:
         - ports:
             - port: "3900"
+              protocol: TCP
+    # The website endpoint: the edge proxy only, for artifact.jomcgi.dev.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: edge
+      toPorts:
+        - ports:
+            - port: "3902"
               protocol: TCP
   egress:
     # Kubernetes discovery: each node publishes and lists GarageNodes.

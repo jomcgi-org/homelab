@@ -266,6 +266,12 @@ spec:
         !has(object.spec.hostnames) ||
         !object.spec.hostnames.exists(h, h == 'scotland-mcp.jomcgi.dev')
       message: Only the edge namespace may route scotland-mcp.jomcgi.dev.
+    # Its route adds the CSP sandbox that untrusted artifacts rely on.
+    - expression: >-
+        request.namespace == 'edge' ||
+        !has(object.spec.hostnames) ||
+        !object.spec.hostnames.exists(h, h == 'artifact.jomcgi.dev')
+      message: Only the edge namespace may route artifact.jomcgi.dev.
     - expression: >-
         request.namespace in ['edge', 'factory-landing'] ||
         !has(object.spec.hostnames) ||

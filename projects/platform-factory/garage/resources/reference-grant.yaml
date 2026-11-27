@@ -1,0 +1,16 @@
+# The edge's artifact.jomcgi.dev route (projects/platform-factory/edge/chart,
+# artifact-route.yaml) may use the website Service only.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: edge-garage-web
+  namespace: garage
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: edge
+  to:
+    - group: ""
+      kind: Service
+      name: garage-web

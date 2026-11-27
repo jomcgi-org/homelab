@@ -689,6 +689,21 @@ discord:
         the tagged message; thread with {"name": "..."} (at most 100
         characters) starts a thread from it and puts your answer there;
         pin with {} pins your answer.
+  # Bosun's artifact tools (HOME-909, templates/discord-artifacts.yaml): an
+  # MCP server in the bridge namespace that publishes files to the
+  # bosun-artifacts Garage bucket, served at baseURL behind Authentik. Only
+  # the actors of routed serverAgents may call it, with an actor JWT for
+  # audience bosun-artifacts; files go under a server from bridge.policy.
+  # Hermes wiring: discord/server-agents.md, "Artifacts".
+  artifacts:
+    enabled: false
+    baseURL: https://artifact.jomcgi.dev
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
   # The history backfill (HOME-164, HOME-836): the bridge replays the history
   # of each server whose policy entry has `history: true` into its bank, one
   # document per channel-day. It runs one pass after the gateway is ready,

@@ -17,15 +17,24 @@ platform_transition_filegroup(
     target_platform = "@rules_go//go/toolchain:linux_amd64",
 )
 
+# So does Bosun's artifact MCP server (projects/factory/discord/artifacts).
+platform_transition_filegroup(
+    name = "bosun_artifacts_amd64_bin",
+    srcs = ["//projects/factory/discord/cmd/bosun-artifacts"],
+    target_platform = "@rules_go//go/toolchain:linux_amd64",
+)
+
 tar(
     name = "connector_tar_amd64",
     srcs = [
+        ":bosun_artifacts_amd64_bin",
         ":connector_amd64_bin",
         ":discord_bridge_amd64_bin",
     ],
     mtree = [
         "./usr/local/bin/connector type=file content=$(execpath :connector_amd64_bin) mode=0755 uid=0 gid=0",
         "./usr/local/bin/discord-bridge type=file content=$(execpath :discord_bridge_amd64_bin) mode=0755 uid=0 gid=0",
+        "./usr/local/bin/bosun-artifacts type=file content=$(execpath :bosun_artifacts_amd64_bin) mode=0755 uid=0 gid=0",
     ],
 )
 

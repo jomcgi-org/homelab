@@ -260,3 +260,62 @@ def test_discovery_rbac_and_garage_ingress():
     assert selector["matchExpressions"] == [
         {"key": "k8s:io.kubernetes.pod.namespace", "operator": "Exists"}
     ]
+
+
+def record_garage(monkeypatch, info):
+    calls = []
+
+    def garage(method, endpoint, body=None, query=None, missing_ok=False):
+        calls.append((method, endpoint, body, query))
+        return info
+
+    monkeypatch.setattr(INIT, "garage", garage)
+    return calls
+
+
+def test_only_listed_buckets_serve_a_website_with_a_quota(monkeypatch):
+    assert set(INIT.WEBSITES) == {"bosun-artifacts"}
+    calls = record_garage(monkeypatch, {"websiteAccess": False, "quotas": {}})
+    INIT.ensure_website("id1", "bosun-artifacts")
+    max_size, max_objects = INIT.WEBSITES["bosun-artifacts"]
+    assert calls[-1] == (
+        "POST",
+        "UpdateBucket",
+        {
+            "websiteAccess": {
+                "enabled": True,
+                "indexDocument": "index.html",
+                "errorDocument": None,
+            },
+            "quotas": {"maxSize": max_size, "maxObjects": max_objects},
+        },
+        {"id": "id1"},
+    )
+
+
+def test_website_in_place_is_not_rewritten(monkeypatch):
+    max_size, max_objects = INIT.WEBSITES["bosun-artifacts"]
+    calls = record_garage(
+        monkeypatch,
+        {
+            "websiteAccess": True,
+            "websiteConfig": {"indexDocument": "index.html"},
+            "quotas": {"maxSize": max_size, "maxObjects": max_objects},
+        },
+    )
+    INIT.ensure_website("id1", "bosun-artifacts")
+    assert [c[1] for c in calls] == ["GetBucketInfo"]
+
+
+def test_website_is_turned_off_on_other_buckets(monkeypatch):
+    calls = record_garage(monkeypatch, {"websiteAccess": True})
+    INIT.ensure_website("id2", "factory-evidence")
+    assert calls[-1] == (
+        "POST",
+        "UpdateBucket",
+        {"websiteAccess": {"enabled": False}},
+        {"id": "id2"},
+    )
+    calls = record_garage(monkeypatch, {"websiteAccess": False})
+    INIT.ensure_website("id2", "factory-evidence")
+    assert [c[1] for c in calls] == ["GetBucketInfo"]

@@ -88,6 +88,12 @@ authentik:
     # Written by the authentik secret-init Job (projects/platform-factory/authentik/resources/).
     clientSecretName: edge-oidc-client
 
+# Bosun's artifacts (templates/artifact-route.yaml): Garage's website
+# endpoint, which picks the bucket from the rewritten Host.
+artifacts:
+  hostname: artifact.jomcgi.dev
+  garageHost: bosun-artifacts.web.garage.internal
+
 # kubectl at factory-kube.jomcgi.dev (templates/kube-api-route.yaml).
 kubeAPI:
   hostname: factory-kube.jomcgi.dev

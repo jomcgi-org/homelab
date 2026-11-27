@@ -191,6 +191,7 @@ def test_only_kagent_forwards_the_access_token(docs):
         "kagent-authentik-oidc",
         "t3-authentik-oidc",
         "home-assistant-authentik-oidc",
+        "artifact-authentik-oidc",
         "kube-api-authentik-jwt",
         "explore-api-authentik-jwt",
     }
@@ -303,6 +304,75 @@ def test_household_is_admitted_on_home_assistant_only(docs):
     for (kind, name), doc in docs.items():
         if kind == "SecurityPolicy" and name != "home-assistant-authentik-oidc":
             assert "household" not in str(doc.get("spec", {}))
+
+
+def test_artifacts_are_admin_only_and_sandboxed_on_every_response(docs):
+    route = docs["HTTPRoute", "artifact"]["spec"]
+    assert route["hostnames"] == ["artifact.jomcgi.dev"]
+    (rule,) = route["rules"]
+    assert rule["matches"] == [{"path": {"type": "PathPrefix", "value": "/"}}]
+    assert rule["backendRefs"] == [
+        {
+            "group": "",
+            "kind": "Service",
+            "name": "garage-web",
+            "namespace": "garage",
+            "port": 3902,
+            "weight": 1,
+        }
+    ]
+    filters = {f["type"]: f for f in rule["filters"]}
+    assert filters["URLRewrite"]["urlRewrite"] == {
+        "hostname": "bosun-artifacts.web.garage.internal"
+    }
+    assert filters["RequestHeaderModifier"]["requestHeaderModifier"] == {
+        "remove": ["Cookie", "Authorization"]
+    }
+    response = filters["ResponseHeaderModifier"]["responseHeaderModifier"]
+    headers = {h["name"]: h["value"] for h in response["set"]}
+    assert headers == {
+        "Content-Security-Policy": "sandbox allow-scripts allow-popups",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cross-Origin-Resource-Policy": "same-origin",
+    }
+    sandbox = headers["Content-Security-Policy"].split()
+    for token in ("allow-same-origin", "allow-top-navigation", "allow-forms"):
+        assert token not in sandbox
+    assert response["remove"] == ["Set-Cookie", "Access-Control-Allow-Origin"]
+    policy = docs["SecurityPolicy", "artifact-authentik-oidc"]["spec"]
+    gateway = docs["SecurityPolicy", "edge-authentik-oidc"]["spec"]
+    assert policy["targetRefs"] == [
+        {"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": "artifact"}
+    ]
+    assert policy["oidc"] == gateway["oidc"]
+    assert policy["authorization"]["defaultAction"] == "Deny"
+    (allow,) = policy["authorization"]["rules"]
+    assert allow["principal"]["jwt"]["claims"] == [
+        {"name": "groups", "valueType": "StringArray", "values": ["authentik Admins"]}
+    ]
+    egress = docs["CiliumNetworkPolicy", "proxy"]["spec"]["egress"]
+    garage = [
+        r
+        for r in egress
+        if any(
+            e.get("matchLabels", {}).get("k8s:io.kubernetes.pod.namespace") == "garage"
+            for e in r.get("toEndpoints", [])
+        )
+    ]
+    assert garage == [
+        {
+            "toEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "garage",
+                        "app.kubernetes.io/name": "garage",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "3902", "protocol": "TCP"}]}],
+        }
+    ]
 
 
 def test_t3_requires_admin_group_on_the_entire_host(docs):
