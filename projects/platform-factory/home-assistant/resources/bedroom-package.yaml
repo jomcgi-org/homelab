@@ -84,7 +84,7 @@ template:
 script:
   # 30 minutes from a dim red glow to full cool daylight, then the blinds
   # open at the wake time. Each step checks the lamp is still on, so turning
-  # the lamp off cancels the rest, and the blinds stay closed.
+  # both lamp lights off cancels the rest, and the blinds stay closed.
   bedroom_sunrise:
     alias: Bedroom sunrise
     icon: mdi:weather-sunset-up
@@ -110,7 +110,10 @@ script:
           transition: 600
       - delay: 600
       - condition: state
-        entity_id: light.0x001788010e4a2b1b_front
+        entity_id:
+          - light.0x001788010e4a2b1b_front
+          - light.0x001788010e4a2b1b_back
+        match: any
         state: "on"
       - action: light.turn_on
         target:
@@ -123,7 +126,10 @@ script:
           transition: 600
       - delay: 600
       - condition: state
-        entity_id: light.0x001788010e4a2b1b_front
+        entity_id:
+          - light.0x001788010e4a2b1b_front
+          - light.0x001788010e4a2b1b_back
+        match: any
         state: "on"
       - action: light.turn_on
         target:
@@ -136,7 +142,10 @@ script:
           transition: 600
       - delay: 600
       - condition: state
-        entity_id: light.0x001788010e4a2b1b_front
+        entity_id:
+          - light.0x001788010e4a2b1b_front
+          - light.0x001788010e4a2b1b_back
+        match: any
         state: "on"
       - action: cover.open_cover
         target:
@@ -198,8 +207,9 @@ automation:
         target:
           entity_id: cover.0x54ef441000c9a1da
 
-  # The Hue button on the Twilight starts the wind-down. A second press
-  # during the wind-down turns the lamp off at once.
+  # The Hue button on the Twilight starts the wind-down. A press during the
+  # sunrise or the wind-down stops it and turns the lamp off at once; the
+  # blinds stay closed.
   - id: bedroom_bedtime_button
     alias: Bedroom bedtime button
     mode: single
@@ -211,12 +221,17 @@ automation:
     actions:
       - if:
           - condition: state
-            entity_id: script.bedroom_wind_down
+            entity_id:
+              - script.bedroom_sunrise
+              - script.bedroom_wind_down
+            match: any
             state: "on"
         then:
           - action: script.turn_off
             target:
-              entity_id: script.bedroom_wind_down
+              entity_id:
+                - script.bedroom_sunrise
+                - script.bedroom_wind_down
           - action: light.turn_off
             target:
               entity_id:

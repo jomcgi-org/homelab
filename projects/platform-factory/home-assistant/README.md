@@ -70,18 +70,18 @@ flowchart LR
   S -->|at wake time| O[Blinds open]
   SS[Sunset] --> C[Blinds close]
   B[Twilight Hue button] --> D[15 min wind-down, lamp off]
-  B2[Second press] --> X[Lamp off now]
+  B2[Press during sunrise or wind-down] --> X[Stop it, lamp off now]
 ```
 
 1. On the Bedroom dashboard, set a wake time and turn on the alarm for each
    day you want. Days with the alarm off do nothing.
-2. Turn the lamp off during the sunrise to cancel it. The blinds then stay
-   closed.
+2. Press the Twilight's Hue button during the sunrise to cancel it. The lamp
+   turns off and the blinds stay closed.
 
-The Bedroom Nest Mini is at 192.168.4.36 (Cast port 8009). mDNS does not
-reach the pod, so the Google Cast integration needs that address under
-**Known hosts**. Keep a DHCP reservation for it. The Mini can play only
-media it can fetch itself, such as internet streams: Home Assistant is
+The Bedroom Nest Mini is at 192.168.4.36 (Cast ports 8008, 8009, 8443). mDNS
+does not reach the pod, so the Google Cast integration needs that address
+under **Known hosts**. Keep a DHCP reservation for it. The Mini can play
+only media it can fetch itself, such as internet streams: Home Assistant is
 behind Authentik, so text-to-speech and local media do not play.
 
 The button automation listens on the Twilight's Zigbee2MQTT topic. Keep its
