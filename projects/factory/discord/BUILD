@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "discord",
     srcs = [
+        "actions.go",
         "agent.go",
         "backfill.go",
         "bridge.go",
@@ -32,6 +33,7 @@ go_library(
 go_test(
     name = "discord_test",
     srcs = [
+        "actions_test.go",
         "backfill_test.go",
         "bridge_test.go",
         "clients_test.go",

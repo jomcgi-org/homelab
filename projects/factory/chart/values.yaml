@@ -536,7 +536,11 @@ discord:
       "duration_hours": 24, "allow_multiselect": false}: 2 to 10 answers of
       at most 55 characters, a question of at most 300, 1 to 768 hours. An
       answer can be {"text": "...", "emoji": "🍕"}. The server posts it as a
-      Discord poll after your answer.
+      Discord poll after your answer. At most one of each of these fenced
+      blocks per answer, only when asked or clearly useful: react with JSON
+      {"emoji": ["👍"]} (1 to 3 emoji) reacts to the tagged message; thread
+      with {"name": "..."} (at most 100 characters) starts a thread from it
+      and puts your answer there; pin with {} pins your answer.
   bridge:
     # Enable after all eligible bridge nodes redact Authorization in Hubble.
     enforceAgentPath: false
@@ -679,7 +683,12 @@ discord:
         "duration_hours": 24, "allow_multiselect": false}: 2 to 10 answers
         of at most 55 characters, a question of at most 300, 1 to 768
         hours. An answer can be {"text": "...", "emoji": "🍕"}. The server
-        posts it as a Discord poll after your answer.
+        posts it as a Discord poll after your answer. At most one of each
+        of these fenced blocks per answer, only when asked or clearly
+        useful: react with JSON {"emoji": ["👍"]} (1 to 3 emoji) reacts to
+        the tagged message; thread with {"name": "..."} (at most 100
+        characters) starts a thread from it and puts your answer there;
+        pin with {} pins your answer.
   # The history backfill (HOME-164, HOME-836): the bridge replays the history
   # of each server whose policy entry has `history: true` into its bank, one
   # document per channel-day. It runs one pass after the gateway is ready,

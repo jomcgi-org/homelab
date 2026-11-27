@@ -3,7 +3,9 @@ package discord
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -84,6 +86,8 @@ const (
 	ReplyFailed  = "I couldn't answer that right now."
 	// ReplyPollFailed answers a poll-only answer that Discord refused.
 	ReplyPollFailed = "I couldn't post that poll."
+	// ReplyActionFailed answers an answer of only actions that all failed.
+	ReplyActionFailed = "I couldn't do that in Discord."
 )
 
 // Bridge decides which messages start a turn and runs each turn: recall the
@@ -368,20 +372,30 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 		b.reply(ctx, m, ReplyFailed)
 		return
 	}
+	actor, _ := b.Replies.(Actor)
+	var acts Actions
+	if actor != nil {
+		answer, acts = TakeActions(answer)
+	}
 	answer, poll := Polls(answer)
 	shown, memo, files := Visuals(ctx, b.Render, answer)
 	shown, _ = PlacePoll(shown, "", nil)
-	posted := shown != "" || len(files) > 0 || poll == nil
-	if posted {
-		b.replyWith(ctx, m, shown, files)
-	}
-	if poll != nil && !b.sendPoll(ctx, m, poll) {
+	done, posted := b.deliver(ctx, l, actor, m, acts, shown, files, poll)
+	if poll != nil && !posted.poll {
 		poll = nil // Memory names only a poll that Discord posted.
-		if !posted {
+	}
+	if !posted.textTried && !posted.poll && !done.Any() {
+		// The answer was only a poll or actions, and Discord did none.
+		if poll == nil && posted.pollTried {
 			b.reply(ctx, m, ReplyPollFailed)
+		} else {
+			b.reply(ctx, m, ReplyActionFailed)
 		}
 	}
 	_, answer = PlacePoll("", memo, poll)
+	if tags := done.Tags(); tags != "" {
+		answer = strings.TrimSpace(answer + "\n" + tags)
+	}
 	at := m.Timestamp
 	if at.IsZero() {
 		at = b.now()
@@ -409,14 +423,89 @@ func (b *Bridge) replyWith(ctx context.Context, m Message, text string, files []
 	}
 }
 
-// sendPoll posts a poll after a turn's text reply, as its own message. Only
-// Turn calls it: notices, failure replies and operator turns post no poll.
-func (b *Bridge) sendPoll(ctx context.Context, m Message, p *Poll) bool {
-	if err := b.Replies.Send(ctx, m.ChannelID, NewPollReply(p, m.ID)); err != nil {
-		b.Log.WarnContext(ctx, "poll failed", "channel", m.ChannelID, "message", m.ID, "error", err)
-		return false
+// delivered is what a turn's delivery posted.
+type delivered struct {
+	textTried, text, pollTried, poll bool
+}
+
+// deliver posts a turn's answer and does its actions in order: start the
+// thread, post the text and the poll (into the thread when it exists),
+// react to the tagged message, then pin the text reply. A failed action is
+// logged and skipped. done holds the actions that Discord did. Only Turn
+// calls it: notices, failure replies and operator turns do no actions.
+func (b *Bridge) deliver(ctx context.Context, l *slog.Logger, actor Actor, m Message, acts Actions, text string, files []File, poll *Poll) (done Actions, posted delivered) {
+	channelID, replyTo := m.ChannelID, m.ID
+	if acts.Thread != "" {
+		if id, err := actor.StartThread(ctx, m.ChannelID, m.ID, acts.Thread); err != nil {
+			actionFailed(ctx, l, "thread", err)
+		} else {
+			done.Thread = acts.Thread
+			// A reply cannot reference a message in another channel; the
+			// thread starts from the tagged message.
+			channelID, replyTo = id, ""
+		}
 	}
-	return true
+	replyID := ""
+	if text != "" || len(files) > 0 || (poll == nil && !acts.Any()) {
+		posted.textTried = true
+		reply := WithImages(NewReply(text, replyTo), text, files)
+		var err error
+		replyID, err = b.post(ctx, actor, channelID, reply)
+		if err != nil && channelID != m.ChannelID {
+			l.WarnContext(ctx, "reply in thread failed", "error", err)
+			channelID, replyTo = m.ChannelID, m.ID
+			replyID, err = b.post(ctx, actor, channelID, WithImages(NewReply(text, replyTo), text, files))
+		}
+		if err != nil {
+			l.WarnContext(ctx, "reply failed", "error", err)
+		}
+		posted.text = err == nil
+	}
+	if poll != nil {
+		posted.pollTried = true
+		if err := b.Replies.Send(ctx, channelID, NewPollReply(poll, replyTo)); err != nil {
+			l.WarnContext(ctx, "poll failed", "error", err)
+		} else {
+			posted.poll = true
+		}
+	}
+	for _, e := range acts.React {
+		if err := actor.React(ctx, m.ChannelID, m.ID, e); err != nil {
+			actionFailed(ctx, l, "react", err)
+			continue
+		}
+		done.React = append(done.React, e)
+	}
+	if acts.Pin {
+		if !posted.text || replyID == "" {
+			l.WarnContext(ctx, "pin skipped: no text reply to pin")
+		} else if err := actor.Pin(ctx, channelID, replyID); err != nil {
+			actionFailed(ctx, l, "pin", err)
+		} else {
+			done.Pin = true
+		}
+	}
+	return done, posted
+}
+
+// post sends a reply and returns its ID when the Replier reports one.
+func (b *Bridge) post(ctx context.Context, actor Actor, channelID string, reply Reply) (string, error) {
+	if actor != nil {
+		return actor.Post(ctx, channelID, reply)
+	}
+	return "", b.Replies.Send(ctx, channelID, reply)
+}
+
+// actionFailed logs a refused action. Discord answers 403 when the bot's
+// role lacks the permission: Add Reactions, Create Public Threads or Pin
+// Messages.
+func actionFailed(ctx context.Context, l *slog.Logger, action string, err error) {
+	var h *HTTPError
+	if errors.As(err, &h) && h.Status == http.StatusForbidden {
+		l.WarnContext(ctx, action+" refused: the bot lacks the Discord permission", "error", err)
+		return
+	}
+	l.WarnContext(ctx, action+" failed", "error", err)
 }
 
 // take counts a turn against the user, server and global limits, or

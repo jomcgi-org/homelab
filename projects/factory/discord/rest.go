@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -118,18 +119,28 @@ func NewReply(text, replyTo string) Reply {
 
 // Send posts a reply in a channel.
 func (r *REST) Send(ctx context.Context, channelID string, reply Reply) error {
+	_, err := r.Post(ctx, channelID, reply)
+	return err
+}
+
+// Post posts a reply in a channel and returns the new message's ID.
+func (r *REST) Post(ctx context.Context, channelID string, reply Reply) (string, error) {
 	path := "/channels/" + channelID + "/messages"
+	var out struct {
+		ID string `json:"id"`
+	}
 	if len(reply.Files) == 0 {
-		return r.do(ctx, http.MethodPost, path, reply, nil)
+		err := r.do(ctx, http.MethodPost, path, reply, &out)
+		return out.ID, err
 	}
 	payload, err := json.Marshal(reply)
 	if err != nil {
-		return err
+		return "", err
 	}
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
 	if err := w.WriteField("payload_json", string(payload)); err != nil {
-		return err
+		return "", err
 	}
 	for n, f := range reply.Files {
 		h := textproto.MIMEHeader{}
@@ -137,16 +148,51 @@ func (r *REST) Send(ctx context.Context, channelID string, reply Reply) error {
 		h.Set("Content-Type", "image/png")
 		part, err := w.CreatePart(h)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if _, err := part.Write(f.Data); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if err := w.Close(); err != nil {
-		return err
+		return "", err
 	}
-	return r.send(ctx, http.MethodPost, path, body.Bytes(), w.FormDataContentType(), nil)
+	err = r.send(ctx, http.MethodPost, path, body.Bytes(), w.FormDataContentType(), &out)
+	return out.ID, err
+}
+
+// React adds a Unicode emoji reaction as the bot. It needs the Add
+// Reactions and Read Message History permissions.
+func (r *REST) React(ctx context.Context, channelID, messageID, emoji string) error {
+	return r.do(ctx, http.MethodPut, "/channels/"+channelID+"/messages/"+messageID+"/reactions/"+url.PathEscape(emoji)+"/@me", nil, nil)
+}
+
+// threadArchiveMinutes hides an idle thread after a day.
+const threadArchiveMinutes = 1440
+
+// StartThread starts a public thread from a message and returns its ID. It
+// needs the Create Public Threads permission.
+func (r *REST) StartThread(ctx context.Context, channelID, messageID, name string) (string, error) {
+	in := struct {
+		Name                string `json:"name"`
+		AutoArchiveDuration int    `json:"auto_archive_duration"`
+	}{name, threadArchiveMinutes}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := r.do(ctx, http.MethodPost, "/channels/"+channelID+"/messages/"+messageID+"/threads", in, &out); err != nil {
+		return "", err
+	}
+	if out.ID == "" {
+		return "", errors.New("discord: thread ID is empty")
+	}
+	return out.ID, nil
+}
+
+// Pin pins a message. It needs the Pin Messages permission (formerly part
+// of Manage Messages).
+func (r *REST) Pin(ctx context.Context, channelID, messageID string) error {
+	return r.do(ctx, http.MethodPut, "/channels/"+channelID+"/messages/pins/"+messageID, nil, nil)
 }
 
 // Typing shows the bot as typing in a channel for 10 seconds or until it
@@ -256,7 +302,7 @@ func (r *REST) send(ctx context.Context, method, path string, body []byte, conte
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
 			return &HTTPError{Status: resp.StatusCode, Body: clip(string(data), 300)}
 		}
-		if out == nil {
+		if out == nil || len(bytes.TrimSpace(data)) == 0 {
 			return nil
 		}
 		return json.Unmarshal(data, out)
