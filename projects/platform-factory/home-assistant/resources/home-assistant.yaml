@@ -35,6 +35,32 @@ spec:
     spec:
       serviceAccountName: home-assistant
       automountServiceAccountToken: false
+      initContainers:
+        # Home Assistant reads its HTTP settings from .storage/http. The seed
+        # is storage version 1, which Home Assistant migrates to its current
+        # format on load. Writing it on every start keeps git authoritative:
+        # the edge proxy must stay trusted, or every request gets 400.
+        - name: http-settings
+          image: ghcr.io/home-assistant/home-assistant:2026.11.3@sha256:24e541ddae5818bf8eb27898b9ba00d0c344a655aa5097e9e9bd4b19356be847
+          command:
+            - sh
+            - -c
+            - mkdir -p /config/.storage && cp /seed/http-storage.json /config/.storage/http
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: configuration
+              mountPath: /seed/http-storage.json
+              subPath: http-storage.json
+              readOnly: true
       containers:
         - name: home-assistant
           image: ghcr.io/home-assistant/home-assistant:2026.11.3@sha256:24e541ddae5818bf8eb27898b9ba00d0c344a655aa5097e9e9bd4b19356be847
