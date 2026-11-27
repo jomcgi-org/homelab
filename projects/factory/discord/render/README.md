@@ -1,7 +1,7 @@
 # factory-discord-render
 
 POST a raw Vega-Lite JSON document to `/vega-lite`, UTF-8 Mermaid source to
-`/mermaid` or an SVG document to `/svg` on port 8080. A successful request
+`/mermaid`, an SVG document to `/svg` or a table to `/table` on port 8080. A successful request
 returns `image/png`. Requests over 65,536 bytes receive HTTP 413. External
 inputs, unsupported specs and outputs over 4096 pixels on either side receive
 HTTP 422. A conversion killed at the five-second deadline receives HTTP 504.
@@ -11,10 +11,21 @@ flowchart LR
   M[Mermaid source] -->|mmdr, house theme| S[SVG]
   V[Vega-Lite spec] -->|vl-convert vl2svg, house config| S
   U[SVG from the agent] --> S
+  T[Table JSON] -->|src/table.rs| S
   S -->|vl-convert svg2png| P[PNG]
 ```
 
-The drawing step has 3 seconds and the raster step has 2 seconds. A drawing
+A table is `{"columns": [...], "align": ["left"|"center"|"right", ...],
+"rows": [[...], ...]}` with 1 to 12 columns, at most 100 rows and 1000
+characters a cell. The renderer draws it itself: a header band, zebra rows,
+cells that wrap at 300 px, and escaped text, so the drawing refers to
+nothing outside it. The bridge sends each Markdown table in an answer here,
+because Discord shows no Markdown tables. A table it cannot draw, or one
+past the four-image limit, becomes an aligned monospace table in a code
+block. Memory keeps the table as Markdown.
+
+The drawing step has 3 seconds and the raster step has 2 seconds. A table
+or an agent's SVG has no drawing step, so its raster step has 5 seconds. A drawing
 whose longer side is at most 2048 pixels rasterizes at twice its size, so it
 stays sharp on phone screens.
 
@@ -58,7 +69,8 @@ Run `python3 fidelity.py http://localhost:8080` against the running service.
 It posts every `goldens/*.mmd` and `goldens/*.json` and compares the result
 byte for byte with the PNG of the same name. Six Mermaid fixtures come from
 mermaid-rs-renderer's basic conformance cases; `busy.mmd` is a 15-node
-flowchart with an emoji label. Review the images when you change the
+flowchart with an emoji label, and `capabilities.table.json` (posted to
+`/table`) is a capability matrix with emoji. Review the images when you change the
 engines, fonts or theme.
 
 The Bazel target `//projects/factory/discord/render:image` packages the Rust

@@ -22,6 +22,7 @@ go_library(
         "poll.go",
         "render.go",
         "rest.go",
+        "tables.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/discord",
     visibility = ["//visibility:public"],
@@ -51,6 +52,7 @@ go_test(
         "poll_test.go",
         "render_test.go",
         "server_agents_test.go",
+        "tables_test.go",
     ],
     embed = [":discord"],
     deps = [
