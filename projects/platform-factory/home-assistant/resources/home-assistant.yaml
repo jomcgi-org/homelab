@@ -62,7 +62,8 @@ spec:
               subPath: http-storage.json
               readOnly: true
         # Authentik sign-in (configuration.yaml auth_oidc). The script checks
-        # the release zip against a pinned sha256.
+        # the release zip against a pinned sha256 and installs the packages in
+        # auth-oidc-requirements.lock with --require-hashes.
         - name: auth-oidc
           image: ghcr.io/home-assistant/home-assistant:2026.11.3@sha256:24e541ddae5818bf8eb27898b9ba00d0c344a655aa5097e9e9bd4b19356be847
           command: [python3, -I, /seed/install-auth-oidc.py]
@@ -81,12 +82,19 @@ spec:
               mountPath: /seed/install-auth-oidc.py
               subPath: install-auth-oidc.py
               readOnly: true
+            - name: configuration
+              mountPath: /seed/auth-oidc-requirements.lock
+              subPath: auth-oidc-requirements.lock
+              readOnly: true
       containers:
         - name: home-assistant
           image: ghcr.io/home-assistant/home-assistant:2026.11.3@sha256:24e541ddae5818bf8eb27898b9ba00d0c344a655aa5097e9e9bd4b19356be847
           env:
             - name: TZ
               value: Europe/London
+            # Locked packages from the auth-oidc init container.
+            - name: PYTHONPATH
+              value: /config/deps/auth_oidc
           # The image's s6 init runs as root.
           securityContext:
             allowPrivilegeEscalation: false

@@ -1,0 +1,8 @@
+# Python packages for hass-oidc-auth that Home Assistant 2026.11.3 lacks.
+# The auth-oidc init container installs them with uv --require-hashes
+# --no-deps. Their dependencies come from the HA image: joserfc 1.7.7 needs
+# cryptography>=45.0.1, and the image has 50.0.2. aiofiles and jinja2 are
+# HA core requirements. Hashes are from PyPI; check a bump with
+#   uv pip compile --generate-hashes --no-deps
+joserfc==1.7.7 \
+    --hash=sha256:06979cfbab78bc802f14c0358f32969826cc26720e13cb38926ffdc86bc0cb2c
