@@ -1235,9 +1235,8 @@ Useful starting points in the `metrics` dataset, all filtered on
   `service.instance.id` (etcd and etcd-readiness, per API server), and
   `MAX(apiserver_storage_size_bytes)`.
 
-For logs, run an environment-wide query filtered on
-`k8s.cluster.name = factory` and group by `service.name` and
-`k8s.namespace.name`. etcd's own metrics listen on 127.0.0.1:2381 on each node,
+For pod logs, query the `factory-k8s-logs` dataset and group by
+`k8s.workload.name` and `k8s.namespace.name`. etcd's own metrics listen on 127.0.0.1:2381 on each node,
 out of a pod's reach, so etcd health comes from the API servers' readiness
 checks instead.
 
