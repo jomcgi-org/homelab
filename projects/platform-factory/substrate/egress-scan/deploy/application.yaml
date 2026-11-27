@@ -22,7 +22,7 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: egress-scan
-      targetRevision: 0.22.5
+      targetRevision: 0.23.1
       helm:
         releaseName: egress-scan
         # The one detector of the scanner. Joe chose Betterleaks on 2026-11-24
