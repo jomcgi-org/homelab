@@ -135,6 +135,40 @@ http_file(
     urls = ["https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/LICENSE"],
 )
 
+# Browser libraries that artifact pages load from artifact.jomcgi.dev/_lib/
+# (projects/factory/discord/libs). Each is the npm package's own build file.
+http_archive(
+    name = "discord_lib_mermaid",
+    build_file_content = 'exports_files(["dist/mermaid.min.js"])',
+    sha256 = "be0684e8d20bfc874df12c0f04927a5c482f57f2200eec54cca52a4583fd4040",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/mermaid/-/mermaid-12.3.0.tgz"],
+)
+
+http_archive(
+    name = "discord_lib_vega",
+    build_file_content = 'exports_files(["build/vega.min.js"])',
+    sha256 = "3521fb6ff68a94a40323954f0ba4484ba4014b157bfd37f89a3b063082320c42",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/vega/-/vega-6.4.0.tgz"],
+)
+
+http_archive(
+    name = "discord_lib_vega_lite",
+    build_file_content = 'exports_files(["build/vega-lite.min.js"])',
+    sha256 = "811230a6bfd2cdbfc359d0c38f624a90df86657b7f251b67be88bcc4eee32b7f",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/vega-lite/-/vega-lite-6.5.0.tgz"],
+)
+
+http_archive(
+    name = "discord_lib_vega_embed",
+    build_file_content = 'exports_files(["build/vega-embed.min.js"])',
+    sha256 = "d9a958ced3240f0418df7d5e12e97dba6e63cecda15b8403e47a0db7eb6ea859",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/vega-embed/-/vega-embed-7.3.0.tgz"],
+)
+
 # Private API server for the factory credential admission test. Match the
 # factory cluster's Kubernetes minor; CI executors are Linux amd64. Checksums
 # come from controller-tools/envtest-releases.yaml and the ESO chart index.

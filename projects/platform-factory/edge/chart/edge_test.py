@@ -192,6 +192,7 @@ def test_only_kagent_forwards_the_access_token(docs):
         "t3-authentik-oidc",
         "home-assistant-authentik-oidc",
         "artifact-authentik-oidc",
+        "artifact-lib-no-gateway-oidc",
         "kube-api-authentik-jwt",
         "explore-api-authentik-jwt",
     }
@@ -339,7 +340,13 @@ def test_artifacts_are_admin_only_and_sandboxed_on_every_response(docs):
     assert csp["connect-src"] == ["'none'"]
     assert csp["form-action"] == ["'none'"]
     assert csp["base-uri"] == ["'none'"]
-    # No directive names a network origin: inline and data: content only.
+    # Only script-src names a network source: the libraries path on this
+    # host, nothing else.
+    assert csp.pop("script-src") == [
+        "'unsafe-inline'",
+        "'unsafe-eval'",
+        "https://artifact.jomcgi.dev/_lib/",
+    ]
     for values in csp.values():
         for v in values:
             assert v in {
@@ -389,6 +396,52 @@ def test_artifacts_are_admin_only_and_sandboxed_on_every_response(docs):
             "toPorts": [{"ports": [{"port": "3902", "protocol": "TCP"}]}],
         }
     ]
+
+
+def test_artifact_libraries_are_public_read_only_and_from_their_own_bucket(docs):
+    route = docs["HTTPRoute", "artifact-lib"]["spec"]
+    assert route["hostnames"] == ["artifact.jomcgi.dev"]
+    (rule,) = route["rules"]
+    assert rule["matches"] == [
+        {"path": {"type": "PathPrefix", "value": "/_lib/"}, "method": "GET"}
+    ]
+    filters = {f["type"]: f for f in rule["filters"]}
+    # The libraries bucket, never the artifacts bucket.
+    assert filters["URLRewrite"]["urlRewrite"] == {
+        "hostname": "bosun-libs.web.garage.internal",
+        "path": {"type": "ReplacePrefixMatch", "replacePrefixMatch": "/"},
+    }
+    assert filters["RequestHeaderModifier"]["requestHeaderModifier"] == {
+        "remove": ["Cookie", "Authorization"]
+    }
+    response = filters["ResponseHeaderModifier"]["responseHeaderModifier"]
+    headers = {h["name"]: h["value"] for h in response["set"]}
+    artifact = docs["HTTPRoute", "artifact"]["spec"]["rules"][0]["filters"]
+    (artifact_headers,) = [
+        f["responseHeaderModifier"]["set"]
+        for f in artifact
+        if f["type"] == "ResponseHeaderModifier"
+    ]
+    # The self-test page gets the artifact pages' sandbox.
+    assert (
+        headers["Content-Security-Policy"]
+        == {h["name"]: h["value"] for h in artifact_headers}["Content-Security-Policy"]
+    )
+    assert headers["Cross-Origin-Resource-Policy"] == "cross-origin"
+    assert headers["Access-Control-Allow-Origin"] == "*"
+    assert response["remove"] == ["Set-Cookie"]
+    # Only this route skips sign-in, and only by name.
+    policy = docs["SecurityPolicy", "artifact-lib-no-gateway-oidc"]["spec"]
+    assert policy == {
+        "targetRefs": [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "artifact-lib",
+            }
+        ],
+        "authorization": {"defaultAction": "Allow"},
+    }
 
 
 def test_t3_requires_admin_group_on_the_entire_host(docs):

@@ -465,19 +465,47 @@ flowchart LR
 | Only routed server agents' actors call the tools: actor JWT with audience `bosun-artifacts`, atespace in `ACTOR_JWT_ATESPACES` | `artifacts/mcp.go`, broker's `actorjwt` |
 | Files go under `<server>/<channel>/`; the server must be a `bridge.policy.guilds` key, the channel a snowflake | `artifacts/artifacts.go` |
 | Extensions `.html .md .txt .csv .json .svg .png`; the type comes from the extension; at most 2 MiB; PNG checked by magic bytes; Markdown served as plain text | `artifacts/artifacts.go` |
-| Bucket quota 2 GiB and 20,000 objects; website access on this bucket only | `garage_init.py` `WEBSITES` |
-| Every response: `Content-Security-Policy: sandbox allow-scripts allow-popups` with fetch directives that allow only inline and `data:` content, `nosniff`, `Referrer-Policy: no-referrer`, `CORP: same-origin`; `Set-Cookie` and `Access-Control-Allow-Origin` removed; `Cookie` and `Authorization` not sent to Garage | edge `artifact-route.yaml` |
+| Bucket quota 2 GiB and 20,000 objects; website access on this bucket and `bosun-libs` only | `garage_init.py` `WEBSITES` |
+| Every response: `Content-Security-Policy: sandbox allow-scripts allow-popups` with fetch directives that allow only inline and `data:` content, and scripts from `https://artifact.jomcgi.dev/_lib/`, `nosniff`, `Referrer-Policy: no-referrer`, `CORP: same-origin`; `Set-Cookie` and `Access-Control-Allow-Origin` removed; `Cookie` and `Authorization` not sent to Garage | edge `artifact-route.yaml` |
 | Only the edge proxy reaches Garage's port 3902; only the egress gateway reaches the service | Cilium policies |
 
 The sandbox gives each page an opaque origin. Thus a page cannot read
 cookies or storage, and it cannot load other artifacts. The fetch
 directives (`default-src 'none'`, `connect-src 'none'`) stop a page from
 reaching any origin, so it cannot send what it holds past the egress
-gateway's scanner. An HTML artifact must inline its CSS, scripts and
-images; a CDN library does not load. The tools' descriptions tell the
-model this. The read-only `template` tool returns the house page
-(`artifacts/template.html`): colour tokens, light and dark themes through
-`prefers-color-scheme`, a system font stack and no external assets. Residual: a page can still navigate itself to another URL.
+gateway's scanner. An HTML artifact must inline its CSS and images, and
+load scripts only from `/_lib/`; a CDN library does not load. The tools'
+descriptions tell the model this. Residual: a page can still navigate
+itself to another URL.
+
+**Libraries at `/_lib/`.** The read-only `template` tool returns the house
+page (`artifacts/template.html`): colour tokens, light and dark themes
+through `prefers-color-scheme`, a system font stack, and Mermaid and
+Vega-Lite blocks that render in the browser. Mermaid uses the ELK layout:
+on Joe's architecture diagram it kept every edge out of the group and off
+the nodes, where dagre crossed a label and a node. The page loads four
+pinned libraries with `integrity` hashes:
+
+```mermaid
+flowchart LR
+  N[npm tarballs, sha256 in MODULE.bazel] --> I[connector image, /usr/share/bosun-libs]
+  I -->|bosun-libs PostSync Job| B[(bucket bosun-libs)]
+  B -->|route artifact-lib, no sign-in, GET| P[artifact page /_lib/...]
+```
+
+| Control | Where |
+| --- | --- |
+| Mermaid 12.3.0, Vega 6.4.0, Vega-Lite 6.5.0, Vega-Embed 7.3.0 from the npm tarballs, each pinned by sha256; the pages' sha384 `integrity` values are tested against the shipped files | `MODULE.bazel`, `libs/sri_test.py` |
+| Only the `bosun-libs` Job holds the `bosun-libs` key; the artifact tools have none and still refuse `.js` and any server outside `bridge.policy.guilds` | `garage_init.py` `GRANTS`, `artifacts/artifacts.go` |
+| `/_lib/` is public, GET only, rewritten to the `bosun-libs` bucket, with CORS and `CORP: cross-origin` so a sandboxed page can check the integrity hash, and the artifact CSP | edge `artifact-route.yaml` |
+| `script-src` names exactly `https://artifact.jomcgi.dev/_lib/`; `'unsafe-eval'` is for Vega's expression compiler, and adds no reach because inline scripts already run | edge `values.yaml` |
+
+`/_lib/selftest/architecture.html` is a reviewed self-test page: the
+template with Joe's architecture diagram and a chart.
+
+**Deferred: screenshot service.** A headless Chromium pod that turns an
+artifact into a PNG for Discord is deferred (HOME-909). Bosun posts
+the artifact's link with a one-line summary.
 
 The prefix is not a security boundary. One homelab session answers Joe in
 all four servers (`servers: all`), so the actor JWT names the homelab
@@ -501,7 +529,8 @@ HOME-909 sets one visual style for Bosun. These parts hold it:
 | Part | Where |
 | --- | --- |
 | One house theme for every Mermaid, Vega-Lite and SVG image: Inter, slate palette, color emoji, white background, 2x raster. The agent cannot replace it. | `render/theme/`, `render/README.md` |
-| The prompt's "Visual style" lines: one story per diagram, about 10 nodes at most, one direction, short labels, no emoji in Mermaid, Vega-Lite for data, lists over tables, the artifact template for rich pages | `chart/values.yaml` `systemPrompt` |
+| The prompt's "Visual style" lines: inline blocks for quick images (one story, about 10 nodes at most, no groups, no emoji in Mermaid, Vega-Lite for data), lists over tables, and for anything bigger an artifact from the template, posted as a link with a one-line summary | `chart/values.yaml` `systemPrompt` |
+| The house template's diagrams and charts render in the browser from the pinned libraries at `/_lib/` | `artifacts/template.html`, `libs/` |
 | The prompt's "Accuracy" line: no invented motives, quotes or facts about real people; a joke must be obvious | `chart/values.yaml` `systemPrompt` |
 
 ### Message history (HOME-909)

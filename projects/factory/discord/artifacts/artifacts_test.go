@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -168,8 +169,8 @@ func TestInitializeAndToolsList(t *testing.T) {
 	}
 }
 
-// The template is a whole page that loads nothing from outside, so it works
-// under the artifact CSP.
+// The template is a whole page that loads only the pinned libraries, so it
+// works under the artifact CSP.
 func TestTemplateIsSelfContained(t *testing.T) {
 	srv, _ := setup(t)
 	res := call(t, srv.URL, "template", map[string]any{})
@@ -177,10 +178,16 @@ func TestTemplateIsSelfContained(t *testing.T) {
 	if !strings.HasPrefix(html, "<!doctype html>") || !strings.Contains(html, "prefers-color-scheme: dark") {
 		t.Fatalf("template %.80q", html)
 	}
-	for _, external := range []string{"http:", "https:", "<link", "<script", "<img", "@import", "url("} {
+	for _, external := range []string{"http:", "https:", "<link", "<img", "@import", "url("} {
 		if strings.Contains(html, external) {
 			t.Fatalf("template loads %q", external)
 		}
+	}
+	// Scripts load only from the pinned libraries at /_lib/.
+	all := regexp.MustCompile(`<script\s+src=`).FindAllString(html, -1)
+	lib := regexp.MustCompile(`<script\s+src="/_lib/`).FindAllString(html, -1)
+	if len(all) != 4 || len(lib) != len(all) {
+		t.Fatalf("template loads %d scripts, %d from /_lib/", len(all), len(lib))
 	}
 	if res := call(t, srv.URL, "template", map[string]any{"name": "x"}); res["isError"] != true {
 		t.Fatalf("template took an unknown argument: %v", res)
@@ -239,12 +246,14 @@ func TestPutRefusals(t *testing.T) {
 	}
 	cases := map[string]map[string]any{
 		"other server":       {"server": "1111111111111111111"},
+		"library prefix":     {"server": "_lib"},
 		"bad channel":        {"channel": "general"},
 		"traversal":          {"path": "../a.html"},
 		"hidden segment":     {"path": ".well-known/a.html"},
 		"absolute":           {"path": "/a.html"},
 		"empty segment":      {"path": "a//b.html"},
 		"extension":          {"path": "a.js"},
+		"script":             {"path": "lib/mermaid.min.js"},
 		"no extension":       {"path": "index"},
 		"type from argument": {"contentType": "text/html"},
 		"not png":            {"path": "a.png", "content": base64.StdEncoding.EncodeToString([]byte("<svg/>")), "encoding": "base64"},

@@ -78,6 +78,10 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory-discord
             app.kubernetes.io/name: bosun-artifacts
+        # The Job that uploads the libraries artifact pages load.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: bosun-libs
         # Home Assistant's nightly volume archives (home-assistant/resources/backup.yaml).
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: home-assistant

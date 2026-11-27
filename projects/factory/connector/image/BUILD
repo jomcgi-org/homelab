@@ -31,19 +31,39 @@ platform_transition_filegroup(
     target_platform = "@rules_go//go/toolchain:linux_amd64",
 )
 
+# And the Job that uploads the pinned artifact libraries
+# (projects/factory/discord/libs), with the files it uploads.
+platform_transition_filegroup(
+    name = "bosun_libs_amd64_bin",
+    srcs = ["//projects/factory/discord/cmd/bosun-libs"],
+    target_platform = "@rules_go//go/toolchain:linux_amd64",
+)
+
 tar(
     name = "connector_tar_amd64",
     srcs = [
         ":bosun_artifacts_amd64_bin",
         ":bosun_history_amd64_bin",
+        ":bosun_libs_amd64_bin",
         ":connector_amd64_bin",
         ":discord_bridge_amd64_bin",
+        "//projects/factory/discord/libs:selftest/architecture.html",
+        "@discord_lib_mermaid//:dist/mermaid.min.js",
+        "@discord_lib_vega//:build/vega.min.js",
+        "@discord_lib_vega_embed//:build/vega-embed.min.js",
+        "@discord_lib_vega_lite//:build/vega-lite.min.js",
     ],
     mtree = [
         "./usr/local/bin/connector type=file content=$(execpath :connector_amd64_bin) mode=0755 uid=0 gid=0",
         "./usr/local/bin/discord-bridge type=file content=$(execpath :discord_bridge_amd64_bin) mode=0755 uid=0 gid=0",
         "./usr/local/bin/bosun-artifacts type=file content=$(execpath :bosun_artifacts_amd64_bin) mode=0755 uid=0 gid=0",
         "./usr/local/bin/bosun-history type=file content=$(execpath :bosun_history_amd64_bin) mode=0755 uid=0 gid=0",
+        "./usr/local/bin/bosun-libs type=file content=$(execpath :bosun_libs_amd64_bin) mode=0755 uid=0 gid=0",
+        "./usr/share/bosun-libs/mermaid-12.3.0.min.js type=file content=$(execpath @discord_lib_mermaid//:dist/mermaid.min.js) mode=0644 uid=0 gid=0",
+        "./usr/share/bosun-libs/vega-6.4.0.min.js type=file content=$(execpath @discord_lib_vega//:build/vega.min.js) mode=0644 uid=0 gid=0",
+        "./usr/share/bosun-libs/vega-lite-6.5.0.min.js type=file content=$(execpath @discord_lib_vega_lite//:build/vega-lite.min.js) mode=0644 uid=0 gid=0",
+        "./usr/share/bosun-libs/vega-embed-7.3.0.min.js type=file content=$(execpath @discord_lib_vega_embed//:build/vega-embed.min.js) mode=0644 uid=0 gid=0",
+        "./usr/share/bosun-libs/selftest/architecture.html type=file content=$(execpath //projects/factory/discord/libs:selftest/architecture.html) mode=0644 uid=0 gid=0",
     ],
 )
 

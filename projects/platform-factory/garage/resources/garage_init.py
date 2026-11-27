@@ -55,6 +55,7 @@ BUCKETS = [
     "factory-db-backups",
     "authentik-pg-backups",
     "bosun-artifacts",
+    "bosun-libs",
     "home-assistant-backups",
 ]
 # (bucket, namespace, Secret). ate-snapshots is Substrate's snapshot store
@@ -69,15 +70,20 @@ GRANTS = [
     # Bosun's artifacts (projects/factory/discord/artifacts): only the MCP
     # service holds a key.
     ("bosun-artifacts", "factory-discord", "bosun-artifacts-s3"),
+    # The pinned libraries artifact pages load from /_lib/: only the
+    # bosun-libs Job holds a key, so the artifact tools cannot write them.
+    ("bosun-libs", "factory-discord", "bosun-libs-s3"),
     # Nightly Home Assistant and Zigbee2MQTT volume archives.
     ("home-assistant-backups", "home-assistant", "home-assistant-backups-s3"),
 ]
 # Buckets Garage's website endpoint serves (garage.toml [s3_web]), each with
 # its quota (bytes, objects). Every other bucket has website access off, and
 # a bucket removed here has it turned off. The edge serves bosun-artifacts at
-# artifact.jomcgi.dev behind Authentik with a CSP sandbox.
+# artifact.jomcgi.dev behind Authentik with a CSP sandbox, and bosun-libs at
+# artifact.jomcgi.dev/_lib/ without sign-in.
 WEBSITES = {
     "bosun-artifacts": (2 * 2**30, 20000),
+    "bosun-libs": (64 * 2**20, 200),
 }
 
 

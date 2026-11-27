@@ -12,6 +12,17 @@ metadata:
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 type: Opaque
 ---
+# The key of the bosun-libs bucket (artifact.jomcgi.dev/_lib/), for the
+# bosun-libs upload Job only.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bosun-libs-s3
+  namespace: factory-discord
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -20,7 +31,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: [bosun-artifacts-s3]
+    resourceNames: [bosun-artifacts-s3, bosun-libs-s3]
     verbs: [get, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

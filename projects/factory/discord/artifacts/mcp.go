@@ -260,7 +260,8 @@ const placeSchema = `"server":{"type":"string","pattern":"^[0-9]{15,21}$","descr
 const pathSchema = `"path":{"type":"string","maxLength":200,"description":"File path under the channel, e.g. report.html or charts/q3.png. Letters, digits, '.', '_', '-'; up to 5 segments; extension .html .md .txt .csv .json .svg or .png."}`
 
 // pageTemplate is the house HTML page Bosun starts an artifact from: design
-// tokens, light and dark themes, a system font stack and no external assets.
+// tokens, light and dark themes, a system font stack, and Mermaid and
+// Vega-Lite blocks that the pinned libraries at /_lib/ render.
 //
 //go:embed template.html
 var pageTemplate string
@@ -270,7 +271,7 @@ var Tools = []Tool{
 	{
 		Name: "put",
 		Description: fmt.Sprintf("Publish one file and return its URL for Joe. Replaces a file at the same path. At most %d bytes. "+
-			"HTML runs sandboxed with no network: inline every style, script and image; no CDN or remote URL loads. Start an HTML page from the template tool. PNG content is base64 with encoding base64; other types are UTF-8 text.", MaxBytes),
+			"HTML runs sandboxed with no network: inline every style, script and image; scripts may load only from /_lib/ (Mermaid and Vega-Lite, as the template tool's page does); no CDN or remote URL loads. Start an HTML page from the template tool. PNG content is base64 with encoding base64; other types are UTF-8 text.", MaxBytes),
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + placeSchema + `,` + pathSchema + `,` +
 			`"content":{"type":"string","description":"File content."},` +
 			`"encoding":{"type":"string","enum":["utf-8","base64"],"default":"utf-8"}},` +
@@ -279,7 +280,7 @@ var Tools = []Tool{
 	},
 	{
 		Name:        "template",
-		Description: "Return the house HTML template for an artifact page: colour tokens, light and dark themes, cards, stats, a table and an inline SVG chart, with no external assets. Fill it in and publish it with put.",
+		Description: "Return the house HTML template for an artifact page: colour tokens, light and dark themes, cards, stats and a table, and Mermaid diagrams (pre class=mermaid, ELK layout) and Vega-Lite charts (script type=application/json class=vega-lite) that render in the browser from the pinned libraries at /_lib/. Fill it in and publish it with put.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 		Annotations: map[string]any{"title": "Get the page template", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	},

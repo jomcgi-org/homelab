@@ -1,5 +1,10 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+exports_files(
+    ["template.html"],
+    visibility = ["//projects/factory/discord/libs:__pkg__"],
+)
+
 go_library(
     name = "artifacts",
     srcs = [
