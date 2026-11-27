@@ -95,7 +95,9 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
 }
 
 // The root element's width and height, else its viewBox, set the drawing
-// size. An explicit side must be a plain or px number no larger than
+// size. This catches a model asking for a huge canvas; it is not a bound on
+// hostile input (a comment or pattern tile gets past it), which needs a
+// memory limit per worker. An explicit side must be a plain or px number no larger than
 // MAX_SIDE. A missing or percentage side takes the viewBox's, which must
 // also fit; without a viewBox resvg draws 100 px.
 fn svg_size_allowed(lower: &str) -> bool {
@@ -108,7 +110,10 @@ fn svg_size_allowed(lower: &str) -> bool {
     let mut from_view_box = false;
     for name in ["width", "height"] {
         match attribute(root, name) {
-            Some(v) if v.ends_with('%') => from_view_box = true,
+            // Relative sizes, as icons use, draw at the viewBox's size.
+            Some(v) if ["%", "em", "ex"].iter().any(|unit| v.ends_with(unit)) => {
+                from_view_box = true
+            }
             Some(v) => {
                 let number = v.strip_suffix("px").unwrap_or(&v).trim();
                 if !number.parse::<f64>().is_ok_and(fits) {
@@ -305,6 +310,7 @@ mod tests {
             r#"<svg width="400px" height="300"/>"#,
             r#"<svg stroke-width="9000" viewBox="0 0 200 200"/>"#,
             r#"<svg/>"#,
+            r#"<svg width="1em" height="1em" viewBox="0 0 24 24"/>"#,
         ] {
             assert!(
                 worker("/svg", body.as_bytes(), Path::new("in"), Path::new("out")).is_ok(),
