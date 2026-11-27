@@ -400,14 +400,10 @@ spec:
               value: {{ $d.backfill.includeBots | quote }}
             {{- end }}
             {{- if $d.archive.enabled }}
-            # The verbatim message archive (HOME-909). Optional: until
-            # factory-db-setup fills the Secret, the bridge runs without it.
-            - name: ARCHIVE_DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: discord-archive-db
-                  key: DATABASE_URL
-                  optional: true
+            # The verbatim message archive (HOME-909): the bridge waits for
+            # factory-db-setup to fill the mounted Secret file.
+            - name: ARCHIVE_DATABASE_URL_FILE
+              value: /var/run/secrets/discord-archive/database-url
             - name: ARCHIVE_READER_ROLE
               value: factory_discord_archive_reader
             {{- with $d.archive.purge }}
@@ -456,6 +452,11 @@ spec:
             - name: policy
               mountPath: /etc/discord-bridge
               readOnly: true
+            {{- if $d.archive.enabled }}
+            - name: archive
+              mountPath: /var/run/secrets/discord-archive
+              readOnly: true
+            {{- end }}
             {{- if $operatorUser }}
             - name: operator
               mountPath: /var/run/secrets/discord-operator
@@ -504,6 +505,17 @@ spec:
         - name: policy
           configMap:
             name: {{ $name }}-policy
+        {{- if $d.archive.enabled }}
+        # Optional: the bridge starts before factory-db-setup fills it, and
+        # the kubelet updates the file when it does.
+        - name: archive
+          secret:
+            secretName: discord-archive-db
+            optional: true
+            items:
+              - key: DATABASE_URL
+                path: database-url
+        {{- end }}
 {{- if .Values.networkPolicy.cilium }}
 ---
 # Egress to the renderer, Discord, hindsight-discord, factory-db (the message

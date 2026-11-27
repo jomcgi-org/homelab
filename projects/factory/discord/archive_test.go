@@ -152,6 +152,8 @@ func TestArchiverLiveEvents(t *testing.T) {
 	a.Event("MESSAGE_UPDATE", archiveEvent(t, map[string]any{"id": "1501965852042340001", "guild_id": arcGuild, "channel_id": arcChannel, "embeds": []any{map[string]any{}}}))
 	a.Event("MESSAGE_DELETE", archiveEvent(t, map[string]any{"id": "1501965852042340001", "guild_id": arcGuild, "channel_id": arcChannel}))
 	a.Event("MESSAGE_DELETE_BULK", archiveEvent(t, map[string]any{"ids": []string{"1", "2"}, "guild_id": arcGuild, "channel_id": arcChannel}))
+	// A delete in an operator channel leaves no tombstone.
+	a.Event("MESSAGE_DELETE", archiveEvent(t, map[string]any{"id": "1290668195249918001", "guild_id": arcOpGuild, "channel_id": arcOperator}))
 	drain(a)
 	if len(store.edits) != 1 || store.edits[0].Content != "hi again" || store.edits[0].EditedAt.Format(time.RFC3339) != edited {
 		t.Fatalf("edits: %+v", store.edits)
