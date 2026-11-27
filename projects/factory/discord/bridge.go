@@ -664,15 +664,18 @@ const maxReplyToChars = 2000
 // the gateway's cache; their names and description are text that members
 // wrote, so they are data too. research holds explorer answers since the
 // channel's last turn; an explorer read repository content, which anyone can
-// write, so they are untrusted data too.
+// write, so they are untrusted data too. server_id and channel_id are the
+// gateway event's IDs, which the artifacts tools take (server-agents.md).
 func Prompt(m Message, place Place, text string, memories []string, since []ChannelLine, bot string, research ...ExploreResult) string {
 	fields := map[string]any{
-		"server":   place.Server,
-		"channel":  place.Channel,
-		"author":   m.Author.Username,
-		"sent_at":  m.Timestamp.UTC().Format(time.RFC3339),
-		"message":  text,
-		"memories": memories,
+		"server":     place.Server,
+		"server_id":  m.GuildID,
+		"channel":    place.Channel,
+		"channel_id": m.ChannelID,
+		"author":     m.Author.Username,
+		"sent_at":    m.Timestamp.UTC().Format(time.RFC3339),
+		"message":    text,
+		"memories":   memories,
 	}
 	if len(since) > 0 {
 		fields["channel_messages_since_your_last_turn"] = since

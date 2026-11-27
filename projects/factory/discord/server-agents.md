@@ -311,7 +311,7 @@ flowchart LR
 | `web_fetch` (`web_fetch_20250910`), off until decided | Anthropic | 3 per request; only URLs already in the chat | Result tokens only |
 | `code_execution` (`code_execution_20260521`) | Anthropic sandbox, no network | none | Tokens, and container time after the organization's free monthly hours ($0.05 an hour) |
 | Scotland `plan`, `check`, `aurora`, `light` | scotland-connector, public, read-only | Hermes MCP timeout | None |
-| Artifacts `put`, `list`, `delete` | bosun-artifacts in factory-discord, actor JWT | 2 MiB a file; bucket quota (see "Artifacts") | None |
+| Artifacts `put`, `list` (no `delete`) | bosun-artifacts in factory-discord, actor JWT | 2 MiB a file; bucket quota (see "Artifacts") | None |
 
 - **Narrow opening.** The kagent fork's Hermes runner (jomcgi-org/kagent#6)
   names only the bound MCP servers in `platform_toolsets.api_server`, so no
@@ -345,10 +345,15 @@ Each turn's prompt holds other people's channel text, recalled memories,
 web pages and tool results. All of it is untrusted, and none of it may
 cause a write.
 
-- **Writes.** The only bound write tools are artifacts `put` and `delete`,
-  which change only the Joe-only artifact bucket. The prompt allows them
-  only when the tagging message asks for a page, file or deletion, and
-  keeps memories and other people's messages out of a file unless Joe asks.
+- **Writes.** The only bound write tool is artifacts `put`, which changes
+  only the Joe-only artifact bucket. `delete` is not bound: it cannot be
+  undone. The prompt allows `put` only when the tagging message asks for a
+  page or file, asks for a new path unless Joe asks to replace one, and
+  keeps memories and other people's messages out of a file unless Joe
+  asks. The artifacts server checks only the actor JWT, so the prompt is
+  the control; a bridge-issued, per-turn grant for the operation and path
+  is the follow-up. Each turn carries the gateway's `server_id` and
+  `channel_id`, which `put` and `list` take.
   The only planned other write is factory-mcp's create ticket (HOME-916),
   under the same rule.
 - **Discord actions.** The bridge turns a fenced poll, react, thread or
@@ -438,8 +443,8 @@ reader.
 `artifacts` in `discord-1501965852042330302` with URL
 `http://bosun-artifacts.factory-discord.svc.cluster.local:8080/mcp` (the
 cluster domain is required: Substrate resolves actor destinations as
-absolute names), `actorJwt.audiences: [bosun-artifacts]` and tools `put`,
-`list`, `delete`. The egress gateway already reaches the service on 8080
+absolute names), `actorJwt.audiences: [bosun-artifacts]` and tools `put`
+and `list`. The egress gateway already reaches the service on 8080
 (`../../platform-factory/substrate/resources/network-policy.yaml`).
 
 ### Visual style (HOME-909)
