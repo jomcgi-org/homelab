@@ -487,11 +487,13 @@ discord:
         # publishes to the Joe-only artifact.jomcgi.dev. The cluster domain
         # is required: Substrate resolves actor destinations as absolute
         # names. No Secret: the gateway injects an actor JWT.
+        # put and list only: delete cannot be undone, and a turn holds
+        # untrusted text (server-agents.md, "Tool security").
         - name: artifacts
           url: http://bosun-artifacts.factory-discord.svc.cluster.local:8080/mcp
           actorJwt:
             audiences: [bosun-artifacts]
-          tools: [put, list, delete]
+          tools: [put, list]
   # Bosun's artifact tools at artifact.jomcgi.dev (HOME-917).
   artifacts:
     enabled: true

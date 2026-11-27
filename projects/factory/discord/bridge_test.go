@@ -175,8 +175,8 @@ func TestThePromptCarriesTheServerAndChannel(t *testing.T) {
 	m.ChannelID = "301"
 	b.Turn(context.Background(), m)
 	want := []string{
-		`{"author":"ann","channel":{"name":"general"},"memories":["Earlier: the code word is heron."],"message":"what is my homelab server?","sent_at":"2026-11-17T12:00:00Z","server":{"name":"homelab","description":"Joe's lab","member_count":7}}`,
-		`{"author":"ann","channel":{"name":"move plan","parent":"general"},"memories":["Earlier: the code word is heron."],"message":"and this thread?","sent_at":"2026-11-17T12:00:00Z","server":{"name":"homelab","description":"Joe's lab","member_count":7}}`,
+		`{"author":"ann","channel":{"name":"general"},"channel_id":"300","memories":["Earlier: the code word is heron."],"message":"what is my homelab server?","sent_at":"2026-11-17T12:00:00Z","server":{"name":"homelab","description":"Joe's lab","member_count":7},"server_id":"200"}`,
+		`{"author":"ann","channel":{"name":"move plan","parent":"general"},"channel_id":"301","memories":["Earlier: the code word is heron."],"message":"and this thread?","sent_at":"2026-11-17T12:00:00Z","server":{"name":"homelab","description":"Joe's lab","member_count":7},"server_id":"200"}`,
 	}
 	for i, prompt := range agent.prompts {
 		if !strings.Contains(prompt, "earlier memories from any channel of this server") {
