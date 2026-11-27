@@ -136,7 +136,11 @@ def test_factory_operator_apps_keep_operator_group_bindings():
                 assert field.value == "name"
                 assert binding.get("enabled", True) and not binding.get("negate")
                 names.append(name.value)
-            assert sorted(names) == ["authentik Admins", "factory-operators"]
+            # The edge alone admits household; it allows it on one host.
+            extra = ["household"] if slug == "factory-edge" else []
+            assert sorted(names) == sorted(
+                ["authentik Admins", "factory-operators", *extra]
+            )
     assert seen == expected
 
 

@@ -1,0 +1,121 @@
+# The family "Heating" dashboard. configuration.yaml registers it in YAML
+# mode, so a change here needs a PR; the UI shows it read-only.
+#
+# Entity IDs carry each valve's Zigbee IEEE address. Renaming a valve in
+# the UI keeps them; "rename entity IDs" there breaks this file.
+title: Heating
+views:
+  - title: Heating
+    path: home
+    icon: mdi:radiator
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Whole house
+            icon: mdi:home-thermometer
+          - &preset
+            type: button
+            name: Comfort 20°
+            icon: mdi:sun-thermometer
+            grid_options: {columns: 4, rows: 2}
+            tap_action:
+              action: perform-action
+              perform_action: climate.set_temperature
+              target: &all_valves
+                entity_id:
+                  - climate.0xa4c13805e32c55b5
+                  - climate.0xa4c1385383b4192c
+                  - climate.0xa4c13816a86fa6ae
+                  - climate.0xa4c138b14d0c16da
+                  - climate.0xa4c138c9b001bc97
+              data: {temperature: 20, hvac_mode: heat}
+              confirmation:
+                text: Set every room to 20 °C?
+          - <<: *preset
+            name: Night 17°
+            icon: mdi:weather-night
+            tap_action:
+              action: perform-action
+              perform_action: climate.set_temperature
+              target: *all_valves
+              data: {temperature: 17, hvac_mode: heat}
+              confirmation:
+                text: Set every room to 17 °C?
+          - <<: *preset
+            name: Away 15°
+            icon: mdi:home-export-outline
+            tap_action:
+              action: perform-action
+              perform_action: climate.set_temperature
+              target: *all_valves
+              data: {temperature: 15, hvac_mode: heat}
+              confirmation:
+                text: Set every room to 15 °C?
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Living room
+            icon: mdi:sofa
+          - &room
+            type: thermostat
+            entity: climate.0xa4c13805e32c55b5
+            name: Behind sofa
+            show_current_as_primary: true
+            grid_options: {columns: 6}
+          - <<: *room
+            entity: climate.0xa4c1385383b4192c
+            name: Behind TV
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Kitchen
+            icon: mdi:silverware-fork-knife
+          - <<: *room
+            entity: climate.0xa4c138b14d0c16da
+            name: Kitchen
+            grid_options: {columns: 12}
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Bedroom
+            icon: mdi:bed
+          - <<: *room
+            entity: climate.0xa4c138c9b001bc97
+            name: Bedroom
+            grid_options: {columns: 12}
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Office
+            icon: mdi:desk
+          - <<: *room
+            entity: climate.0xa4c13816a86fa6ae
+            name: Office
+            grid_options: {columns: 12}
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Batteries
+            heading_style: subtitle
+            icon: mdi:battery
+          - type: entities
+            state_color: true
+            entities:
+              - entity: sensor.0xa4c13805e32c55b5_battery
+                name: Living room, sofa
+              - entity: sensor.0xa4c1385383b4192c_battery
+                name: Living room, TV
+              - entity: sensor.0xa4c138b14d0c16da_battery
+                name: Kitchen
+              - entity: sensor.0xa4c138c9b001bc97_battery
+                name: Bedroom
+              - entity: sensor.0xa4c13816a86fa6ae_battery
+                name: Office
