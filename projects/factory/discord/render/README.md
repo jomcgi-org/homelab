@@ -3,7 +3,12 @@
 POST a raw Vega-Lite JSON document to `/vega-lite`, UTF-8 Mermaid source to
 `/mermaid` or an SVG document to `/svg` on port 8080. vl-convert's `svg2png`
 draws the SVG; every `href` and `url()` in it must name a fragment (`#id`),
-and images, scripts, foreign objects, `@import` and entities are refused. A successful request returns `image/png`. Requests
+and images, scripts, foreign objects, `@import` and entities are refused. An SVG
+root or a chart width or height over 4,096 px is refused before rendering.
+That stops a model's huge canvas, not hostile input: a pattern tile or a
+padded chart can still pass 512Mi and restart the pod, and answers then fall
+back to text. A memory limit per worker would close it; V8 in vl-convert
+aborts under a data rlimit below about 450 MB. A successful request returns `image/png`. Requests
 over 65,536 bytes receive HTTP 413. External inputs, unsupported specs and
 outputs over 4096 pixels on either side receive HTTP 422. A conversion killed
 at the five-second deadline receives HTTP 504.
