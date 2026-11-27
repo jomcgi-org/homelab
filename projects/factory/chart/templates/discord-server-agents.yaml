@@ -25,6 +25,9 @@ Hindsight of its own yet (slice 3), so the bridge recalls for it.
 {{- if or (has $m.name $reserved) (hasPrefix "hermes" $m.name) (hasPrefix "mcp-" $m.name) }}
 {{- fail (printf "discord.serverAgents.%s.mcpServers name %s is a Hermes toolset name" $server $m.name) }}
 {{- end }}
+{{- if and $m.secret $m.actorJwt }}
+{{- fail (printf "discord.serverAgents.%s.mcpServers %s takes secret or actorJwt, not both" $server $m.name) }}
+{{- end }}
 {{- if or (not $m.url) (empty $m.tools) }}
 {{- fail (printf "discord.serverAgents.%s.mcpServers %s needs url and tools: Hermes registers only listed tools" $server $m.name) }}
 {{- end }}
@@ -168,6 +171,11 @@ spec:
   description: {{ printf "%s for the %s Discord agent" $m.name $server | quote }}
   url: {{ $m.url | quote }}
   protocol: STREAMABLE_HTTP
+  {{- with $m.actorJwt }}
+  # The gateway injects an actor JWT for these audiences.
+  actorJwt:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- with $m.secret }}
   headersFrom:
     - name: Authorization

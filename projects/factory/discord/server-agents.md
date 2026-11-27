@@ -311,6 +311,7 @@ flowchart LR
 | `web_fetch` (`web_fetch_20250910`), off until decided | Anthropic | 3 per request; only URLs already in the chat | Result tokens only |
 | `code_execution` (`code_execution_20260521`) | Anthropic sandbox, no network | none | Tokens, and container time after the organization's free monthly hours ($0.05 an hour) |
 | Scotland `plan`, `check`, `aurora`, `light` | scotland-connector, public, read-only | Hermes MCP timeout | None |
+| Artifacts `put`, `list`, `delete` | bosun-artifacts in factory-discord, actor JWT | 2 MiB a file; bucket quota (see "Artifacts") | None |
 
 - **Narrow opening.** The kagent fork's Hermes runner (jomcgi-org/kagent#6)
   names only the bound MCP servers in `platform_toolsets.api_server`, so no
@@ -344,9 +345,12 @@ Each turn's prompt holds other people's channel text, recalled memories,
 web pages and tool results. All of it is untrusted, and none of it may
 cause a write.
 
-- **No write tool.** Every bound tool is read-only. The only planned write
-  is factory-mcp's create ticket (HOME-916). The prompt must then allow it
-  only when Joe's own tagging message asks for a ticket.
+- **Writes.** The only bound write tools are artifacts `put` and `delete`,
+  which change only the Joe-only artifact bucket. The prompt allows them
+  only when the tagging message asks for a page, file or deletion, and
+  keeps memories and other people's messages out of a file unless Joe asks.
+  The only planned other write is factory-mcp's create ticket (HOME-916),
+  under the same rule.
 - **Discord actions.** The bridge turns a fenced poll, react, thread or
   pin block in an answer into a Discord action. A fetched page could hold
   such a block, so the prompt allows one only when the tagging message
@@ -429,47 +433,14 @@ atespace for every turn. The JWT does not carry the server or channel, so
 the caller states them. The server allowlist bounds them. Joe is the only
 reader.
 
-**Wiring (not live).** The server-agents template renders no MCP servers
-yet. The "Bosun Hermes: tools" work adds them. Add this entry for the
-homelab agent:
-
-```yaml
-discord:
-  serverAgents:
-    homelab:
-      mcpServers:
-        - name: artifacts
-          # The cluster domain is required: Substrate resolves actor
-          # destinations as absolute names (../ARCHITECTURE.md, "Codex relay").
-          url: http://bosun-artifacts.factory-discord.svc.cluster.local:8080/mcp
-          # No Secret: the gateway injects an actor JWT.
-          actorJwt:
-            audiences: [bosun-artifacts]
-          tools: [put, template, list, delete]
-```
-
-It renders to this RemoteMCPServer in `discord-1501965852042330302`, and
-the Agent's tools name it with `tools: [put, template, list, delete]`:
-
-```yaml
-apiVersion: api.kagent.dev/v1alpha3
-kind: RemoteMCPServer
-metadata:
-  name: artifacts
-  labels:
-    kagent.dev/discovery: disabled
-spec:
-  url: http://bosun-artifacts.factory-discord.svc.cluster.local:8080/mcp
-  protocol: STREAMABLE_HTTP
-  actorJwt:
-    audiences: [bosun-artifacts]
-```
-
-The egress gateway already reaches the service on 8080
-(`../../platform-factory/substrate/resources/network-policy.yaml`). Check
-that kagent admits the origin for the actor, as it does for a
-RemoteMCPServer with `headersFrom`. Then a `put` from the agent returns a
-URL that opens after Joe signs in.
+**Wiring.** Deploy values bind it to the homelab agent
+(`discord.serverAgents.homelab.mcpServers`, HOME-915): a RemoteMCPServer
+`artifacts` in `discord-1501965852042330302` with URL
+`http://bosun-artifacts.factory-discord.svc.cluster.local:8080/mcp` (the
+cluster domain is required: Substrate resolves actor destinations as
+absolute names), `actorJwt.audiences: [bosun-artifacts]` and tools `put`,
+`list`, `delete`. The egress gateway already reaches the service on 8080
+(`../../platform-factory/substrate/resources/network-policy.yaml`).
 
 ### Visual style (HOME-909)
 
