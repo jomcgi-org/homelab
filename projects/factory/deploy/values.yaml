@@ -71,7 +71,7 @@ kagent:
   controller:
     metrics:
       enabled: true
-    # kagent v1.0.1 built from jomcgi-org/kagent commit 5aee46ff1464
+    # kagent v1.0.1 built from jomcgi-org/kagent commit 75914efa79f6
     # (branch jomcgi/codex-6.2, build run
     # https://github.com/jomcgi-org/kagent/actions/runs/45899832034). Commit
     # 2c2fc329a8d8 sets PinnedCodexVersion and the harness Dockerfile to Codex
@@ -91,11 +91,13 @@ kagent:
     # `spec.hermes` Harness and its translator. The Codex and Claude paths do
     # not change. Commit 5aee46ff1464 (jomcgi-org/kagent#2) writes the model
     # endpoint as a named Hermes provider: Hermes resolved an openrouter.ai
-    # model.base_url to a custom runtime with no key.
+    # model.base_url to a custom runtime with no key. Commit 75914efa79f6
+    # (jomcgi-org/kagent#3) adds Harness spec.idleSuspendDelay: a settled
+    # Session stays running for that delay instead of suspending at once.
     image:
       registry: ghcr.io
       repository: jomcgi-org/kagent/controller
-      tag: 1.0.1-jomcgi.5aee46ff1464@sha256:13a94437f2821572fd4b8ef698e83774abc310f6353f150523d9542f5dd3a891
+      tag: 1.0.1-jomcgi.75914efa79f6@sha256:435650b6b236bf2d31245e6e7ce5e333feeeb69db417e872923a4f1724e35b02
   # The UI peaked at 4Mi over two days (2026-11-16) against the chart's
   # 256Mi request.
   ui:
@@ -109,8 +111,8 @@ kagent:
     # 0.169.1 in place of 0.161.0. The controller starts only when `release`
     # equals its own version, so it names the fork build, not 1.0.1.
     harnessImages:
-      release: 1.0.1-jomcgi.5aee46ff1464
-      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:3376f22b88070b513d62d13f253042774c71ffc6d0d7699e6f25f629617f2613
+      release: 1.0.1-jomcgi.75914efa79f6
+      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:601c2900e8815674b88b6e0500b1593e9ff1803dd33973837eb4fe83ee8be7f9
     runtimeDefaults:
       cpu: "4"
       memory: 8Gi

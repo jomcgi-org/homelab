@@ -139,6 +139,11 @@ spec:
       name: {{ $a.name }}
     snapshotPolicy:
       location: {{ printf "%s%s/" $.Values.workers.snapshotLocationPrefix $ns | quote }}
+  {{- with $a.idleSuspendDelay }}
+  # Keep the actor running between turns of an active chat: each restore
+  # restarts the Hermes gateway, about 10 s before the first model call.
+  idleSuspendDelay: {{ . | quote }}
+  {{- end }}
 ---
 # No tools and no egress grants: the actor reaches only the model origin.
 apiVersion: api.kagent.dev/v1alpha3
