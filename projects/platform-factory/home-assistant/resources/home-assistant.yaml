@@ -131,6 +131,14 @@ spec:
               mountPath: /config/dashboards/heating.yaml
               subPath: heating-dashboard.yaml
               readOnly: true
+            - name: configuration
+              mountPath: /config/dashboards/bedroom.yaml
+              subPath: bedroom-dashboard.yaml
+              readOnly: true
+            - name: configuration
+              mountPath: /config/packages/bedroom.yaml
+              subPath: bedroom-package.yaml
+              readOnly: true
       volumes:
         - name: config
           persistentVolumeClaim:

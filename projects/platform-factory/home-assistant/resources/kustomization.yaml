@@ -13,6 +13,8 @@ configMapGenerator:
       - configuration.yaml
       - http-storage.json
       - heating-dashboard.yaml
+      - bedroom-dashboard.yaml
+      - bedroom-package.yaml
       - install-auth-oidc.py
       - auth-oidc-requirements.lock
   - name: mosquitto

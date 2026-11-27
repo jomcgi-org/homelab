@@ -1,0 +1,95 @@
+# The "Bedroom" dashboard. configuration.yaml registers it in YAML mode, so
+# a change here needs a PR; the UI shows it read-only. The wake times and
+# alarm switches it shows are editable. The routines are in
+# bedroom-package.yaml.
+#
+# No YAML anchors: Home Assistant's loader reads a merge key override as a
+# duplicate key.
+title: Bedroom
+views:
+- title: Bedroom
+  path: home
+  icon: mdi:bed
+  type: sections
+  max_columns: 2
+  sections:
+  - type: grid
+    cards:
+    - type: heading
+      heading: Wake-up
+      icon: mdi:weather-sunset-up
+    - type: tile
+      entity: sensor.bedroom_sunrise_start
+      name: Sunrise starts today
+      grid_options:
+        columns: 12
+    - type: entities
+      state_color: true
+      grid_options:
+        columns: 12
+      entities:
+      - input_boolean.wake_mon
+      - input_datetime.wake_mon
+      - input_boolean.wake_tue
+      - input_datetime.wake_tue
+      - input_boolean.wake_wed
+      - input_datetime.wake_wed
+      - input_boolean.wake_thu
+      - input_datetime.wake_thu
+      - input_boolean.wake_fri
+      - input_datetime.wake_fri
+      - input_boolean.wake_sat
+      - input_datetime.wake_sat
+      - input_boolean.wake_sun
+      - input_datetime.wake_sun
+  - type: grid
+    cards:
+    - type: heading
+      heading: Now
+      icon: mdi:bed
+    - type: button
+      name: Bedtime
+      icon: mdi:weather-night
+      grid_options:
+        columns: 6
+        rows: 2
+      tap_action:
+        action: perform-action
+        perform_action: script.turn_on
+        target:
+          entity_id: script.bedroom_wind_down
+    - type: button
+      name: Test sunrise
+      icon: mdi:weather-sunset-up
+      grid_options:
+        columns: 6
+        rows: 2
+      tap_action:
+        action: perform-action
+        perform_action: script.turn_on
+        target:
+          entity_id: script.bedroom_sunrise
+        confirmation:
+          text: Run the 30-minute sunrise now? The blinds open at the end.
+    - type: tile
+      entity: cover.0x54ef441000c9a1da
+      name: Blinds
+      features:
+      - type: cover-open-close
+      - type: cover-position
+      grid_options:
+        columns: 12
+    - type: tile
+      entity: light.0x001788010e4a2b1b_front
+      name: Twilight front
+      features:
+      - type: light-brightness
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: light.0x001788010e4a2b1b_back
+      name: Twilight back
+      features:
+      - type: light-brightness
+      grid_options:
+        columns: 6
