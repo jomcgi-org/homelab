@@ -306,6 +306,21 @@ func OperatorRequestID(threadID string, generation int) string {
 	return fmt.Sprintf("discord-operator-%s-%d", threadID, generation)
 }
 
+// ServerRequestID is the request ID of a server agent's session (HOME-909).
+func ServerRequestID(guildID string, generation int) string {
+	if generation == 0 {
+		return "discord-server-" + guildID
+	}
+	return fmt.Sprintf("discord-server-%s-%d", guildID, generation)
+}
+
+func (k *KagentOperator) requestID(key string, generation int) string {
+	if k.RequestID != nil {
+		return k.RequestID(key, generation)
+	}
+	return OperatorRequestID(key, generation)
+}
+
 // KagentOperator runs operator turns on one kagent Agent. Each thread keeps
 // one session across turns and bridge restarts; nothing deletes it.
 type KagentOperator struct {
@@ -314,6 +329,10 @@ type KagentOperator struct {
 	Agent    kagent.AgentRef
 	Poll     time.Duration
 	Timeout  time.Duration
+	// RequestID names a key's session; nil names a thread's
+	// (OperatorRequestID). A server agent uses ServerRequestID, so its
+	// sessions never meet a thread's.
+	RequestID func(key string, generation int) string
 
 	mu    sync.Mutex
 	known map[string]string // thread -> context ID
@@ -328,7 +347,7 @@ func (k *KagentOperator) Session(ctx context.Context, threadID string) (Operator
 		return OperatorSession{ContextID: id}, nil
 	}
 	for gen := range maxSessionGenerations {
-		s, err := k.Sessions.CreateSession(ctx, k.Agent, OperatorRequestID(threadID, gen))
+		s, err := k.Sessions.CreateSession(ctx, k.Agent, k.requestID(threadID, gen))
 		if errors.Is(err, kagent.ErrSessionNotFound) || errors.Is(err, kagent.ErrSessionUnrecoverable) {
 			continue
 		}
@@ -336,7 +355,7 @@ func (k *KagentOperator) Session(ctx context.Context, threadID string) (Operator
 			return OperatorSession{}, err
 		}
 		if s == nil || s.ContextID == "" || s.ID != s.ContextID || s.AgentNamespace != k.Agent.Namespace || s.AgentName != k.Agent.Name {
-			return OperatorSession{}, errors.New("discord: session does not belong to the operator Agent")
+			return OperatorSession{}, errors.New("discord: session does not belong to the Agent")
 		}
 		if s.Gone() {
 			continue

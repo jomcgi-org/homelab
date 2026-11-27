@@ -3,8 +3,9 @@ Per-server Hermes agents (HOME-905, projects/factory/discord/server-agents.md).
 Each enabled server gets its own namespace and atespace,
 discord-<guild>, with a gVisor WorkerPool, a Hermes Harness and an Agent with
 no tools. The actor holds placeholders only: the egress gateway injects the
-OpenRouter key for this atespace. Slice 2 (HOME-907) renders the agent only:
-the bridge sends it no turns (slice 4) and it has no Hindsight (slice 3).
+OpenRouter key for this atespace. With `route`, the bridge sends the server's
+tagged messages to it in one persistent session (HOME-909); it has no
+Hindsight of its own yet (slice 3), so the bridge recalls for it.
 */}}
 {{- $d := .Values.discord }}
 {{- range $server := keys $d.serverAgents | sortAlpha }}

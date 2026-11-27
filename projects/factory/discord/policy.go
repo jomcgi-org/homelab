@@ -3,7 +3,10 @@ package discord
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
 
 // policyFile is the bridge's policy as values render it.
@@ -15,6 +18,8 @@ type policyFile struct {
 	GlobalLimit          limitFile         `json:"globalLimit"`
 	QueueDepth           int               `json:"queueDepth"`
 	Operator             *operatorFile     `json:"operator"`
+	// ServerAgents maps a guild ID to its agent, "namespace/name" (HOME-909).
+	ServerAgents map[string]string `json:"serverAgents"`
 }
 
 // operatorFile is the operator session's place (HOME-314). Joe's user ID is
@@ -85,6 +90,19 @@ func ParsePolicy(data []byte) (Config, error) {
 			}
 		}
 		c.Operator = Operator{Guild: o.Guild, Channels: o.Channels}
+	}
+	for guild, ref := range p.ServerAgents {
+		if _, ok := c.Guilds[guild]; !ok {
+			return Config{}, fmt.Errorf("serverAgents: guild %s is not allowlisted", guild)
+		}
+		ns, name, ok := strings.Cut(ref, "/")
+		if !ok || ns == "" || name == "" || strings.Contains(name, "/") {
+			return Config{}, fmt.Errorf("serverAgents: guild %s: %q is not namespace/name", guild, ref)
+		}
+		if c.ServerAgents == nil {
+			c.ServerAgents = map[string]kagent.AgentRef{}
+		}
+		c.ServerAgents[guild] = kagent.AgentRef{Namespace: ns, Name: name}
 	}
 	return c, nil
 }

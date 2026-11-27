@@ -420,10 +420,12 @@ discord:
     guild: "1501965852042330302"
     channels: ["1575140752776757368"]
   # The homelab server's Hermes agent (HOME-907): a persistent session that
-  # suspends when idle. The bridge sends it no turns yet (HOME-905 slice 4).
+  # suspends when idle. It answers the server's tagged messages in place of
+  # Bosun (Joe, 2026-11-27, HOME-909); the other servers keep Bosun.
   serverAgents:
     homelab:
       enabled: true
+      route: true
 
 semgrepSync:
   enabled: false

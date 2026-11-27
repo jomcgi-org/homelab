@@ -46,3 +46,21 @@ func wireOperator(log *slog.Logger, b *discord.Bridge, rest *discord.REST, a2a *
 	log.Info("operator session on", "agent", agent, "channels", len(b.Config.Operator.Channels))
 	return nil
 }
+
+// wireServerAgents gives each server in the policy's serverAgents its own
+// persistent session on its agent (HOME-909). Other servers keep Bosun.
+func wireServerAgents(log *slog.Logger, b *discord.Bridge, a2a *kagent.A2A, sessions *kagent.Sessions) {
+	if len(b.Config.ServerAgents) == 0 {
+		return
+	}
+	b.Servers = map[string]discord.SessionAgent{}
+	for guild, agent := range b.Config.ServerAgents {
+		b.Servers[guild] = &discord.KagentOperator{
+			A2A:       a2a,
+			Sessions:  sessions,
+			Agent:     agent,
+			RequestID: discord.ServerRequestID,
+		}
+		log.Info("server agent on", "guild", guild, "agent", agent.Namespace+"/"+agent.Name)
+	}
+}

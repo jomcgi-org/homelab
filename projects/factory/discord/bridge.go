@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
 
 // Replier posts replies.
@@ -57,6 +59,9 @@ type Config struct {
 	QueueDepth int `json:"-"`
 	// Operator places Joe's operator session (HOME-314); zero for none.
 	Operator Operator `json:"-"`
+	// ServerAgents maps a server to its own persistent agent (HOME-909). A
+	// server without an entry answers from Agent.
+	ServerAgents map[string]kagent.AgentRef `json:"-"`
 }
 
 // dedupeWindow is how long a message ID is remembered. An older message
@@ -96,6 +101,9 @@ type Bridge struct {
 	Operator OperatorAgent
 	Channels ChannelReader
 	History  ThreadHistory
+	// Servers runs the turns of each server in Config.ServerAgents in that
+	// server's one persistent session, keyed by guild ID.
+	Servers map[string]SessionAgent
 
 	mu      sync.Mutex
 	botID   string
@@ -109,6 +117,11 @@ type Bridge struct {
 	parents map[string]string
 	// pending holds the messages of a channel whose parent is being read.
 	pending map[string][]Message
+}
+
+// SessionAgent runs turns in one persistent session per key.
+type SessionAgent interface {
+	Turn(ctx context.Context, key, messageID, prompt string) (string, error)
 }
 
 // notice is a fixed reply sent off the gateway's reader.
@@ -150,7 +163,8 @@ func (b *Bridge) Accept(m Message) bool {
 }
 
 // Handle takes one gateway message. It never blocks the gateway: a turn
-// runs on the channel's queue, one at a time per channel.
+// runs on the channel's queue, one at a time per channel, or on the
+// server's queue for a server with its own agent.
 func (b *Bridge) Handle(ctx context.Context, m Message) {
 	if b.operatorScope(ctx, m) {
 		return // The operator's channels: no ingest and no public turn.
@@ -172,10 +186,15 @@ func (b *Bridge) Handle(ctx context.Context, m Message) {
 	b.seen[m.ID] = now
 	b.prune(now)
 	allowed := b.take(now, m)
-	q, ok := b.queues[m.ChannelID]
+	key := m.ChannelID
+	if _, ok := b.Servers[m.GuildID]; ok {
+		// One session serves the whole server, so its turns run one at a time.
+		key = "server:" + m.GuildID
+	}
+	q, ok := b.queues[key]
 	if !ok && allowed {
 		q = make(chan Message, max(b.Config.QueueDepth, 1))
-		b.queues[m.ChannelID] = q
+		b.queues[key] = q
 		b.wg.Add(1)
 		go b.worker(ctx, q, b.Turn)
 	}
@@ -293,7 +312,13 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 		// Answer without memory rather than not at all.
 		l.WarnContext(ctx, "recall failed", "error", err)
 	}
-	answer, err := b.Agent.Turn(ctx, m.ID, Prompt(m, b.Places.Lookup(m.GuildID, m.ChannelID), text, memories))
+	prompt := Prompt(m, b.Places.Lookup(m.GuildID, m.ChannelID), text, memories)
+	var answer string
+	if a, ok := b.Servers[m.GuildID]; ok {
+		answer, err = a.Turn(ctx, m.GuildID, m.ID, prompt)
+	} else {
+		answer, err = b.Agent.Turn(ctx, m.ID, prompt)
+	}
 	if err != nil {
 		l.WarnContext(ctx, "turn failed", "error", err)
 		b.reply(ctx, m, ReplyFailed)
