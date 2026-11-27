@@ -1820,12 +1820,9 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
             "minTailUserMessages": 3,
             "model": "claude-sonnet-5-5",
         },
-        # Joe's web search, web fetch and code execution (HOME-915).
-        "serverTools": {
-            "webSearch": {"maxUses": 5},
-            "webFetch": {"maxUses": 3},
-            "codeExecution": True,
-        },
+        # Code execution (HOME-915); web search and fetch wait for Joe's
+        # decision (server-agents.md, Open decisions).
+        "serverTools": {"codeExecution": True},
     }
     # Joe chose to keep the agent awake during active chats.
     assert harness["idleSuspendDelay"] == "10m"
@@ -1876,11 +1873,12 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
         "Each channel and thread has its own session",
         "send an explorer to research a public GitHub repository",
         # The tools, once live (HOME-915).
-        "You can search and fetch web pages, run Python in a sandbox",
+        "You can run Python in a sandbox without network",
     ):
         assert line in prompt, line
     assert "You have no tools" not in prompt
     assert "bank_id" not in prompt
+    assert "web_search" not in prompt and "search and fetch web pages" not in prompt
     assert "earlier turns from every server" not in prompt
     # Components V2 formatting and scheduled events (HOME-909).
     for line in (
@@ -1937,6 +1935,28 @@ def test_discord_bridge_starts_new_channel_sessions_for_the_tools() -> None:
     assert deploy["discord"]["bridge"]["policy"]["sessionEpoch"] == ""
     defaults = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
     assert defaults["discord"]["bridge"]["policy"]["sessionEpoch"] == ""
+
+
+def test_discord_server_agent_web_tools_bring_their_prompt() -> None:
+    # Turning web search on renders it in the Harness and appends the web
+    # rules: a query comes only from Joe's message, never from memories.
+    docs = _render(
+        _HOMELAB
+        + [
+            "discord.serverAgents.homelab.serverTools.webSearch.maxUses=5",
+            "discord.serverAgents.homelab.serverTools.webFetch.maxUses=3",
+        ]
+    )
+    harness = _in(docs, "Harness", _HOMELAB_NS, "hermes")["spec"]["hermes"]
+    assert harness["serverTools"] == {
+        "webSearch": {"maxUses": 5},
+        "webFetch": {"maxUses": 3},
+        "codeExecution": True,
+    }
+    agent = _in(docs, "Agent", _HOMELAB_NS, "homelab")["spec"]["template"]["inline"]
+    prompt = " ".join(agent["systemPrompt"].split())
+    assert "build it only from Joe's message, never from memories" in prompt
+    assert "you can also search and fetch web pages" in prompt
 
 
 def test_discord_server_agent_tools_check_their_wiring() -> None:

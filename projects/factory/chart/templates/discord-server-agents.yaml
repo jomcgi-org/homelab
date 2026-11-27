@@ -258,7 +258,9 @@ spec:
       modelConfig:
         name: {{ $a.name }}
       {{- if or $mcp $a.serverTools }}
-      systemPrompt: {{ printf "%s%s" $a.systemPrompt ($a.toolsPrompt | default "") | quote }}
+      {{- $web := "" }}
+      {{- with $a.serverTools }}{{- if or .webSearch .webFetch }}{{- $web = $a.webToolsPrompt | default "" }}{{- end }}{{- end }}
+      systemPrompt: {{ printf "%s%s%s" $a.systemPrompt ($a.toolsPrompt | default "") $web | quote }}
       {{- else }}
       systemPrompt: {{ $a.systemPrompt | quote }}
       {{- end }}
