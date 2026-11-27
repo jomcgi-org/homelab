@@ -6,7 +6,7 @@
 #
 # garage-init (projects/platform-factory/garage) creates the bucket and fills
 # home-assistant-backups-s3 with a key for that bucket only. Until it does,
-# the required Secret key references keep a backup pod pending.
+# a backup pod fails in CreateContainerConfigError at its required Secret keys.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -223,7 +223,7 @@ spec:
                 - name: NAME
                   value: home-assistant
                 - name: EXCLUDES
-                  value: "./home-assistant_v2.db* ./home-assistant.log* ./deps ./.cache ./tts"
+                  value: "./home-assistant_v2.db* ./home-assistant.log* ./deps ./.cache ./tts ./backups"
                 - name: REQUIRED
                   value: ".storage/core.config_entries .storage/core.device_registry"
                 - name: KEEP_DAYS
@@ -452,7 +452,7 @@ spec:
                 - name: NAME
                   value: home-assistant
                 - name: EXCLUDES
-                  value: "./home-assistant_v2.db* ./home-assistant.log* ./deps ./.cache ./tts"
+                  value: "./home-assistant_v2.db* ./home-assistant.log* ./deps ./.cache ./tts ./backups"
                 - name: REQUIRED
                   value: ".storage/core.config_entries .storage/core.device_registry"
                 - name: KEEP_DAYS
