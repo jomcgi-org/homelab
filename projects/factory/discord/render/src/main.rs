@@ -124,11 +124,22 @@ fn svg_side(lower: &str) -> Option<f64> {
     let fits = |n: f64| n > 0.0 && n <= MAX_SIDE;
     let mut from_view_box = false;
     let mut side: f64 = 0.0;
+    // A percentage side scales the viewBox's; the largest one counts.
+    let mut percent: f64 = 1.0;
     for name in ["width", "height"] {
         match attribute(root, name) {
-            // Relative sizes, as icons use, draw at the viewBox's size.
-            Some(v) if ["%", "em", "ex"].iter().any(|unit| v.ends_with(unit)) => {
+            Some(v) if v.ends_with('%') => {
+                let n = v[..v.len() - 1].trim().parse::<f64>().ok()?;
+                percent = percent.max(n / 100.0);
                 from_view_box = true
+            }
+            // An em or ex side is that many font sizes; count 16 px each.
+            Some(v) if v.ends_with("em") || v.ends_with("ex") => {
+                let n = v[..v.len() - 2].trim().parse::<f64>().ok()?;
+                side = side.max(n * 16.0);
+                if !fits(side) {
+                    return None;
+                }
             }
             Some(v) => {
                 let number = v.strip_suffix("px").unwrap_or(&v).trim();
@@ -141,18 +152,22 @@ fn svg_side(lower: &str) -> Option<f64> {
     if !from_view_box {
         return Some(side);
     }
-    match attribute(root, "viewbox") {
-        None => Some(side.max(100.0)),
+    let view_side = match attribute(root, "viewbox") {
+        None => 100.0,
         Some(v) => {
             let numbers: Vec<f64> = v
                 .split(|c: char| c.is_ascii_whitespace() || c == ',')
                 .filter(|part| !part.is_empty())
                 .filter_map(|part| part.parse().ok())
                 .collect();
-            (numbers.len() == 4 && fits(numbers[2]) && fits(numbers[3]))
-                .then(|| side.max(numbers[2]).max(numbers[3]))
+            if numbers.len() != 4 || !fits(numbers[2]) || !fits(numbers[3]) {
+                return None;
+            }
+            numbers[2].max(numbers[3])
         }
-    }
+    };
+    let side = side.max(view_side * percent);
+    fits(side).then_some(side)
 }
 
 // merge_theme writes each house value over the chart's config, so a chart
@@ -269,18 +284,25 @@ fn render(req: &mut Request, dir: &Path) -> Result<File, Failure> {
     let output = dir.join("output.png");
     let job = worker(req.url(), &body, &input, &drawing)?;
     fs::write(&input, &job.input).map_err(|_| INTERNAL)?;
-    let drawing: PathBuf = match job.command {
+    // An agent's SVG has no drawing step, so its raster gets the whole
+    // deadline.
+    let (drawing, raster_seconds): (PathBuf, &str) = match job.command {
         Some(process) => {
             run(process)?;
-            drawing
+            (drawing, "2")
         }
-        None => input,
+        None => (input, "5"),
     };
-    let svg = fs::read(&drawing).map_err(|_| INTERNAL)?;
-    let side = svg_side(&String::from_utf8_lossy(&svg).to_ascii_lowercase())
+    // The root tag starts the converters' drawings; svg_allowed has read
+    // the whole of an agent's SVG, so its first 64 KiB hold the root.
+    let mut head = Vec::new();
+    File::open(&drawing)
+        .and_then(|file| file.take(LIMIT as u64).read_to_end(&mut head))
+        .map_err(|_| INTERNAL)?;
+    let side = svg_side(&String::from_utf8_lossy(&head).to_ascii_lowercase())
         .ok_or((422, "PNG exceeds output bounds"))?;
     let scale = if side * SCALE <= MAX_SIDE { "2" } else { "1" };
-    let mut raster = deadline("2");
+    let mut raster = deadline(raster_seconds);
     raster
         .args(["vl-convert", "svg2png", "--scale", scale, "-i"])
         .arg(&drawing)
@@ -425,6 +447,13 @@ mod tests {
         assert_eq!(svg_side(r#"<svg viewbox="0 0 24 24" width="1em">"#), Some(24.0));
         assert_eq!(svg_side("<svg>"), Some(100.0));
         assert_eq!(svg_side(r#"<svg width="5000" height="10">"#), None);
+        assert_eq!(
+            svg_side(r#"<svg width="200%" height="200%" viewbox="0 0 2048 2048">"#),
+            Some(4096.0)
+        );
+        assert_eq!(svg_side(r#"<svg width="300%" viewbox="0 0 2048 10">"#), None);
+        assert_eq!(svg_side(r#"<svg width="200em" viewbox="0 0 24 24">"#), Some(3200.0));
+        assert_eq!(svg_side(r#"<svg width="300em">"#), None);
     }
 
     #[test]
