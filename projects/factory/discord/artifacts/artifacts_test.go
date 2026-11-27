@@ -247,6 +247,8 @@ func TestPutRefusals(t *testing.T) {
 	cases := map[string]map[string]any{
 		"other server":       {"server": "1111111111111111111"},
 		"library prefix":     {"server": "_lib"},
+		"private spelling":   {"server": "Private"},
+		"private traversal":  {"server": "private/.."},
 		"bad channel":        {"channel": "general"},
 		"traversal":          {"path": "../a.html"},
 		"hidden segment":     {"path": ".well-known/a.html"},
@@ -282,5 +284,34 @@ func TestContentTypeComesFromTheExtension(t *testing.T) {
 		if err != nil || got != want {
 			t.Errorf("%s: %q %v, want %q", p, got, err, want)
 		}
+	}
+}
+
+// A private file goes under private/<channel>/, which the edge serves to
+// authentik Admins only; list and delete see the same folder.
+func TestPrivateFilesGoUnderPrivate(t *testing.T) {
+	srv, fake := setup(t)
+	res := call(t, srv.URL, "put", map[string]any{
+		"server": "private", "channel": channel, "path": "notes.md", "content": "# mine",
+	})
+	key := "private/" + channel + "/notes.md"
+	if res["isError"] != false || res["structuredContent"].(map[string]any)["url"] != "https://artifact.jomcgi.dev/"+key {
+		t.Fatalf("private put: %v", res)
+	}
+	if string(fake.objects[key].body) != "# mine" {
+		t.Fatalf("stored %v", fake.objects)
+	}
+	res = call(t, srv.URL, "list", map[string]any{"server": "private", "channel": channel})
+	listed := res["structuredContent"].(map[string]any)["artifacts"].([]any)
+	if len(listed) != 1 || listed[0].(map[string]any)["path"] != "notes.md" {
+		t.Fatalf("list %v", listed)
+	}
+	res = call(t, srv.URL, "list", map[string]any{"server": guild, "channel": channel})
+	if n := len(res["structuredContent"].(map[string]any)["artifacts"].([]any)); n != 0 {
+		t.Fatalf("server folder lists %d private files", n)
+	}
+	res = call(t, srv.URL, "delete", map[string]any{"server": "private", "channel": channel, "path": "notes.md"})
+	if res["isError"] != false || len(fake.objects) != 0 {
+		t.Fatalf("delete: %v %v", res, fake.objects)
 	}
 }

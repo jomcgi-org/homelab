@@ -10,6 +10,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from django.db import connections
+from requests import Session
 from django.test import Client
 from django.urls import reverse
 
@@ -72,7 +73,9 @@ def sessions(username):
     return AuthenticatedSession.objects.filter(user__username=username).count()
 
 
-def callback(browser, identifier, email="friend@example.org", provider="discord"):
+def callback(
+    browser, identifier, email="friend@example.org", provider="discord", guilds=()
+):
     profile = {
         "id": identifier,
         "username": "friend",
@@ -85,6 +88,14 @@ def callback(browser, identifier, email="friend@example.org", provider="discord"
             OAuth2Client, "get_access_token", return_value={"access_token": "fixture"}
         ),
         patch.object(OAuth2Client, "get_profile_info", return_value=profile),
+        # discord-properties reads the user's servers; no test reaches Discord.
+        patch.object(
+            Session,
+            "get",
+            return_value=SimpleNamespace(
+                status_code=200, json=lambda: [{"id": g} for g in guilds]
+            ),
+        ),
     ):
         return browser.get(f"/source/oauth/callback/{provider}/")
 
@@ -264,3 +275,48 @@ def exercise_application():
 
 
 exercise_application()
+
+
+def exercise_server_groups():
+    # Discord sign-in sets the discord-<server-id> groups to the user's
+    # allowlisted servers, adds and removes them at each sign-in, and leaves
+    # other groups alone.
+    homelab, loom = "1501965852042330302", "1512814732392927463"
+    browser = Client(HTTP_HOST="localhost")
+    joined = (homelab, loom, "999999999999999999")
+    assert (
+        callback(browser, "61", "member@example.org", guilds=joined).status_code == 302
+    )
+    advance(browser, browser.get(executor("enrollment")))
+    user = User.objects.get(username="discord-61")
+    assert sorted(user.groups.values_list("name", flat=True)) == [
+        "discord-" + homelab,
+        "discord-" + loom,
+    ]
+    edge = Application.objects.get(slug="factory-edge")
+    assert PolicyEngine(edge, user).build().result.passing
+    assert (
+        not PolicyEngine(Application.objects.get(slug="factory-kubectl"), user)
+        .build()
+        .result.passing
+    )
+
+    viewers = Group.objects.get(name="factory-kube-viewers")
+    user.groups.add(viewers)
+    url = executor("authentication")
+    browser = Client(HTTP_HOST="localhost")
+    assert (
+        callback(browser, "61", "member@example.org", guilds=(loom,)).status_code == 302
+    )
+    challenge = advance(browser, browser.get(url))
+    assert challenge["component"] == "ak-stage-authenticator-totp"
+    finish_setup(browser, url, challenge)
+    assert sorted(user.groups.values_list("name", flat=True)) == [
+        "discord-" + loom,
+        "factory-kube-viewers",
+    ]
+    marked = Group.objects.get(name="discord-" + loom)
+    assert marked.attributes["discord_server_id"] == loom
+
+
+exercise_server_groups()

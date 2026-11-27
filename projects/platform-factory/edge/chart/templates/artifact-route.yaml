@@ -1,15 +1,57 @@
 {{- /*
 Bosun's artifacts at artifact.jomcgi.dev (projects/factory/discord/artifacts):
-Garage's website endpoint for bucket bosun-artifacts, for authentik Admins
-only. Every file is untrusted: an agent wrote it from prompts that hold other
-people's Discord text. So every response gets a CSP sandbox without
-allow-same-origin: the page runs in an opaque origin, with no cookies, no
-storage and no same-origin reads of other artifacts. Without allow-forms and
-allow-top-navigation it can post no form and cannot navigate a frame above
-it. Pages must inline their assets: CORP same-origin also stops them from
-loading other artifacts, and the fetch directives (values.yaml) stop a page from
-reaching any other origin. The backend gets no cookie and can set none.
+Garage's website endpoint for bucket bosun-artifacts. Every file is
+untrusted: an agent wrote it from prompts that hold other people's Discord
+text. So every response gets a CSP sandbox without allow-same-origin: the
+page runs in an opaque origin, with no cookies, no storage and no same-origin
+reads of other artifacts. Without allow-forms and allow-top-navigation it can
+post no form and cannot navigate a frame above it. Pages must inline their
+assets: CORP same-origin also stops them from loading other artifacts, and
+the fetch directives (values.yaml) stop a page from reaching any other
+origin. The backend gets no cookie and can set none.
+
+Who may read (HOME-917):
+
+  /<server-id>/...  members of Authentik group discord-<server-id>, and
+                    authentik Admins (one route rule and policy per server)
+  /_lib/...         anyone, GET and HEAD (route artifact-lib below)
+  everything else   authentik Admins only (rule "admins"), private/ included
+
+Each policy targets one route rule and merges (JSONMerge) into the
+gateway-wide edge-authentik-oidc policy, so every rule shares that policy's
+sign-in and cookies; a merged policy replaces only the authorization rules.
+A Discord member's groups sync at each Discord sign-in
+(projects/platform/authentik/factory-blueprints/factory-social.yaml).
 */}}
+{{- define "edge.artifactFilters" -}}
+# Garage picks the bucket from Host (garage.toml [s3_web]).
+- type: URLRewrite
+  urlRewrite:
+    hostname: {{ .Values.artifacts.garageHost }}
+- type: RequestHeaderModifier
+  requestHeaderModifier:
+    remove: [Cookie, Authorization]
+- type: ResponseHeaderModifier
+  responseHeaderModifier:
+    set:
+      - name: Content-Security-Policy
+        value: {{ .Values.artifacts.contentSecurityPolicy | quote }}
+      - name: X-Content-Type-Options
+        value: nosniff
+      - name: Referrer-Policy
+        value: no-referrer
+      - name: Cross-Origin-Resource-Policy
+        value: same-origin
+    remove: [Set-Cookie, Access-Control-Allow-Origin]
+{{- end -}}
+{{- define "edge.artifactBackend" -}}
+- group: ""
+  kind: Service
+  name: garage-web
+  namespace: garage
+  port: 3902
+  weight: 1
+{{- end -}}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -25,37 +67,26 @@ spec:
       sectionName: http
   hostnames: [{{ .Values.artifacts.hostname }}]
   rules:
-    - matches:
+    {{- range .Values.artifacts.servers }}
+    - name: server-{{ . }}
+      matches:
+        - path:
+            type: PathPrefix
+            value: /{{ . }}/
+      filters:
+        {{- include "edge.artifactFilters" $ | nindent 8 }}
+      backendRefs:
+        {{- include "edge.artifactBackend" $ | nindent 8 }}
+    {{- end }}
+    - name: admins
+      matches:
         - path:
             type: PathPrefix
             value: /
       filters:
-        # Garage picks the bucket from Host (garage.toml [s3_web]).
-        - type: URLRewrite
-          urlRewrite:
-            hostname: {{ .Values.artifacts.garageHost }}
-        - type: RequestHeaderModifier
-          requestHeaderModifier:
-            remove: [Cookie, Authorization]
-        - type: ResponseHeaderModifier
-          responseHeaderModifier:
-            set:
-              - name: Content-Security-Policy
-                value: {{ .Values.artifacts.contentSecurityPolicy | quote }}
-              - name: X-Content-Type-Options
-                value: nosniff
-              - name: Referrer-Policy
-                value: no-referrer
-              - name: Cross-Origin-Resource-Policy
-                value: same-origin
-            remove: [Set-Cookie, Access-Control-Allow-Origin]
+        {{- include "edge.artifactFilters" . | nindent 8 }}
       backendRefs:
-        - group: ""
-          kind: Service
-          name: garage-web
-          namespace: garage
-          port: 3902
-          weight: 1
+        {{- include "edge.artifactBackend" . | nindent 8 }}
 ---
 {{- /*
 The pinned libraries artifact pages load (projects/factory/discord/libs),
@@ -136,17 +167,24 @@ spec:
       name: artifact-lib
   authorization:
     defaultAction: Allow
+{{- range $rule := concat (list "admins") .Values.artifacts.servers }}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
-  name: artifact-authentik-oidc
-  namespace: {{ .Release.Namespace }}
+  name: {{ ternary "artifact-admins" (printf "artifact-server-%s" $rule) (eq $rule "admins") }}
+  namespace: {{ $.Release.Namespace }}
 spec:
   targetRefs:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: artifact
-  {{- include "edge.operatorAuthorization" (dict "Values" .Values "adminOnly" true) | nindent 2 }}
-  oidc:
-    {{- include "edge.oidc" . | nindent 4 }}
+      sectionName: {{ ternary "admins" (printf "server-%s" $rule) (eq $rule "admins") }}
+  # Keep the gateway policy's OIDC sign-in and replace its authorization.
+  mergeType: JSONMerge
+  {{- if eq $rule "admins" }}
+  {{- include "edge.operatorAuthorization" (dict "Values" $.Values "adminOnly" true) | nindent 2 }}
+  {{- else }}
+  {{- include "edge.operatorAuthorization" (dict "Values" $.Values "adminOnly" true "extraGroups" (list (printf "discord-%s" $rule))) | nindent 2 }}
+  {{- end }}
+{{- end }}

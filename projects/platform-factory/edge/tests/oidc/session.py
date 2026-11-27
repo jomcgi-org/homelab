@@ -8,7 +8,7 @@ import time
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 
-def session(host, subject, expected=200):
+def session(host, subject, expected=200, path="/"):
     cookies = SimpleCookie()
 
     def get(path):
@@ -31,7 +31,6 @@ def session(host, subject, expected=200):
         conn.close()
         return response.status, response.getheader("Location"), body
 
-    path = "/"
     # Routes reach the data plane asynchronously. Retry only the unsigned
     # first request; callback, authorization and upstream assertions run once.
     deadline = time.monotonic() + 60
@@ -69,7 +68,7 @@ def session(host, subject, expected=200):
             host,
             status,
         )
-    print(host, subject, status)
+    print(host, path, subject, status)
     return get
 
 
@@ -89,6 +88,31 @@ session("factory.jomcgi.dev", "factory-operator")
 admin_request = session("t3.jomcgi.dev", "operator")
 for role in ["factory-operator", "applicant"]:
     session("t3.jomcgi.dev", role, expected=403)
+
+# artifact.jomcgi.dev: a Discord server's members read its folder only.
+# Each folder's policy merges into the gateway sign-in, so one session made
+# on any path is valid on every path; authorization decides per folder.
+homelab, other = "1501965852042330302", "185442367703220224"
+member = session("artifact.jomcgi.dev", "member", path=f"/{homelab}/page.html")
+for path in [
+    f"/{other}/page.html",
+    "/private/page.html",
+    "/",
+    f"/{homelab}/../private/page.html",
+    f"/{homelab}page.html",
+]:
+    status, _, _ = member(path)
+    assert status == 403, (path, status)
+    print("artifact.jomcgi.dev", path, "member", status)
+admin = session("artifact.jomcgi.dev", "operator", path="/private/page.html")
+for path in [f"/{other}/page.html", f"/{homelab}/page.html", "/"]:
+    status, _, body = admin(path)
+    assert status == 200 and json.loads(body) == {"authorization": None}, (path, status)
+    print("artifact.jomcgi.dev", path, "operator", status)
+for role in ["factory-operator", "applicant"]:
+    session("artifact.jomcgi.dev", role, expected=403, path=f"/{homelab}/page.html")
+# The member's groups admit them on no other host.
+session("factory.jomcgi.dev", "member", expected=403)
 
 # The signed admin cookie used above must fail closed if the route policy is gone.
 subprocess.run(

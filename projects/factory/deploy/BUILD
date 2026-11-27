@@ -13,6 +13,7 @@ filegroup(
         "//projects/factory/chart/admission:__pkg__",
         "//projects/factory/harness/claude:__pkg__",
         "//projects/factory/harness/codex:__pkg__",
+        "//projects/platform/authentik:__pkg__",
     ],
 )
 

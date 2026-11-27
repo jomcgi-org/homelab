@@ -447,8 +447,52 @@ Options, recommended first:
 The homelab agent can publish a page or file and give Joe a link. The
 `bosun-artifacts` MCP server (`artifacts/`, chart
 `discord-artifacts.yaml`) writes to Garage bucket `bosun-artifacts`.
-Garage's website endpoint serves it at `https://artifact.jomcgi.dev` for
-`authentik Admins` only.
+Garage's website endpoint serves it at `https://artifact.jomcgi.dev`.
+
+**Who can open a file (HOME-917).** A Discord sign-in at
+`factory-auth.jomcgi.dev` puts a person in Authentik group
+`discord-<server-id>` for each allowlisted server they are in. The edge
+then admits them to that server's folder:
+
+| Path | Readers |
+| --- | --- |
+| `/<server-id>/<channel-id>/…` | Group `discord-<server-id>`, and `authentik Admins` |
+| `/private/<channel-id>/…` | `authentik Admins` only |
+| `/_lib/…` (pinned public libraries, GET and HEAD) | Anyone, no sign-in |
+| Every other path | `authentik Admins` only |
+
+A member sees no other host: the gateway-wide policy admits only
+`authentik Admins` and `factory-operators`. Bosun files a page under the
+current message's server ID. It uses `private` when Joe asks for a private
+file, or when the file holds a direct message or text from a channel that
+some members cannot read. The folder is per server, not per channel: every
+member of the server can open every file in it.
+
+```mermaid
+sequenceDiagram
+  participant F as Friend's browser
+  participant E as Edge (Envoy)
+  participant A as Authentik
+  participant D as Discord
+  F->>E: GET /<server-id>/<channel>/page.html
+  E->>A: no session: sign in (factory-edge)
+  A->>D: Discord OAuth, scopes identify email guilds
+  D-->>A: profile, then /users/@me/guilds
+  A->>A: set discord-<id> groups to the allowlisted servers
+  A-->>E: ID token, groups claim (10 min)
+  E->>E: rule server-<id>: group discord-<id> or Admins
+  E-->>F: page from Garage, CSP sandbox
+```
+
+**Membership changes.** Groups sync at each Discord sign-in, never in
+between. The Discord sign-in session lasts 24 hours
+(`factory-social.yaml`, `session_duration`), and Envoy keeps the ID token
+for 10 minutes before it returns to Authentik. So a person who leaves a
+server keeps its folder for at most 24 hours and 10 minutes. A person who
+joins a server sees its folder after their next Discord sign-in. A failed
+server lookup gives no server groups until the next sign-in. To remove
+access at once, remove the person from the group in Authentik, or end their
+session there. Sign-in with GitHub or Google changes no server group.
 
 ```mermaid
 flowchart LR
@@ -463,7 +507,10 @@ flowchart LR
 | Control | Where |
 | --- | --- |
 | Only routed server agents' actors call the tools: actor JWT with audience `bosun-artifacts`, atespace in `ACTOR_JWT_ATESPACES` | `artifacts/mcp.go`, broker's `actorjwt` |
-| Files go under `<server>/<channel>/`; the server must be a `bridge.policy.guilds` key, the channel a snowflake | `artifacts/artifacts.go` |
+| Files go under `<server>/<channel>/` or `private/<channel>/`; the server must be a `bridge.policy.guilds` key or `private`, the channel a snowflake | `artifacts/artifacts.go` |
+| Discord sign-in sets the `discord-<server-id>` groups (blueprint groups marked `discord_server_id`) from the `guilds` scope; it adds and removes them at each sign-in | Authentik `factory-social.yaml`, `factory-auth.yaml` |
+| The edge token's `groups` claim holds only the groups the edge checks | Authentik `factory-auth.yaml` `factory-edge-profile` |
+| One route rule and SecurityPolicy per server folder; each merges into the gateway sign-in and allows only its group and `authentik Admins`; default deny | edge `artifact-route.yaml` |
 | Extensions `.html .md .txt .csv .json .svg .png`; the type comes from the extension; at most 2 MiB; PNG checked by magic bytes; Markdown served as plain text | `artifacts/artifacts.go` |
 | Bucket quota 2 GiB and 20,000 objects; website access on this bucket and `bosun-libs` only | `garage_init.py` `WEBSITES` |
 | Every response: `Content-Security-Policy: sandbox allow-scripts allow-popups` with fetch directives that allow only inline and `data:` content, and scripts from `https://artifact.jomcgi.dev/_lib/`, `nosniff`, `Referrer-Policy: no-referrer`, `CORP: same-origin`; `Set-Cookie` and `Access-Control-Allow-Origin` removed; `Cookie` and `Authorization` not sent to Garage | edge `artifact-route.yaml` |
@@ -507,11 +554,31 @@ template with Joe's architecture diagram and a chart.
 artifact into a PNG for Discord is deferred (HOME-909). Bosun posts
 the artifact's link with a one-line summary.
 
-The prefix is not a security boundary. One homelab session answers Joe in
-all four servers (`servers: all`), so the actor JWT names the homelab
-atespace for every turn. The JWT does not carry the server or channel, so
-the caller states them. The server allowlist bounds them. Joe is the only
-reader.
+**Trust limit.** The edge enforces the folders, but the caller picks the
+folder. One homelab session answers Joe in all four servers
+(`servers: all`), so the actor JWT names the homelab atespace for every
+turn. The JWT does not carry the server or channel, so the caller states
+them, and the server allowlist bounds them. A wrong or injected server ID
+puts a file in another server's folder. This is safe while only Joe
+triggers Bosun (`bridge.policy.users: operator`): Joe asked for the file
+and reads where it went. Before Bosun answers other people, the bridge must
+bind the server to the turn.
+
+**Add a server.** Add the guild ID in all three lists, in one PR;
+`//projects/platform/authentik:discord_server_groups_test` checks that they
+match:
+
+1. `projects/factory/deploy/values.yaml` `discord.bridge.policy.guilds`
+   (a Joe-gated path).
+2. `projects/platform/authentik/factory-blueprints/factory-auth.yaml`: a
+   `discord-<id>` group with attribute `discord_server_id: "<id>"`, and its
+   `edge-app` policy binding.
+3. `projects/platform-factory/edge/chart/values.yaml` `artifacts.servers`.
+
+Members get the group at their next Discord sign-in. To remove a server,
+remove it from the bridge and edge lists, and set its group and binding
+entries to `state: absent` (Authentik keeps an object whose blueprint entry
+is only deleted). Its folder is then Admins-only.
 
 **Wiring.** Deploy values bind it to the homelab agent
 (`discord.serverAgents.homelab.mcpServers`, HOME-915): a RemoteMCPServer

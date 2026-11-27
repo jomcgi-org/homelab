@@ -54,15 +54,21 @@ type Store struct {
 	Servers map[string]bool
 }
 
-// Place is the server and channel prefix a call works in.
+// Private is the server value for a file only Joe can open.
+const Private = "private"
+
+// Place is the server and channel prefix a call works in. Server is the
+// current message's Discord server ID or Private. The edge serves
+// /<server>/ to that server's Authentik group and authentik Admins, and
+// every other path, private/ included, to authentik Admins only.
 type Place struct {
 	Server  string `json:"server"`
 	Channel string `json:"channel"`
 }
 
 func (s *Store) prefix(p Place) (string, error) {
-	if !snowflake.MatchString(p.Server) || !s.Servers[p.Server] {
-		return "", &ParamError{"server", "must be the ID of an allowlisted Discord server"}
+	if p.Server != Private && (!snowflake.MatchString(p.Server) || !s.Servers[p.Server]) {
+		return "", &ParamError{"server", "must be the ID of an allowlisted Discord server, or private"}
 	}
 	if !snowflake.MatchString(p.Channel) {
 		return "", &ParamError{"channel", "must be a Discord channel ID"}
