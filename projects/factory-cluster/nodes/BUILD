@@ -4,6 +4,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # gazelle:exclude install_t3_socket_test.py
 # gazelle:exclude node_disk_gc_test.py
 # gazelle:exclude node_ksm_off_test.py
+# gazelle:exclude pod_security_test.py
 # The node installer executes this host helper outside Bazel.
 # gazelle:exclude factory-session-token.py
 
@@ -43,4 +44,19 @@ py_test(
         "ksm-off.sh",
     ],
     deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "pod_security_test",
+    srcs = ["pod_security_test.py"],
+    data = [
+        "bootstrap-nodes.sh",
+        "install-node.sh",
+        "k3s-config.yaml",
+        "pod-security.yaml",
+    ],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )

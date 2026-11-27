@@ -31,3 +31,10 @@ invariants:
   - projects/factory-cluster/substrate-ca-rotation.md
   - projects/factory-cluster/rehearse-substrate-ca.sh
   state: unproven
+- id: CLUS-7
+  statement: A pod in a namespace with no Pod Security label must meet the baseline level, except in the namespaces that pod-security.yaml exempts.
+  mechanism:
+  - projects/factory-cluster/nodes/pod-security.yaml
+  - projects/factory-cluster/nodes/k3s-config.yaml
+  test: //projects/factory-cluster/nodes:pod_security_test
+  state: unproven

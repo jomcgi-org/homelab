@@ -55,6 +55,9 @@ kube-apiserver-arg:
   # Authentik ID tokens for kubectl at factory-kube.jomcgi.dev
   # (authentication-config.yaml, installed beside this file).
   - "authentication-config=/etc/rancher/k3s/authentication-config.yaml"
+  # Pod Security defaults: baseline for every namespace without a label
+  # (pod-security.yaml, installed beside this file).
+  - "admission-control-config-file=/etc/rancher/k3s/pod-security.yaml"
 
 kubelet-arg:
   - "pod-max-pids=4096"

@@ -12,6 +12,9 @@ metadata:
   name: substrate-microvm-spike
   labels:
     factory.jomcgi.dev/substrate-workers: "true"
+    # gVisor workers need SYS_ADMIN and no seccomp profile, which the cluster
+    # default (projects/factory-cluster/nodes/pod-security.yaml) forbids.
+    pod-security.kubernetes.io/enforce: privileged
 ---
 # Worker pods run as this account, with no API token.
 apiVersion: v1
