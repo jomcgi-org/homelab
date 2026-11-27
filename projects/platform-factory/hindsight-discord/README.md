@@ -27,8 +27,10 @@ variant of the factory Hindsight's extension, binds it to the four servers'
 banks and to `recall`; `HINDSIGHT_API_MCP_ENABLED_TOOLS=recall` registers no
 other tool. The homelab Hermes agent calls the multi-bank endpoint `/mcp/`
 and names the bank in each call's `bank_id`. A middleware refuses a recall
-without `bank_id` before it runs, and a session fixed to a bank by URL path
-or `X-Bank-Id` gets no tools, because its recall ignores `bank_id`. The token
+without `bank_id` before it runs, and a session whose URL path or
+`X-Bank-Id` resolves to a bound bank gets no tools, because its recall
+ignores `bank_id`. So the fallback bank (`HINDSIGHT_MCP_BANK_ID`, unset here,
+or an alias named `default`) must stay outside the binding. The token
 cannot reach REST, retain, reflect or delete. Recall results come back
 wrapped as `<untrusted_memory>`. The key Job copies the token only to
 `discord-1501965852042330302/hindsight-discord-recall`, labelled for
