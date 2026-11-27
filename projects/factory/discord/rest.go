@@ -98,7 +98,8 @@ type Reply struct {
 	Files []File `json:"-"`
 }
 
-// NewReply builds a reply to message id that cannot ping anyone, clipped to Discord's limit.
+// NewReply builds a reply to message id that cannot ping anyone, clipped to
+// Discord's limit.
 func NewReply(text, replyTo string) Reply {
 	text = strings.TrimSpace(text)
 	if text == "" {
