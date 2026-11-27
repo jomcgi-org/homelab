@@ -1773,9 +1773,10 @@ def test_discord_server_agent_prompt_sets_visual_style() -> None:
     prompt = " ".join(agent["template"]["inline"]["systemPrompt"].split())
     for line in (
         "never set a theme or init",
-        "Tell one story per diagram: at most about 10 nodes",
+        "one story of about 10 nodes at most",
         "no emoji in Mermaid",
         "start from the template tool's HTML",
+        "post its link with a one-line summary",
         "Discord shows no Markdown tables, headings below ###, or HTML",
         "Never invent motives, quotes or facts about real people",
     ):

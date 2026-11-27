@@ -274,7 +274,7 @@ def record_garage(monkeypatch, info):
 
 
 def test_only_listed_buckets_serve_a_website_with_a_quota(monkeypatch):
-    assert set(INIT.WEBSITES) == {"bosun-artifacts"}
+    assert set(INIT.WEBSITES) == {"bosun-artifacts", "bosun-libs"}
     calls = record_garage(monkeypatch, {"websiteAccess": False, "quotas": {}})
     INIT.ensure_website("id1", "bosun-artifacts")
     max_size, max_objects = INIT.WEBSITES["bosun-artifacts"]

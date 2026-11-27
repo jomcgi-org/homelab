@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Self-test: architecture</title>
+    <style>
+      /* House tokens, the same palette as the Discord renderer. The page may
+         load scripts only from /_lib/; inline everything else. */
+      :root {
+        color-scheme: light dark;
+        --bg: #f8fafc;
+        --surface: #ffffff;
+        --border: #e2e8f0;
+        --text: #0f172a;
+        --muted: #475569;
+        --accent: #2a78d6;
+        --node: #eef2f7;
+        --node-border: #94a3b8;
+        --line: #64748b;
+        --group: #f8fafc;
+        --s1: #2a78d6;
+        --s2: #eb6834;
+        --s3: #1baf7a;
+        --s4: #eda100;
+        --s5: #e87ba4;
+        --s6: #008300;
+        --s7: #6250d6;
+        --s8: #e34948;
+        --radius: 12px;
+        --font:
+          Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+          "Noto Color Emoji", sans-serif;
+        --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b1120;
+          --surface: #111827;
+          --border: #1f2937;
+          --text: #e5e7eb;
+          --muted: #9ca3af;
+          --accent: #3987e5;
+          --node: #1e293b;
+          --node-border: #475569;
+          --line: #94a3b8;
+          --group: #0f172a;
+          --s1: #3987e5;
+          --s2: #d95926;
+          --s3: #199e70;
+          --s4: #c98500;
+          --s5: #d55181;
+          --s6: #0ca30c;
+          --s7: #9085e9;
+          --s8: #e66767;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 16px/1.55 var(--font);
+      }
+      /* 960 px of content: a 1200 px screenshot keeps text readable in
+         Discord. */
+      main {
+        max-width: 1008px;
+        margin: 0 auto;
+        padding: 32px 24px 48px;
+      }
+      h1 {
+        font-size: 28px;
+        line-height: 1.2;
+        margin: 0 0 4px;
+        letter-spacing: -0.01em;
+      }
+      h2 {
+        font-size: 18px;
+        margin: 28px 0 8px;
+      }
+      .lede {
+        color: var(--muted);
+        margin: 0 0 20px;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px 20px;
+        margin: 12px 0;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+      }
+      .stat b {
+        display: block;
+        font-size: 26px;
+        font-variant-numeric: tabular-nums;
+      }
+      .stat span {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 15px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border);
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+      }
+      td.num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      code,
+      pre {
+        font-family: var(--mono);
+        font-size: 14px;
+      }
+      pre.mermaid {
+        font-family: var(--font);
+        margin: 0;
+        text-align: center;
+        /* The source shows only until the diagram replaces it. */
+        color: transparent;
+      }
+      .chart {
+        width: 100%;
+      }
+      .error {
+        color: var(--s8);
+      }
+      a {
+        color: var(--accent);
+      }
+      footer {
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: 32px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Self-test: query platform architecture</h1>
+      <p class="lede">
+        The house template with its pinned libraries. The diagram and the chart
+        render in the browser.
+      </p>
+
+      <h2>Diagram</h2>
+      <div class="card">
+        <!-- One Mermaid diagram per pre.mermaid. Groups (subgraph) and
+             fan-out lay out cleanly with the ELK layout. -->
+        <pre class="mermaid">
+flowchart LR
+  UI[Client / UI] -- HTTP --> API[Query API<br>governance chokepoint]
+  API --> DF[DataFusion engine]
+  DF --> ICE[(Iceberg tables<br>S3 / MinIO)]
+  ING[Ingest] -- Arrow → Parquet --> ICE
+  subgraph CP[Control plane]
+    Q[Queue + worker]
+    CAT[Catalog]
+    ONT[Ontology]
+    ACL[ACL]
+    LIN[Lineage]
+  end
+  CP --> PG[(Postgres)]
+  API --> CAT
+  API --> ONT
+  API --> ACL
+  API --> LIN
+  DF --> CAT
+  ING --> Q
+  ING --> CAT
+        </pre>
+      </div>
+
+      <h2>Chart</h2>
+      <div class="card">
+        <!-- One Vega-Lite spec per script block, with inline data. The page
+             sets the theme, so leave out config. -->
+        <script type="application/json" class="vega-lite">
+          {
+            "data": {
+              "values": [
+                { "k": "A", "n": 3 },
+                { "k": "B", "n": 7 }
+              ]
+            },
+            "mark": "bar",
+            "encoding": {
+              "x": { "field": "k", "type": "nominal", "title": null },
+              "y": { "field": "n", "type": "quantitative", "title": "Count" }
+            }
+          }
+        </script>
+      </div>
+
+      <footer>
+        Uploaded by the bosun-libs Job (projects/factory/discord/libs).
+      </footer>
+    </main>
+    <!-- Pinned libraries; keep these four tags as they are. -->
+    <script
+      src="/_lib/mermaid-12.3.0.min.js"
+      integrity="sha384-HHW54r639fK42Ip0coGF3mz8oSiGn0eEoWNTLs75X7H63pLSDBa0Tqs0RwGmLlXE"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/vega-6.4.0.min.js"
+      integrity="sha384-VKdcJr3ZaBIJMbVcopTAI/JEuUkSY6qnwVu9iLuw0DnQ9gQ1JjsfZJhXFQAgNi43"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/vega-lite-6.5.0.min.js"
+      integrity="sha384-pV2l7nzmyxZh02knvUH7N8zvtyCYsYiGt+SsE/emG/dFiBI6G0YJZFZ2FzEX72P3"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/vega-embed-7.3.0.min.js"
+      integrity="sha384-Muy1QRxYFeNrA1zShc1KtN4OfipkR/61gt+HWqN57c1Zxu3Oe16TsilsruVVjfKL"
+      crossorigin="anonymous"
+    ></script>
+    <script>
+      // Renders every diagram and chart, then sets data-ready on <html>:
+      // the screenshot service waits for it.
+      (async () => {
+        const css = getComputedStyle(document.documentElement);
+        const token = (name) => css.getPropertyValue(name).trim();
+        const font = token("--font");
+        const series = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => token(`--s${n}`));
+        const fail = (el, err) => {
+          const p = document.createElement("p");
+          p.className = "error";
+          p.textContent = `Did not render: ${err && err.message ? err.message : err}`;
+          el.after(p);
+        };
+        try {
+          if (window.mermaid) {
+            mermaid.initialize({
+              startOnLoad: false,
+              securityLevel: "strict",
+              layout: "elk",
+              theme: "base",
+              fontFamily: font,
+              themeVariables: {
+                fontFamily: font,
+                fontSize: "15px",
+                background: token("--surface"),
+                primaryColor: token("--node"),
+                primaryBorderColor: token("--node-border"),
+                primaryTextColor: token("--text"),
+                secondaryColor: token("--node"),
+                tertiaryColor: token("--group"),
+                lineColor: token("--line"),
+                textColor: token("--text"),
+                clusterBkg: token("--group"),
+                clusterBorder: token("--border"),
+                edgeLabelBackground: token("--surface"),
+                actorBkg: token("--node"),
+                actorBorder: token("--node-border"),
+                noteBkgColor: token("--surface"),
+                noteBorderColor: token("--s4"),
+              },
+            });
+            for (const el of document.querySelectorAll("pre.mermaid")) {
+              try {
+                await mermaid.run({ nodes: [el] });
+              } catch (err) {
+                fail(el, err);
+              }
+            }
+          }
+          const text = {
+            labelColor: token("--muted"),
+            titleColor: token("--muted"),
+            labelFont: font,
+            titleFont: font,
+          };
+          for (const el of document.querySelectorAll(
+            'script[type="application/json"].vega-lite',
+          )) {
+            const div = document.createElement("div");
+            div.className = "chart";
+            el.after(div);
+            try {
+              const spec = JSON.parse(el.textContent);
+              // Fill the card unless the spec sets its own width.
+              if (spec.width === undefined) spec.width = "container";
+              await vegaEmbed(div, spec, {
+                actions: false,
+                renderer: "svg",
+                config: {
+                  background: null,
+                  font,
+                  autosize: { type: "fit-x", contains: "padding" },
+                  view: { stroke: null },
+                  axis: {
+                    ...text,
+                    domainColor: token("--border"),
+                    tickColor: token("--border"),
+                    gridColor: token("--border"),
+                  },
+                  legend: text,
+                  title: { color: token("--text"), font, anchor: "start" },
+                  text: { color: token("--text"), font },
+                  mark: { color: series[0] },
+                  bar: { color: series[0], cornerRadiusEnd: 4 },
+                  range: { category: series },
+                },
+              });
+            } catch (err) {
+              fail(div, err);
+            }
+          }
+        } finally {
+          document.documentElement.dataset.ready = "true";
+        }
+      })();
+    </script>
+  </body>
+</html>

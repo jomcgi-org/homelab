@@ -57,6 +57,81 @@ spec:
           port: 3902
           weight: 1
 ---
+{{- /*
+The pinned libraries artifact pages load (projects/factory/discord/libs),
+from bucket bosun-libs. Its SecurityPolicy turns off the gateway's sign-in:
+a sandboxed page has an opaque origin and sends no cookie, so its script
+requests cannot sign in. GET only. The files are public packages and a reviewed self-test page. CORS
+and a cross-origin CORP let the page check each script's integrity hash.
+The longer path prefix wins over the artifact route.
+*/}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: artifact-lib
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+      sectionName: http
+  hostnames: [{{ .Values.artifacts.hostname }}]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.artifacts.libsPath }}
+          method: GET
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            hostname: {{ .Values.artifacts.libsGarageHost }}
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove: [Cookie, Authorization]
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Content-Security-Policy
+                value: {{ .Values.artifacts.contentSecurityPolicy | quote }}
+              - name: X-Content-Type-Options
+                value: nosniff
+              - name: Referrer-Policy
+                value: no-referrer
+              - name: Cross-Origin-Resource-Policy
+                value: cross-origin
+              - name: Access-Control-Allow-Origin
+                value: "*"
+              - name: Cache-Control
+                value: public, max-age=86400
+            remove: [Set-Cookie]
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: garage-web
+          namespace: garage
+          port: 3902
+          weight: 1
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: artifact-lib-no-gateway-oidc
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: artifact-lib
+  authorization:
+    defaultAction: Allow
+---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
