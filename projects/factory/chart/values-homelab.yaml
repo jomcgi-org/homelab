@@ -469,14 +469,14 @@ discord:
       # One session per channel (Joe, 2026-11-27): up to 3 channels answer
       # at once, one worker each; idle sessions suspend.
       concurrency: 3
-      # Joe's tools (2026-11-27, HOME-915; server-agents.md "Tools"). Web
-      # search costs $0.01 a search plus its result tokens; web fetch costs
-      # tokens; code execution costs tokens and container time after the
-      # free monthly hours. Recall as a tool waits for a bank bound to the
-      # turn's server; factory MCP waits for factory-mcp (HOME-916).
+      # Joe's tools (2026-11-27, HOME-915; server-agents.md "Tools"). Code
+      # execution costs tokens and container time after the free monthly
+      # hours. Web search and fetch wait for Joe's decision on sending
+      # searches from a turn that holds server memories (server-agents.md,
+      # Open decisions); to turn them on add webSearch: {maxUses: 5} and
+      # webFetch: {maxUses: 3}. Recall as a tool waits for a bank bound to
+      # the turn's server; factory MCP waits for factory-mcp (HOME-916).
       serverTools:
-        webSearch: {maxUses: 5}
-        webFetch: {maxUses: 3}
         codeExecution: true
       mcpServers:
         # Public and read-only, with no sign-in (projects/scotland-connector).
