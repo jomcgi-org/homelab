@@ -379,7 +379,8 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 		// Answer without memory rather than not at all.
 		l.WarnContext(ctx, "recall failed", "error", err)
 	}
-	prompt := Prompt(m, b.Places.Lookup(m.GuildID, m.ChannelID), text, memories, recent, b.bot(), b.takeResults(m.ChannelID)...)
+	research := b.takeResults(m.ChannelID)
+	prompt := Prompt(m, b.Places.Lookup(m.GuildID, m.ChannelID), text, memories, recent, b.bot(), research...)
 	var answer string
 	if a, ok := b.Servers[m.GuildID]; ok {
 		// Each channel, a thread included, is one session (Joe, 2026-11-27).
@@ -389,6 +390,7 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	}
 	if err != nil {
 		l.WarnContext(ctx, "turn failed", "error", err)
+		b.restoreResults(m.ChannelID, research) // The next turn gets them.
 		b.reply(ctx, m, ReplyFailed)
 		return
 	}
