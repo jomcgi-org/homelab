@@ -1,3 +1,4 @@
+# invariant: CLUS-7
 # Pod Security defaults for every namespace on the factory cluster.
 #
 # Installed to /etc/rancher/k3s/pod-security.yaml by install-node.sh and read
