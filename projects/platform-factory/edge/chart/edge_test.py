@@ -10,6 +10,14 @@ import subprocess
 import pytest
 import yaml
 
+# The Discord servers with an artifact folder (values.yaml artifacts.servers).
+SERVERS = [
+    "185442367703220224",
+    "1290668195249917964",
+    "1501965852042330302",
+    "1512814732392927463",
+]
+
 
 @pytest.fixture(scope="module")
 def docs():
@@ -191,7 +199,8 @@ def test_only_kagent_forwards_the_access_token(docs):
         "kagent-authentik-oidc",
         "t3-authentik-oidc",
         "home-assistant-authentik-oidc",
-        "artifact-authentik-oidc",
+        "artifact-admins",
+        *(f"artifact-server-{server}" for server in SERVERS),
         "artifact-lib-no-gateway-oidc",
         "kube-api-authentik-jwt",
         "explore-api-authentik-jwt",
@@ -307,22 +316,26 @@ def test_household_is_admitted_on_home_assistant_only(docs):
             assert "household" not in str(doc.get("spec", {}))
 
 
-def test_artifacts_are_admin_only_and_sandboxed_on_every_response(docs):
+def test_artifacts_are_sandboxed_and_each_server_folder_admits_its_group(docs):
     route = docs["HTTPRoute", "artifact"]["spec"]
     assert route["hostnames"] == ["artifact.jomcgi.dev"]
-    (rule,) = route["rules"]
-    assert rule["matches"] == [{"path": {"type": "PathPrefix", "value": "/"}}]
-    assert rule["backendRefs"] == [
-        {
-            "group": "",
-            "kind": "Service",
-            "name": "garage-web",
-            "namespace": "garage",
-            "port": 3902,
-            "weight": 1,
-        }
-    ]
-    filters = {f["type"]: f for f in rule["filters"]}
+    rules = {rule["name"]: rule for rule in route["rules"]}
+    assert list(rules) == [f"server-{s}" for s in SERVERS] + ["admins"]
+    for name, rule in rules.items():
+        prefix = "/" if name == "admins" else "/" + name.removeprefix("server-") + "/"
+        assert rule["matches"] == [{"path": {"type": "PathPrefix", "value": prefix}}]
+        assert rule["backendRefs"] == [
+            {
+                "group": "",
+                "kind": "Service",
+                "name": "garage-web",
+                "namespace": "garage",
+                "port": 3902,
+                "weight": 1,
+            }
+        ]
+        assert rule["filters"] == rules["admins"]["filters"]
+    filters = {f["type"]: f for f in rules["admins"]["filters"]}
     assert filters["URLRewrite"]["urlRewrite"] == {
         "hostname": "bosun-artifacts.web.garage.internal"
     }
@@ -363,17 +376,45 @@ def test_artifacts_are_admin_only_and_sandboxed_on_every_response(docs):
         "Cross-Origin-Resource-Policy": "same-origin",
     }
     assert response["remove"] == ["Set-Cookie", "Access-Control-Allow-Origin"]
-    policy = docs["SecurityPolicy", "artifact-authentik-oidc"]["spec"]
+
+    # One policy per rule. Each merges into the gateway policy, so it keeps
+    # that sign-in and session, and replaces only the authorization.
     gateway = docs["SecurityPolicy", "edge-authentik-oidc"]["spec"]
-    assert policy["targetRefs"] == [
-        {"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": "artifact"}
-    ]
-    assert policy["oidc"] == gateway["oidc"]
-    assert policy["authorization"]["defaultAction"] == "Deny"
-    (allow,) = policy["authorization"]["rules"]
-    assert allow["principal"]["jwt"]["claims"] == [
-        {"name": "groups", "valueType": "StringArray", "values": ["authentik Admins"]}
-    ]
+    admins = {
+        "name": "groups",
+        "valueType": "StringArray",
+        "values": ["authentik Admins"],
+    }
+    for rule in rules:
+        server = rule.removeprefix("server-")
+        name = "artifact-admins" if rule == "admins" else f"artifact-server-{server}"
+        policy = docs["SecurityPolicy", name]["spec"]
+        assert policy["targetRefs"] == [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "artifact",
+                "sectionName": rule,
+            }
+        ]
+        assert policy["mergeType"] == "JSONMerge"
+        assert "oidc" not in policy
+        assert policy["jwt"] == gateway["jwt"]
+        assert policy["authorization"]["defaultAction"] == "Deny"
+        allowed = [
+            (r["action"], r["principal"]["jwt"]["claims"])
+            for r in policy["authorization"]["rules"]
+        ]
+        expected = [("Allow", [admins])]
+        if rule != "admins":
+            expected.append(("Allow", [{**admins, "values": [f"discord-{server}"]}]))
+        assert allowed == expected
+    # A server group is admitted on its own folder only.
+    for (kind, name), doc in docs.items():
+        if kind == "SecurityPolicy":
+            for server in SERVERS:
+                if f"discord-{server}" in str(doc["spec"]):
+                    assert name == f"artifact-server-{server}"
     egress = docs["CiliumNetworkPolicy", "proxy"]["spec"]["egress"]
     garage = [
         r

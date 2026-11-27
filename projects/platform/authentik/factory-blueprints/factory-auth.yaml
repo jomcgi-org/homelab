@@ -7,7 +7,8 @@ metadata:
       policy in front of every factory.jomcgi.dev route, and ArgoCD's own login
       behind it. Both admit factory-operators and authentik Admins, and every sign-in
       needs a second factor. The edge also admits household, which the edge
-      authorizes on home.jomcgi.dev only.
+      authorizes on home.jomcgi.dev only, and the discord-<server-id> groups,
+      which it authorizes on artifact.jomcgi.dev/<server-id>/ only.
 entries:
   - model: authentik_core.group
     identifiers:
@@ -23,6 +24,42 @@ entries:
       name: household
     attrs:
       is_superuser: false
+
+  # One group per Discord server in the bridge allowlist
+  # (projects/factory/deploy/values.yaml discord.bridge.policy.guilds).
+  # Discord sign-in (factory-social.yaml) sets a member's groups to match
+  # the servers they are in, at enrollment and at every sign-in. The
+  # discord_server_id attribute marks a group for that sync. The edge-app
+  # binding lets members sign in; the edge allows each group on
+  # artifact.jomcgi.dev/<server-id>/ only, and every other route denies it.
+  - model: authentik_core.group
+    identifiers:
+      name: discord-185442367703220224
+    attrs:
+      is_superuser: false
+      attributes:
+        discord_server_id: "185442367703220224" # NOT DEM BOYZ
+  - model: authentik_core.group
+    identifiers:
+      name: discord-1290668195249917964
+    attrs:
+      is_superuser: false
+      attributes:
+        discord_server_id: "1290668195249917964" # The gang...
+  - model: authentik_core.group
+    identifiers:
+      name: discord-1501965852042330302
+    attrs:
+      is_superuser: false
+      attributes:
+        discord_server_id: "1501965852042330302" # homelab
+  - model: authentik_core.group
+    identifiers:
+      name: discord-1512814732392927463
+    attrs:
+      is_superuser: false
+      attributes:
+        discord_server_id: "1512814732392927463" # Loom
 
   # ── 1. Envoy Gateway's client ────────────────────────────────────────────
   # Envoy runs the authorization-code flow as a confidential client
@@ -94,10 +131,31 @@ entries:
             authentik_providers_oauth2.scopemapping,
             [managed, goauthentik.io/providers/oauth2/scope-email],
           ]
-        - !Find [
-            authentik_providers_oauth2.scopemapping,
-            [managed, goauthentik.io/providers/oauth2/scope-profile],
-          ]
+        - !KeyOf edge-profile
+
+  # The default profile claims, with groups limited to the ones the edge
+  # authorizes on (projects/platform-factory/edge/chart). A member's other
+  # groups stay out of the edge cookie.
+  - model: authentik_providers_oauth2.scopemapping
+    id: edge-profile
+    identifiers:
+      name: factory-edge-profile
+    attrs:
+      scope_name: profile
+      description: General Profile Information
+      expression: |
+        edge = {"authentik Admins", "factory-operators", "household"}
+        return {
+            "name": request.user.name,
+            "given_name": request.user.name,
+            "preferred_username": request.user.username,
+            "nickname": request.user.username,
+            "groups": [
+                group.name
+                for group in request.user.groups.all()
+                if group.name in edge or "discord_server_id" in group.attributes
+            ],
+        }
 
   # The issuer is https://factory-auth.jomcgi.dev/application/o/<slug>/.
   - model: authentik_core.application
@@ -191,6 +249,42 @@ entries:
       target: !KeyOf edge-app
       group: !Find [authentik_core.group, [name, household]]
       order: 10
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf edge-app
+      group: !Find [authentik_core.group, [name, discord-185442367703220224]]
+      order: 20
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf edge-app
+      group: !Find [authentik_core.group, [name, discord-1290668195249917964]]
+      order: 21
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf edge-app
+      group: !Find [authentik_core.group, [name, discord-1501965852042330302]]
+      order: 22
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf edge-app
+      group: !Find [authentik_core.group, [name, discord-1512814732392927463]]
+      order: 23
     attrs:
       enabled: true
       negate: false

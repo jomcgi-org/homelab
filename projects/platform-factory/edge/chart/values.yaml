@@ -93,6 +93,17 @@ authentik:
 artifacts:
   hostname: artifact.jomcgi.dev
   garageHost: bosun-artifacts.web.garage.internal
+  # Discord servers with a folder at /<server-id>/, for members of Authentik
+  # group discord-<server-id> and authentik Admins. The same list as
+  # projects/factory/deploy/values.yaml discord.bridge.policy.guilds and the
+  # groups in projects/platform/authentik/factory-blueprints/factory-auth.yaml
+  # (discord_server_groups_test.py checks all three). Every other path,
+  # private/ included, is for authentik Admins only.
+  servers:
+    - "185442367703220224" # NOT DEM BOYZ
+    - "1290668195249917964" # The gang...
+    - "1501965852042330302" # homelab
+    - "1512814732392927463" # Loom
   # The sandbox, without allow-same-origin, allow-forms or
   # allow-top-navigation, gives a page an opaque origin. The fetch
   # directives allow inline and data: content only, so a page cannot send

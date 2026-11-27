@@ -63,7 +63,9 @@ type response struct {
 }
 
 const instructions = "Publish files for Joe and give him the link. put writes one file under the Discord server and channel of the " +
-	"current message and returns its https://artifact.jomcgi.dev URL; only Joe can open it. HTML pages run sandboxed " +
+	"current message and returns its https://artifact.jomcgi.dev URL. With the current message's server ID, every member of " +
+	"that server can open it; with server private, only Joe can. Use private when Joe asks for a private file or the file " +
+	"holds a direct message or text from a channel that some members cannot read. HTML pages run sandboxed " +
 	"with an opaque origin and no network: put CSS, scripts, images and data inline (data: URLs). A page cannot load " +
 	"a CDN library, another artifact or any URL, and cannot keep cookies or storage. list and delete work in the same server and channel."
 
@@ -254,7 +256,7 @@ type Tool struct {
 	Annotations map[string]any  `json:"annotations"`
 }
 
-const placeSchema = `"server":{"type":"string","pattern":"^[0-9]{15,21}$","description":"Discord server (guild) ID of the current message."},` +
+const placeSchema = `"server":{"type":"string","pattern":"^([0-9]{15,21}|private)$","description":"Discord server (guild) ID of the current message, so the members of that server can open the file; or private, so only Joe can."},` +
 	`"channel":{"type":"string","pattern":"^[0-9]{15,21}$","description":"Discord channel ID of the current message."}`
 
 const pathSchema = `"path":{"type":"string","maxLength":200,"description":"File path under the channel, e.g. report.html or charts/q3.png. Letters, digits, '.', '_', '-'; up to 5 segments; extension .html .md .txt .csv .json .svg or .png."}`

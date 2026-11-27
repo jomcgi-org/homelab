@@ -12,6 +12,13 @@ class BlueprintLoader(yaml.SafeLoader):
 
 BlueprintLoader.add_multi_constructor("!", lambda loader, tag, node: node)
 
+SERVERS = [
+    "185442367703220224",
+    "1290668195249917964",
+    "1501965852042330302",
+    "1512814732392927463",
+]
+
 
 def _applications():
     paths = sorted((Path(__file__).parent / "factory-blueprints").glob("*.yaml"))
@@ -136,8 +143,13 @@ def test_factory_operator_apps_keep_operator_group_bindings():
                 assert field.value == "name"
                 assert binding.get("enabled", True) and not binding.get("negate")
                 names.append(name.value)
-            # The edge alone admits household; it allows it on one host.
-            extra = ["household"] if slug == "factory-edge" else []
+            # The edge alone admits household and the Discord server groups;
+            # it allows each on one host.
+            extra = (
+                ["household", *(f"discord-{g}" for g in SERVERS)]
+                if slug == "factory-edge"
+                else []
+            )
             assert sorted(names) == sorted(
                 ["authentik Admins", "factory-operators", *extra]
             )
