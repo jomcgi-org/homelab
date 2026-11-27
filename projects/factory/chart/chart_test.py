@@ -1854,7 +1854,7 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
         {
             "mcp": {
                 "server": {"kind": "RemoteMCPServer", "name": "artifacts"},
-                "tools": ["put", "list"],
+                "tools": ["put", "template", "list"],
             }
         },
     ]
