@@ -294,11 +294,23 @@ discord:
 **Recommendation.** A model per server in values, a hard token budget per
 turn, and one memory owner per kind of fact.
 
-- **Model.** `discord.servers.<guild>.model`, rendered as Hermes
-  `model.provider: custom` with `base_url` set to OpenRouter and a
-  placeholder key. Start every server on
-  Bosun's `deepseek/deepseek-v4.1-flash-1017:online`; change one server at a
-  time against its question set (section 7).
+- **Model.** `discord.serverAgents.<key>.model` and `provider`. `openAI`
+  renders an OpenAI-compatible ModelConfig (OpenRouter); `anthropic`
+  renders an Anthropic one, which the kagent fork (jomcgi-org/kagent#5)
+  writes as a Hermes provider with `api_mode: anthropic_messages`. The
+  actor holds a placeholder; the egress gateway injects the key as
+  `x-api-key` and admits only `api.anthropic.com`.
+- **Homelab agent (Joe, 2026-11-27).** `claude-opus-5-5` answers and
+  `claude-sonnet-5-5` writes the compaction summaries, both on Joe's
+  Anthropic Console key (item `factory-discord-anthropic`). Prompt caching
+  is on with a 1 h TTL (`cacheTTL: 1h`), which matches the 1 h idle
+  compaction.
+- **Credits end 2026-12-03 00:00 GMT.** The key spends about $196 of
+  promotional credits. A Console organization prepays: at zero balance the
+  API refuses requests, and the bridge replies "I couldn't answer that
+  right now". A card is charged only if auto-reload is on for the
+  organization; keep it off. Before 2026-12-03, move the agent to a plan
+  path or another model by PR.
 - **Budget.** Each turn has a cap on output tokens and on tool calls (about
   4). Hermes resends the whole session on each turn. Without a
   `compression` key it compacts only at half the window, which is 500k
@@ -309,12 +321,14 @@ turn, and one memory owner per kind of fact.
   | --- | --- | --- |
   | `thresholdTokens` | 256,000 | Size backstop: compact when the prompt reaches it |
   | `minTailUserMessages` | 3 | The last 3 user messages stay verbatim |
-  | `model` | `deepseek/deepseek-v4.1-flash-1017` | Summary model, through the same `kagent` provider and key |
+  | `model` | `claude-sonnet-5-5` | Summary model, through the same `kagent` provider and key |
 
-  Cost on Gemini 4 Neon ($3/M input, $0.15/M cache read, $15/M output):
-  a warm turn near 256k reads the cached prefix for about $0.04. A cold
-  turn near 256k costs about $0.80. Each compaction rewrites the prefix,
-  so it costs one cache miss on the next turn. A low trigger, such as 32k,
+  Cost on Opus 5.5 ($4/M input, $8/M 1 h cache write, $0.20/M cache read,
+  $20/M output): a warm turn near 256k reads the cached prefix for about
+  $0.05. A cold turn near 256k writes it again for about $2. Each
+  compaction rewrites the prefix, so it costs one cache miss on the next
+  turn, plus the Sonnet summary ($2/M input), about $0.50 for a 256k
+  session. A low trigger, such as 32k,
   would compact almost every turn, because Hermes keeps a 25k-token tail
   on a 1M window. That breaks caching.
 
@@ -328,8 +342,8 @@ turn, and one memory owner per kind of fact.
   That is a follow-up too, to tune the 1 h value against the real cache
   lifetime.
 
-  A per-turn input cap in Hermes is not confirmed, so the per-server
-  OpenRouter limit is the hard bound. The bridge's existing limits still bound
+  A per-turn input cap in Hermes is not confirmed, so the key's balance
+  (or the per-server OpenRouter limit) is the hard bound. The bridge's existing limits still bound
   turns per user, server and day.
 - **Memory split.**
 

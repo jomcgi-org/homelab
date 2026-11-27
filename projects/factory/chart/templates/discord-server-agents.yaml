@@ -114,12 +114,25 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
+  {{- if eq ($a.provider | default "openAI") "anthropic" }}
+  provider: Anthropic
+  model: {{ $a.model | quote }}
+  apiKeySecret: discord-llm
+  apiKeySecretKey: api-key
+  anthropic:
+    baseUrl: {{ $a.baseUrl | quote }}
+    {{- with $a.cacheTTL }}
+    promptCaching: true
+    cacheTTL: {{ . | quote }}
+    {{- end }}
+  {{- else }}
   provider: OpenAI
   model: {{ $a.model | quote }}
   apiKeySecret: discord-llm
   apiKeySecretKey: api-key
   openAI:
     baseUrl: {{ $a.baseUrl | quote }}
+  {{- end }}
 ---
 # Hermes Agent with the kagent fork's runner (projects/factory/harness/hermes).
 # The runner turns every Hermes toolset, memory and lazy install off, and

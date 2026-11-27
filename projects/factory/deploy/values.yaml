@@ -71,9 +71,9 @@ kagent:
   controller:
     metrics:
       enabled: true
-    # kagent v1.0.1 built from jomcgi-org/kagent commit 91e862974d4d
+    # kagent v1.0.1 built from jomcgi-org/kagent commit 34088646786a
     # (branch jomcgi/codex-6.2, build run
-    # https://github.com/jomcgi-org/kagent/actions/runs/46056477440). Commit
+    # https://github.com/jomcgi-org/kagent/actions/runs/46062092026). Commit
     # 2c2fc329a8d8 sets PinnedCodexVersion and the harness Dockerfile to Codex
     # 0.169.1, the first stable Codex whose bundled catalogue has
     # gpt-6.2-astra and gpt-6.2-sol (agents.*.model below). Upstream kagent
@@ -96,10 +96,12 @@ kagent:
     # Session stays running for that delay instead of suspending at once.
     # Commit 91e862974d4d (jomcgi-org/kagent#4) adds Harness
     # spec.hermes.compression: threshold, verbatim user tail and summary model.
+    # Commit 34088646786a (jomcgi-org/kagent#5) runs Hermes on an Anthropic
+    # ModelConfig through the Messages API, with its prompt cache TTL.
     image:
       registry: ghcr.io
       repository: jomcgi-org/kagent/controller
-      tag: 1.0.1-jomcgi.91e862974d4d@sha256:c6585487b2c4b275a48013a9389ee4877b12722cbd6054934ccf57eb2484e9b1
+      tag: 1.0.1-jomcgi.34088646786a@sha256:35cde86ced919ac492b5c36a446f6bb7badae16eafa50b3c2ca40c5ab229a74e
   # The UI peaked at 4Mi over two days (2026-11-16) against the chart's
   # 256Mi request.
   ui:
@@ -113,8 +115,8 @@ kagent:
     # 0.169.1 in place of 0.161.0. The controller starts only when `release`
     # equals its own version, so it names the fork build, not 1.0.1.
     harnessImages:
-      release: 1.0.1-jomcgi.91e862974d4d
-      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:2730fc99513dd0768ae672ab137ad50a378302550160b958e00007b7dcc5fb78
+      release: 1.0.1-jomcgi.34088646786a
+      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:14ef0e07befebc7478cfa4f0940fdc582436aa55b06ef250d40d8ca13efea104
     runtimeDefaults:
       cpu: "4"
       memory: 8Gi
@@ -433,6 +435,17 @@ discord:
       enabled: true
       route: true
       servers: all
+      # Joe's Anthropic Console key (2026-11-27): Opus 5.5 answers, Sonnet
+      # 5.5 writes compaction summaries, both on that key. Its promotional
+      # credits end 2026-12-03 00:00 GMT (discord/server-agents.md, "Model
+      # and token cost"). The 1 h cache TTL matches the 1 h idle compaction.
+      llmItemPath: vaults/k8s-homelab/items/factory-discord-anthropic
+      provider: anthropic
+      model: claude-opus-5-5
+      baseUrl: https://api.anthropic.com
+      cacheTTL: 1h
+      compression:
+        model: claude-sonnet-5-5
 
 semgrepSync:
   enabled: false

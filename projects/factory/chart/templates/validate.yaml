@@ -119,7 +119,14 @@ instead of silently rendering nothing.
 {{- fail (printf "discord.serverAgents.%s: resources must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $server $runtime.cpu $runtime.memory) }}
 {{- end }}
 {{- if not $a.llmItemPath }}
-{{- fail (printf "discord.serverAgents.%s.llmItemPath: name the OpenRouter key's 1Password item" $server) }}
+{{- fail (printf "discord.serverAgents.%s.llmItemPath: name the model key's 1Password item" $server) }}
+{{- end }}
+{{- $provider := $a.provider | default "openAI" }}
+{{- if not (has $provider (list "openAI" "anthropic")) }}
+{{- fail (printf "discord.serverAgents.%s.provider must be openAI or anthropic" $server) }}
+{{- end }}
+{{- if and $a.cacheTTL (or (ne $provider "anthropic") (not (has $a.cacheTTL (list "5m" "1h")))) }}
+{{- fail (printf "discord.serverAgents.%s.cacheTTL: 5m or 1h, for provider anthropic only" $server) }}
 {{- end }}
 {{- end }}
 {{- end }}

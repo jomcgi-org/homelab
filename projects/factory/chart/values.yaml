@@ -648,8 +648,14 @@ discord:
       # one shared key for the server agents. The egress gateway injects
       # api-key; the actor holds a placeholder.
       llmItemPath: vaults/k8s-homelab/items/factory-discord-llm
+      # The ModelConfig provider: openAI, an OpenAI-compatible endpoint such
+      # as OpenRouter, or anthropic, the Messages API with x-api-key.
+      provider: openAI
       model: deepseek/deepseek-v4.1-flash-1017
       baseUrl: https://openrouter.ai/api/v1
+      # anthropic only: the prompt cache TTL, 5m or 1h. Empty turns
+      # prompt caching off.
+      cacheTTL: ""
       # Must equal kagent.config.runtimeDefaults (templates/validate.yaml).
       resources:
         cpu: "4"
