@@ -36,7 +36,8 @@ posts the answer as a reply to that message (`allowed_mentions` parse `[]`,
 message the tag replies to) or the `id` of a
 `channel_messages_since_your_last_turn` line (`m1` is the oldest). The
 bridge maps labels to Discord IDs for this turn only (`Targets`); any other
-target is logged and ignored. A pin with no target pins the answer. In a server with a `channels` list,
+target is logged and ignored; a pin with such a target pins nothing. A
+pin with no target pins the answer. In a server with a `channels` list,
 the bridge does not answer a tag inside a new thread: its ID is not listed.
 Follow-up: reminders need state that survives a restart, so they wait for a
 persisted store. Other controls below are not seen live yet, so each one is

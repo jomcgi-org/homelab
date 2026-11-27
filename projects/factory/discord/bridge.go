@@ -479,8 +479,9 @@ type delivered struct {
 
 // deliver posts a turn's answer and does its actions in order: start the
 // thread, create the event (its link or failure goes in the text), post the
-// text and the poll (into the thread when it exists), react to the tagged
-// message, then pin the text reply. A failed action is
+// text and the poll (into the thread when it exists), react, then pin. Each
+// action acts on the tagged message or on its target in targets; a target
+// not in targets is ignored. A failed action is
 // logged and skipped. done holds the actions that Discord did. Only Turn
 // calls it: notices, failure replies and operator turns do no actions.
 func (b *Bridge) deliver(ctx context.Context, l *slog.Logger, actor Actor, m Message, targets Targets, acts Actions, text string, files []File, poll *Poll) (done Actions, posted delivered) {
@@ -491,14 +492,15 @@ func (b *Bridge) deliver(ctx context.Context, l *slog.Logger, actor Actor, m Mes
 		}
 		return id
 	}
-	channelID, replyTo := m.ChannelID, target("reply", acts.ReplyTarget)
+	answerTo := target("reply", acts.ReplyTarget)
+	channelID, replyTo := m.ChannelID, answerTo
 	if acts.Thread != "" {
 		if id, err := actor.StartThread(ctx, m.ChannelID, target("thread", acts.ThreadTarget), acts.Thread); err != nil {
 			actionFailed(ctx, l, "thread", err)
 		} else {
 			done.Thread = acts.Thread
 			// A reply cannot reference a message in another channel; the
-			// thread starts from the tagged message.
+			// thread starts from its target message.
 			channelID, replyTo = id, ""
 		}
 	}
@@ -522,7 +524,7 @@ func (b *Bridge) deliver(ctx context.Context, l *slog.Logger, actor Actor, m Mes
 		replyID, err = b.post(ctx, actor, channelID, reply)
 		if err != nil && channelID != m.ChannelID {
 			l.WarnContext(ctx, "reply in thread failed", "error", err)
-			channelID, replyTo = m.ChannelID, target("reply", acts.ReplyTarget)
+			channelID, replyTo = m.ChannelID, answerTo
 			replyID, err = b.post(ctx, actor, channelID, WithImages(NewReply(text, replyTo), text, files))
 		}
 		if err != nil {
@@ -547,17 +549,18 @@ func (b *Bridge) deliver(ctx context.Context, l *slog.Logger, actor Actor, m Mes
 		done.React = append(done.React, e)
 	}
 	if acts.Pin && acts.PinTarget != "" {
-		// Another message: only one named in this turn, else the answer.
+		// Another message: only one named in this turn.
 		if id, ok := targets.Resolve(acts.PinTarget, ""); ok && id != "" {
 			if err := actor.Pin(ctx, m.ChannelID, id); err != nil {
 				actionFailed(ctx, l, "pin", err)
 			} else {
 				done.Pin, done.PinTarget = true, acts.PinTarget
 			}
-			acts.Pin = false
 		} else {
-			l.WarnContext(ctx, "pin target is not in this turn; ignored", "target", acts.PinTarget)
+			// Pin nothing: the model meant another message, not the answer.
+			l.WarnContext(ctx, "pin target is not in this turn; pin skipped", "target", acts.PinTarget)
 		}
+		acts.Pin = false
 	}
 	if acts.Pin {
 		if !posted.text || replyID == "" {
