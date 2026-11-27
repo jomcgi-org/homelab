@@ -54,8 +54,17 @@ def integration(staging: pathlib.Path) -> None:
 
 def packages(staging: pathlib.Path) -> None:
     subprocess.run(
-        ["uv", "pip", "install", "--require-hashes", "--no-deps",
-         "--target", str(staging), "-r", str(LOCK)],
+        [
+            "uv",
+            "pip",
+            "install",
+            "--require-hashes",
+            "--no-deps",
+            "--target",
+            str(staging),
+            "-r",
+            str(LOCK),
+        ],
         check=True,
     )
 
