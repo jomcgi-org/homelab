@@ -28,7 +28,7 @@ type Role struct {
 const UnknownUser = "@unknown-user"
 
 // Mention forms in Discord message text.
-var mentionRE = regexp.MustCompile(`<@!?(\d+)>|<@&(\d+)>|<#(\d+)>|<a?:(\w+):\d+>|</([\w-]+(?: [\w-]+){0,2}):\d+>|<t:(-?\d+)(?::[tTdDfFR])?>`)
+var mentionRE = regexp.MustCompile(`<@!?(\d+)>|<@&(\d+)>|<#(\d+)>|<a?:(\w+):\d+>|</([\p{L}\p{N}_-]+(?: [\p{L}\p{N}_-]+){0,2}):\d+>|<t:(-?\d+)(?::[tTdDfFR])?>`)
 
 // mentionName is how text names a user: @username, and the server nick or
 // global display name in brackets when it is not the same.
