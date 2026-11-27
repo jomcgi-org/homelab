@@ -12,8 +12,18 @@ the Agent, and the bridge keeps one session per server with request ID
 the bridge still recalls and puts memories in each prompt. Actions: when
 the agent's answer holds a fenced `poll` block (JSON, Discord's poll
 limits), the bridge posts it as a Discord poll after the text reply
-(`poll.go`). Memory stores `[poll: <question>]`, not the JSON. Other controls
-below are not seen live yet, so each one is `designed`.
+(`poll.go`). Memory stores `[poll: <question>]`, not the JSON. Fenced
+`react`, `thread` and `pin` blocks (`actions.go`, at most one of each) react
+to the tagged message with 1 to 3 emoji, start a public thread from it that
+gets the reply, and pin the reply. The bot's role needs Add Reactions, Create
+Public Threads, Send Messages in Threads and Pin Messages; a refused action
+is logged and skipped, and the reply goes to the channel when the thread
+fails. Memory stores `[thread: <name>]`, `[reacted: <emoji>]` and
+`[pinned]` only for actions Discord did. In a server with a `channels` list,
+the bridge does not answer a tag inside a new thread: its ID is not listed.
+Follow-up: reminders need state that survives a restart, so they wait for a
+persisted store. Other controls below are not seen live yet, so each one is
+`designed`.
 
 Joe's decisions are on
 [HOME-162 comment 12817](https://factory-plan.jomcgi.dev/factory/issue/HOME-162#comment-12817)
