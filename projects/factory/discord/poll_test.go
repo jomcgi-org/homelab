@@ -149,6 +149,17 @@ func TestARefusedPollIsNotNamedInMemory(t *testing.T) {
 	}
 }
 
+func TestARefusedPollAloneRepliesAFixedText(t *testing.T) {
+	agent := &fakeAgent{answer: "```poll\n{\"question\":\"Saturday?\",\"answers\":[\"Hike\",\"Pub\"]}\n```"}
+	b, _, _ := newBridge(agent)
+	rep := &failingPolls{}
+	b.Replies = rep
+	b.Turn(context.Background(), tagged("1", "poll"))
+	if len(rep.sent) != 1 || rep.sent[0].Components[0].Content != ReplyPollFailed {
+		t.Errorf("sent %+v", rep.sent)
+	}
+}
+
 func TestAFailedTurnPostsNoPoll(t *testing.T) {
 	agent := &fakeAgent{answer: "```poll\n{\"question\":\"q\",\"answers\":[\"a\",\"b\"]}\n```", err: io.ErrUnexpectedEOF}
 	b, _, rep := newBridge(agent)

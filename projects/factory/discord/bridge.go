@@ -79,9 +79,11 @@ const maxNotices = 16
 
 // Fixed replies; none carries model output or Discord text.
 const (
-	ReplyBusy    = "I'm busy in this channel; try again in a minute."
-	ReplyLimited = "I've reached my limit for now; try again later."
-	ReplyFailed  = "I couldn't answer that right now."
+	ReplyBusy       = "I'm busy in this channel; try again in a minute."
+	ReplyLimited    = "I've reached my limit for now; try again later."
+	ReplyFailed     = "I couldn't answer that right now."
+	// ReplyPollFailed answers a poll-only answer that Discord refused.
+	ReplyPollFailed = "I couldn't post that poll."
 )
 
 // Bridge decides which messages start a turn and runs each turn: recall the
@@ -369,11 +371,15 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	answer, poll := Polls(answer)
 	shown, memo, files := Visuals(ctx, b.Render, answer)
 	shown, _ = PlacePoll(shown, "", nil)
-	if shown != "" || len(files) > 0 || poll == nil {
+	posted := shown != "" || len(files) > 0 || poll == nil
+	if posted {
 		b.replyWith(ctx, m, shown, files)
 	}
 	if poll != nil && !b.sendPoll(ctx, m, poll) {
 		poll = nil // Memory names only a poll that Discord posted.
+		if !posted {
+			b.reply(ctx, m, ReplyPollFailed)
+		}
 	}
 	_, answer = PlacePoll("", memo, poll)
 	at := m.Timestamp
