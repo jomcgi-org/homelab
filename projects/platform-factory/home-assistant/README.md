@@ -27,6 +27,13 @@ flowchart LR
 The Zigbee2MQTT web UI has no route. Reach it with
 `kubectl -n home-assistant port-forward deploy/zigbee2mqtt 8080`.
 
+## HTTP settings
+
+Home Assistant keeps its HTTP settings in `/config/.storage/http`. The
+`http-settings` init container writes `resources/http-storage.json` there on
+every start, so the edge proxy stays trusted. Change those settings in git;
+a change in Settings → System → Network is lost at the next restart.
+
 ## Moving the dongle
 
 The zigbee2mqtt-data volume holds the network key and paired devices on

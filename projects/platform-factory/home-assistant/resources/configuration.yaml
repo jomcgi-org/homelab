@@ -1,10 +1,8 @@
 # Mounted read-only over /config/configuration.yaml. Home Assistant keeps
 # its UI-made state in /config/.storage. Add the MQTT integration once in
 # the UI, with broker mosquitto and port 1883, to see Zigbee2MQTT devices.
+#
+# No http: block. Since 2026.8 Home Assistant keeps HTTP settings in
+# .storage/http and reverts a YAML import after 5 minutes unless someone
+# promotes it in the UI. The init container writes http-storage.json there.
 default_config:
-
-http:
-  # The edge Envoy proxy forwards every request from the pod network.
-  use_x_forwarded_for: true
-  trusted_proxies:
-    - 10.42.0.0/16
