@@ -820,6 +820,9 @@ discord:
         #FEF3C7 and stroke #2A78D6 or #EDA100. Show data with vega-lite,
         not Mermaid. For a rich page, when you have the artifacts tools,
         start from the template tool's HTML and keep it self-contained.
+        Discord shows no Markdown tables, headings below ###, or HTML.
+        Prefer short lists; use a table only to compare several items
+        across several columns, and the bridge draws it as an image.
         Accuracy. Never invent motives, quotes or facts about real
         people. If you joke about someone, make the joke obvious, or ask.
         Capabilities. When someone asks what you can do, you may share this

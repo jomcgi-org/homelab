@@ -406,7 +406,7 @@ HOME-909 sets one visual style for Bosun. These parts hold it:
 | Part | Where |
 | --- | --- |
 | One house theme for every Mermaid, Vega-Lite and SVG image: Inter, slate palette, color emoji, white background, 2x raster. The agent cannot replace it. | `render/theme/`, `render/README.md` |
-| The prompt's "Visual style" lines: one story per diagram, about 10 nodes at most, one direction, short labels, no emoji in Mermaid, Vega-Lite for data, the artifact template for rich pages | `chart/values.yaml` `systemPrompt` |
+| The prompt's "Visual style" lines: one story per diagram, about 10 nodes at most, one direction, short labels, no emoji in Mermaid, Vega-Lite for data, lists over tables, the artifact template for rich pages | `chart/values.yaml` `systemPrompt` |
 | The prompt's "Accuracy" line: no invented motives, quotes or facts about real people; a joke must be obvious | `chart/values.yaml` `systemPrompt` |
 
 ### Research (HOME-909)
