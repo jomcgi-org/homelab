@@ -400,7 +400,7 @@ func TestNoOperatorLeavesThePublicPathAsItWas(t *testing.T) {
 	}
 	cancel()
 	b.Wait()
-	if want := Prompt(m, Place{}, "plan the move", []string{"Earlier: the code word is heron."}, nil); agent.prompts[0] != want {
+	if want := Prompt(m, Place{}, "plan the move", []string{"Earlier: the code word is heron."}, nil, bot); agent.prompts[0] != want {
 		t.Errorf("prompt = %q, want %q", agent.prompts[0], want)
 	}
 	if len(op.prompts) != 0 || len(chans.reads) != 0 || len(mem.recalls) != 1 || len(mem.retained) != 1 {

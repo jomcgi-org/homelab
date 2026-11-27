@@ -7,8 +7,8 @@ reads and writes only its own server's Hindsight bank, and it gets only the
 MCP tools that its server's values list. The homelab agent's image and
 chart exist (slice 2). Slice 4 (HOME-909) routes tagged messages to the
 homelab agent: a policy entry `serverAgents` maps each guild to the Agent,
-and the bridge keeps one session with request ID `discord-server-<guild>`
-(`operator.go`, `ServerRequestID`). Until slice 3, the bridge still recalls
+and the bridge keeps one session per channel with request ID
+`discord-channel-<channel>` (`operator.go`, `ChannelRequestID`). Until slice 3, the bridge still recalls
 and puts memories in each prompt. See [Joe only](#joe-only-one-session) for
 who the bot answers today. Actions: when
 the agent's answer holds a fenced `poll` block (JSON, Discord's poll
@@ -95,9 +95,9 @@ v0.23.4 was published on 2026-11-24. Each fact below links its source; the
 Hermes fits: it runs headless behind an API, keeps sessions on disk and has
 a Hindsight provider.
 
-## Joe only, one session
+## Joe only, one session per channel
 
-Joe's decision on 2026-11-27 (HOME-909) changes the per-server design
+Joe's decisions on 2026-11-27 (HOME-909) change the per-server design
 below for now:
 
 - **Who.** The policy's `users: operator` answers only Joe, by the
@@ -105,23 +105,39 @@ below for now:
   (`discord.operator.userIdKey`). Another author's tag gets no turn and no
   reply. Without a readable ID, nobody gets a turn.
 - **Where.** `discord.serverAgents.homelab.servers: all` routes Joe's tags
-  in all four allowlisted servers to the homelab agent. The policy's
-  `serverSessions` joins each other server to the homelab server's
-  session, so Joe has one session across servers.
+  in all four allowlisted servers to the homelab agent.
+- **Sessions.** One Hermes session per Discord channel; a thread has its
+  own channel ID, so it has its own session. Each session is a kagent
+  Session, so one actor, on the shared Harness: the same key, compaction,
+  tools and gate. Each channel has its own turn queue, so a session never
+  gets two turns at once. `concurrency: 3` gives the WorkerPool 3
+  workers, so 3 channels answer at once; idle sessions suspend. The old
+  whole-server session `discord-server-<guild>` is no longer used, and its
+  Hermes context does not carry over.
+- **Replies.** When Joe's message replies to another message, the prompt
+  holds that message's author and text (`reply_to`, at most 2,000
+  characters) and `from_you` when Bosun wrote it. A reply to Bosun's
+  message starts a turn without the ping. The Joe-only gate still applies.
 - **Recall.** Each turn recalls from the bank of the message's own server,
-  and the prompt names the server and channel. The session context then
-  holds turns from every server. This cross-server context is intended,
-  because only Joe drives the session.
+  and the prompt names the server and channel. There is no cross-server
+  recall.
+- **Snapshots.** Each channel session that suspends writes its own
+  snapshot under the Harness `snapshotPolicy` prefix, so storage grows
+  with the number of channels Joe uses. Watch the `ate-snapshots` bucket
+  size for `discord-1501965852042330302/`.
 - **Unchanged.** Ingest and history backfill run for every server as
   before. Bosun's Agent and template stay rendered but get no turns; Joe
   may reuse them as a separate app for friends.
 
 ```mermaid
 flowchart LR
-  M["tagged message"] --> J{"author = operator-user-id?"}
+  M["tag, or reply to Bosun"] --> J{"author = operator-user-id?"}
   J -- "no, or ID missing" --> X["no turn, no reply"]
   J -- "yes" --> R["recall from this server's bank"]
-  R --> S["homelab Hermes session (all servers)"]
+  R --> Q["queue for the channel"]
+  Q --> S1["session discord-channel-A"]
+  Q --> S2["session discord-channel-B (thread)"]
+  S1 & S2 --> P["WorkerPool, 3 workers, shared Harness"]
 ```
 
 ## 1. Gateway: keep the bridge

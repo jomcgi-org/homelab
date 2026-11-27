@@ -307,7 +307,17 @@ func OperatorRequestID(threadID string, generation int) string {
 	return fmt.Sprintf("discord-operator-%s-%d", threadID, generation)
 }
 
-// ServerRequestID is the request ID of a server agent's session (HOME-909).
+// ChannelRequestID is the request ID of a server agent's session for one
+// channel (HOME-909): each channel, a thread included, has its own.
+func ChannelRequestID(channelID string, generation int) string {
+	if generation == 0 {
+		return "discord-channel-" + channelID
+	}
+	return fmt.Sprintf("discord-channel-%s-%d", channelID, generation)
+}
+
+// ServerRequestID is the request ID of a server agent's session for a whole
+// server, before sessions moved to one per channel (HOME-909).
 func ServerRequestID(guildID string, generation int) string {
 	if generation == 0 {
 		return "discord-server-" + guildID

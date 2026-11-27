@@ -665,7 +665,7 @@ discord:
       # after a turn. Empty suspends at once.
       idleSuspendDelay: 10m
       # With route: own answers this server's tags; all answers every server
-      # in discord.bridge.policy.guilds, in this agent's one session.
+      # in discord.bridge.policy.guilds. Each channel is one session.
       servers: own
       # Harness spec.hermes.compression. Hermes compacts at the lower of half
       # the window and thresholdTokens, keeps the newest minTailUserMessages

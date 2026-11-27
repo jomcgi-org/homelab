@@ -51,10 +51,26 @@ type Message struct {
 	// Type is 0 for a message and 19 for a reply; other values are system
 	// messages.
 	Type int `json:"type"`
-	// Reference and Snapshots mark a forwarded message. The bridge never
-	// decodes referenced_message, the preview of a replied-to message.
+	// Reference and Snapshots mark a forwarded message.
 	Reference *Reference `json:"message_reference,omitempty"`
 	Snapshots []struct{} `json:"message_snapshots,omitempty"`
+	// Referenced is the message a reply (type 19) answers. Only a public
+	// turn reads it, under the users: operator gate (HOME-909); the
+	// operator session never does.
+	Referenced *Referenced `json:"referenced_message,omitempty"`
+}
+
+// Referenced is the subset of a replied-to message the bridge reads.
+type Referenced struct {
+	ID      string `json:"id"`
+	Author  User   `json:"author"`
+	Content string `json:"content"`
+}
+
+// RepliesTo reports whether m is a reply to a message user id wrote, with
+// or without the reply ping.
+func (m Message) RepliesTo(id string) bool {
+	return id != "" && m.Type == 19 && m.Referenced != nil && m.Referenced.Author.ID == id
 }
 
 // Reference is the subset of a received message_reference the bridge reads.

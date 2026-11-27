@@ -204,9 +204,9 @@ spec:
 {{- $policy = merge (dict "operator" (dict "guild" $o.guild "channels" $o.channels)) (deepCopy $b.policy) }}
 {{- end }}
 {{- /* Each routed server agent answers its server's turns (HOME-909); one
-with servers: all answers every server's, in its own server's session. */}}
+with servers: all answers every server's. The bridge keeps one session per
+channel. */}}
 {{- $routed := dict }}
-{{- $joined := dict }}
 {{- $agents := dict }}
 {{- $all := "" }}
 {{- range $key := keys $d.serverAgents | sortAlpha }}
@@ -225,9 +225,6 @@ with servers: all answers every server's, in its own server's session. */}}
 {{- $all = $key }}
 {{- range $guild := keys $b.policy.guilds | sortAlpha }}
 {{- $_ := set $routed $guild $ref }}
-{{- if ne $guild $a.guild }}
-{{- $_ := set $joined $guild $a.guild }}
-{{- end }}
 {{- end }}
 {{- else if eq $servers "own" }}
 {{- $_ := set $routed $a.guild $ref }}
@@ -238,9 +235,6 @@ with servers: all answers every server's, in its own server's session. */}}
 {{- end }}
 {{- if $routed }}
 {{- $policy = merge (dict "serverAgents" $routed) (deepCopy $policy) }}
-{{- end }}
-{{- if $joined }}
-{{- $policy = merge (dict "serverSessions" $joined) (deepCopy $policy) }}
 {{- end }}
 {{- /* Joe's user ID is read for the operator session and for users: operator. */}}
 {{- $operatorUser := or $o.enabled (eq ($b.policy.users | default "all") "operator") }}
