@@ -1443,7 +1443,7 @@ def test_discord_bridge_reaches_only_its_expected_peers() -> None:
     assert deploy["spec"]["strategy"] == {"type": "Recreate"}
     (c,) = spec["containers"]
     assert c["command"] == ["/usr/local/bin/discord-bridge"]
-    env = {e["name"]: e["value"] for e in c["env"]}
+    env = {e["name"]: e.get("value") for e in c["env"]}
     assert env["KAGENT_AGENT"] == "factory-discord-agent/bosun"
     assert env["HINDSIGHT_URL"].startswith("http://hindsight-api.hindsight-discord.")
     # The renderer draws answer images; the bridge's egress policy admits it.
@@ -1493,12 +1493,19 @@ def test_discord_bridge_reaches_only_its_expected_peers() -> None:
         for rule in egress["egress"]
         for e in rule.get("toEndpoints", [])
     ]
-    assert peers == ["factory-discord", "hindsight-discord", "factory", "kagent"]
+    # factory-db: the message archive (HOME-909), on in the deploy values.
+    assert peers == [
+        "factory-discord",
+        "hindsight-discord",
+        "factory-db",
+        "factory",
+        "kagent",
+    ]
     ports = [
         [p["port"] for to in rule["toPorts"] for p in to["ports"]]
         for rule in egress["egress"]
     ]
-    assert ports == [["8080"], ["443"], ["8888"], ["8082"], ["8083"]]
+    assert ports == [["8080"], ["443"], ["8888"], ["5432"], ["8082"], ["8083"]]
     assert _controller_egress(egress)["toPorts"] == [
         {
             "ports": [{"port": "8083", "protocol": "TCP"}],
@@ -1688,7 +1695,7 @@ def test_discord_operator_session_runs_codex_through_the_broker() -> None:
         "template"
     ]["spec"]
     (c,) = pod["containers"]
-    env = {e["name"]: e["value"] for e in c["env"]}
+    env = {e["name"]: e.get("value") for e in c["env"]}
     assert env["DISCORD_OPERATOR_AGENT"] == "factory-discord-operator/bosun-operator"
     assert (
         env["DISCORD_OPERATOR_USER_FILE"] == "/var/run/secrets/discord-operator/user-id"
