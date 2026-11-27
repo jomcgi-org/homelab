@@ -39,11 +39,16 @@ type REST struct {
 	HTTP  *http.Client
 }
 
-// ReplyComponent is a Components V2 text display or media gallery.
+// ReplyComponent is a Components V2 text display, media gallery,
+// separator or container (card.go).
 type ReplyComponent struct {
-	Type    int         `json:"type"`
-	Content string      `json:"content,omitempty"`
-	Items   []MediaItem `json:"items,omitempty"`
+	Type        int              `json:"type"`
+	Content     string           `json:"content,omitempty"`
+	Items       []MediaItem      `json:"items,omitempty"`
+	AccentColor int              `json:"accent_color,omitempty"`
+	Components  []ReplyComponent `json:"components,omitempty"`
+	Divider     *bool            `json:"divider,omitempty"`
+	Spacing     int              `json:"spacing,omitempty"`
 }
 
 // MediaItem is one media gallery item; URL names an uploaded file as
@@ -93,10 +98,13 @@ type Reply struct {
 	Attachments      []ReplyAttachment `json:"attachments,omitempty"`
 	// Files are uploaded with the message, in Attachments order.
 	Files []File `json:"-"`
+	// Accent is the card colour (card.go); Post wraps the components in a
+	// container of this colour. Zero posts them unwrapped.
+	Accent int `json:"-"`
 }
 
-// NewReply builds a reply to message id that cannot ping anyone, clipped to
-// Discord's limit.
+// NewReply builds an answer card replying to message id that cannot ping
+// anyone, clipped to Discord's limit.
 func NewReply(text, replyTo string) Reply {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -110,6 +118,7 @@ func NewReply(text, replyTo string) Reply {
 		Flags:           flagComponentsV2,
 		Components:      []ReplyComponent{{Type: componentText, Content: text}},
 		AllowedMentions: AllowedMentions{Parse: []string{}},
+		Accent:          AccentAnswer,
 	}
 	if replyTo != "" {
 		r.MessageReference = &MessageReference{MessageID: replyTo}
@@ -123,8 +132,10 @@ func (r *REST) Send(ctx context.Context, channelID string, reply Reply) error {
 	return err
 }
 
-// Post posts a reply in a channel and returns the new message's ID.
+// Post posts a reply in a channel, as a card when it has an accent, and
+// returns the new message's ID.
 func (r *REST) Post(ctx context.Context, channelID string, reply Reply) (string, error) {
+	reply = reply.Card()
 	path := "/channels/" + channelID + "/messages"
 	var out struct {
 		ID string `json:"id"`

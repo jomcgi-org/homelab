@@ -1833,6 +1833,18 @@ def test_discord_server_agent_runs_hermes_with_no_tools() -> None:
     ):
         assert line in prompt, line
     assert "earlier turns from every server" not in prompt
+    # Components V2 cards and scheduled events (HOME-909).
+    for line in (
+        "Discord formatting. Your answer shows as a card.",
+        "Never write a Markdown table",
+        'starts with "-# "',
+        "write <t:UNIX:F> (date and time)",
+        "Joe is in Europe/London",
+        "When you are not sure of the exact time, write the date in words.",
+        "add one fenced code block tagged event with JSON",
+        "you can also create server events",
+    ):
+        assert line in prompt, line
     # The namespace holds the one key and no other credential, egress grant
     # or MCP server.
     in_ns = [d for d in docs if d["metadata"].get("namespace") == ns]

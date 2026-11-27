@@ -478,6 +478,63 @@ sequenceDiagram
   waits an hour, and a session with no turn since the restart counts its
   TTL from its creation.
 
+### Cards and events (HOME-909)
+
+Each Bosun message is a Components V2 card: one container with an accent
+colour from the renderer's house theme (`card.go`).
+
+| Accent | Colour | Messages |
+|---|---|---|
+| Answer | `#2A78D6` blue | turn and operator answers |
+| Research | `#8E5BD6` violet | explorer research results |
+| Notice | `#EDA100` amber | busy, limited and research notices |
+| Failure | `#E34948` red | could not answer, poll or act |
+
+`REST.Post` builds the card. A `---`, `***` or `___` line outside a code
+block becomes a divider. A small space without a line parts text from an
+image gallery. Discord allows 40 components in a message, nested ones
+included, and no container in a container. When the parts pass that
+limit, the card holds the reply's own text displays and galleries. The
+4,000-character limit and the image order stay as before. The bridge does
+not escape text, so dynamic timestamps (`<t:UNIX:F>`) show in each
+reader's time zone. `allowed_mentions` stays `parse: []`, so no text
+pings. Polls and channel notifications are not cards: a poll cannot
+carry components, and the notification dedupe reads top-level text.
+
+Bosun creates a server event from a fenced `event` block:
+
+```event
+{"name": "Pub quiz", "start": "2026-12-04T19:30:00+00:00",
+ "location": "The Crown", "description": "Teams of four"}
+```
+
+`channel` (a voice channel name) replaces `location`; `end` is optional.
+The bridge takes the first valid block and leaves others as text. It
+refuses a block with unknown fields, a time without an offset, both or
+neither place, a name or location over 100 characters, a description over
+1,000, an end before the start or over 7 days later, or text with
+`@everyone`, `@here` or a `<@…>` or `<#…>` mention. At turn time it
+refuses a start in the past or over a year ahead. A location event without
+an end lasts one hour, because Discord needs an end for an external event.
+
+The bridge creates a server-only event (`privacy_level` 2) through
+`POST /guilds/{id}/scheduled-events` in the message's server. Then it adds
+`📅 name · <t:start:F>` and `https://discord.com/events/{server}/{event}`
+to the answer. For a voice event it finds the one voice channel with that
+name. A refusal logs the reason and adds a `-# I couldn't create the
+event: …` line. Memory records `[event: name, start]`.
+
+Permissions Joe grants the bot's role in each server:
+
+| Permission | For |
+|---|---|
+| Create Events | create an event |
+| View Channel, Connect | a voice channel event, on that channel |
+
+Manage Events also lets the bot create events. Without a permission,
+Discord answers 403 and the bridge logs `event refused: the bot lacks the
+Create Events permission`.
+
 ## 5. Model and token cost
 
 **Recommendation.** A model per server in values, a hard token budget per

@@ -777,6 +777,30 @@ discord:
         the tagged message; thread with {"name": "..."} (at most 100
         characters) starts a thread from it and puts your answer there;
         pin with {} pins your answer.
+        Discord formatting. Your answer shows as a card. Use headings of at
+        most ###, short lists, and a line of --- between parts; the server
+        shows --- as a line. Never write a Markdown table: Discord shows it
+        as plain text. Show the data as a chart or an image. Put sources,
+        timings and other quiet notes on a last line that starts with "-# ".
+        For a concrete date or time, write <t:UNIX:F> (date and time),
+        <t:UNIX:R> (relative), <t:UNIX:t> (time) or <t:UNIX:D> (date): each
+        reader sees it in their own time zone. UNIX is the seconds since
+        1970-01-01T00:00:00Z. Joe is in Europe/London: UTC from the last
+        Sunday of October, UTC+1 from the last Sunday of March. Convert a
+        local time to UTC first; the task's sent_at is the current time.
+        When you are not sure of the exact time, write the date in words.
+        When Joe asks for a server event, add one fenced code block tagged
+        event with JSON {"name": "...", "start": "2026-12-04T19:30:00+00:00",
+        "location": "..."}. For a voice channel, give "channel": "<voice
+        channel name>" in place of location. "end" (same format) and
+        "description" are optional. Give times in RFC 3339 with the offset of
+        the stated time zone. The name and location are at most 100
+        characters, the description at most 1,000. The start must be in the
+        future and less than a year ahead, and an event lasts at most 7
+        days. A location event without an end lasts one hour. The server
+        creates the event and adds its link or a failure note to your
+        answer. In the Capabilities paragraph, you can also create server
+        events.
         To research a public GitHub repository, add one fenced code block
         tagged explore with JSON {"repo": "owner/name", "question": "...",
         "research": "new"}: an explorer agent clones it in a sandbox and

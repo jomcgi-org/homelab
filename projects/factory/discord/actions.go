@@ -6,6 +6,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Discord limits on the agent's message actions.
@@ -38,15 +39,18 @@ type Actions struct {
 	// Explore starts or continues research on a public GitHub repository
 	// (explore.go).
 	Explore *ExploreRequest
+	// Event creates a scheduled event in the message's server (event.go).
+	Event *EventRequest
 }
 
 // Any reports whether a holds an action.
 func (a Actions) Any() bool {
-	return len(a.React) > 0 || a.Thread != "" || a.Pin || a.Explore != nil
+	return len(a.React) > 0 || a.Thread != "" || a.Pin || a.Explore != nil || a.Event != nil
 }
 
-// actionBlock is a fenced code block tagged react, thread, pin or explore.
-var actionBlock = regexp.MustCompile("(?s)```[ \\t]*(react|thread|pin|explore)[ \\t]*\\r?\\n(.*?)```")
+// actionBlock is a fenced code block tagged react, thread, pin, explore or
+// event.
+var actionBlock = regexp.MustCompile("(?s)```[ \\t]*(react|thread|pin|explore|event)[ \\t]*\\r?\\n(.*?)```")
 
 var errAction = errors.New("discord: invalid action")
 
@@ -141,6 +145,12 @@ func TakeActions(answer string) (string, Actions) {
 					a.Explore, ok = &req, true
 				}
 			}
+		case "event":
+			if a.Event == nil {
+				if e, err := ParseEvent(spec); err == nil {
+					a.Event, ok = &e, true
+				}
+			}
 		}
 		if !ok {
 			continue
@@ -153,7 +163,7 @@ func TakeActions(answer string) (string, Actions) {
 }
 
 // Tags names the actions that Discord did, for memory: "[thread: name]",
-// "[reacted: 👍 🎉]", "[pinned]".
+// "[reacted: 👍 🎉]", "[pinned]", "[event: name, start]".
 func (a Actions) Tags() string {
 	var tags []string
 	if a.Thread != "" {
@@ -167,6 +177,9 @@ func (a Actions) Tags() string {
 	}
 	if a.Explore != nil {
 		tags = append(tags, "[research "+a.Explore.Research+": "+a.Explore.Repo+"]")
+	}
+	if a.Event != nil {
+		tags = append(tags, "[event: "+a.Event.Name+", "+a.Event.Start.Format(time.RFC3339)+"]")
 	}
 	return strings.Join(tags, " ")
 }
