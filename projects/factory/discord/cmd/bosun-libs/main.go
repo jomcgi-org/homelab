@@ -86,9 +86,11 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// Old versions go, so the bucket's quota holds only what pages load.
+	// Pages published earlier still load the library versions they were
+	// written with, so a library stays after the image stops shipping it.
+	// Only a page the image no longer ships is deleted.
 	for key := range stored {
-		if !shipped[key] {
+		if !shipped[key] && !strings.HasSuffix(key, ".js") {
 			if err := s3.Delete(ctx, key); err != nil {
 				return fmt.Errorf("%s: %w", key, err)
 			}
