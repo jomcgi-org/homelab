@@ -110,6 +110,29 @@ func TestFindTablesIgnoresCodeAndProse(t *testing.T) {
 	}
 }
 
+func TestFindTablesFollowsFenceLength(t *testing.T) {
+	answer := "````markdown\n```\n| x | y |\n|---|---|\n````\n| a | b |\n|---|---|\n| 1 | 2 |\n"
+	tables := findTables(answer)
+	if len(tables) != 1 || tables[0].columns[0] != "a" {
+		t.Errorf("tables = %+v", tables)
+	}
+}
+
+type downRenderer struct{ calls int }
+
+func (d *downRenderer) Render(context.Context, string, []byte) ([]byte, error) {
+	d.calls++
+	return nil, context.DeadlineExceeded
+}
+
+func TestVisualsStopsCallingADownRenderer(t *testing.T) {
+	d := &downRenderer{}
+	text, _, files := Visuals(context.Background(), d, capabilityMatrix+"\n\n"+capabilityMatrix)
+	if d.calls != 1 || len(files) != 0 || strings.Count(text, "Capability | Status | Notes") != 2 {
+		t.Errorf("calls %d, files %d, text %q", d.calls, len(files), text)
+	}
+}
+
 func TestDisplayWidthCountsEmojiAsTwo(t *testing.T) {
 	for s, want := range map[string]int{"abc": 3, "✅": 2, "🚧": 2, "❤️": 2, "👩‍💻": 4, "日本": 4} {
 		if got := displayWidth(s); got != want {

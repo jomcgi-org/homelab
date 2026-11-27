@@ -21,6 +21,18 @@ type markdownTable struct {
 
 var delimiterCell = regexp.MustCompile(`^:?-+:?$`)
 
+// fenceRun returns the backticks or tildes that start line.
+func fenceRun(line string) string {
+	if line == "" || (line[0] != '`' && line[0] != '~') {
+		return ""
+	}
+	n := 1
+	for n < len(line) && line[n] == line[0] {
+		n++
+	}
+	return line[:n]
+}
+
 // splitRow returns a table line's cells. It drops the outer pipes, splits at
 // pipes that are not escaped and trims each cell.
 func splitRow(line string) []string {
@@ -93,13 +105,15 @@ func findTables(answer string) []markdownTable {
 	for i := 0; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i].text)
 		if fence != "" {
-			if strings.HasPrefix(trimmed, fence) {
+			// A fence closes at a line of at least as many of its marks.
+			if run := fenceRun(trimmed); len(run) >= len(fence) && run[0] == fence[0] &&
+				strings.TrimSpace(trimmed[len(run):]) == "" {
 				fence = ""
 			}
 			continue
 		}
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			fence = trimmed[:3]
+		if run := fenceRun(trimmed); len(run) >= 3 {
+			fence = run
 			continue
 		}
 		if i+1 >= len(lines) || !strings.Contains(trimmed, "|") {

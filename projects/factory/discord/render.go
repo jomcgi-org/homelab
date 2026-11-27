@@ -67,13 +67,19 @@ func Visuals(ctx context.Context, r Renderer, answer string) (text, memo string,
 		items = append(items, item{start: t.start, end: t.end, kind: "table", spec: t.spec(), table: t})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].start < items[j].start })
+	// After a timeout or a connection error the renderer is not tried
+	// again, so a slow renderer delays the reply once, not once per item.
+	down := false
 	render := func(it item) []byte {
-		if r == nil || len(files) == maxImages {
+		if r == nil || down || len(files) == maxImages {
 			return nil
 		}
 		rctx, cancel := context.WithTimeout(ctx, renderTimeout)
 		defer cancel()
 		png, err := r.Render(rctx, it.kind, it.spec)
+		if err != nil && !errors.Is(err, ErrRenderRefused) {
+			down = true
+		}
 		if err != nil || len(png) == 0 || len(png) > maxImageBytes {
 			return nil
 		}
