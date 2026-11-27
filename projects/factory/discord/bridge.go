@@ -457,13 +457,20 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	}
 }
 
+// reply answers m with a fixed notice or failure text.
 func (b *Bridge) reply(ctx context.Context, m Message, text string) {
-	b.replyWith(ctx, m, text, nil)
+	r := NewReply(text, m.ID)
+	r.Accent = noticeAccent(text)
+	b.sendReply(ctx, m, r)
 }
 
 // replyWith answers m with text and any rendered images.
 func (b *Bridge) replyWith(ctx context.Context, m Message, text string, files []File) {
-	if err := b.Replies.Send(ctx, m.ChannelID, WithImages(NewReply(text, m.ID), text, files)); err != nil {
+	b.sendReply(ctx, m, WithImages(NewReply(text, m.ID), text, files))
+}
+
+func (b *Bridge) sendReply(ctx context.Context, m Message, r Reply) {
+	if err := b.Replies.Send(ctx, m.ChannelID, r); err != nil {
 		b.Log.WarnContext(ctx, "reply failed", "channel", m.ChannelID, "message", m.ID, "error", err)
 	}
 }
@@ -474,8 +481,9 @@ type delivered struct {
 }
 
 // deliver posts a turn's answer and does its actions in order: start the
-// thread, post the text and the poll (into the thread when it exists),
-// react to the tagged message, then pin the text reply. A failed action is
+// thread, create the event (its link or failure goes in the text), post the
+// text and the poll (into the thread when it exists), react to the tagged
+// message, then pin the text reply. A failed action is
 // logged and skipped. done holds the actions that Discord did. Only Turn
 // calls it: notices, failure replies and operator turns do no actions.
 func (b *Bridge) deliver(ctx context.Context, l *slog.Logger, actor Actor, m Message, acts Actions, text string, files []File, poll *Poll) (done Actions, posted delivered) {
@@ -489,6 +497,13 @@ func (b *Bridge) deliver(ctx context.Context, l *slog.Logger, actor Actor, m Mes
 			// thread starts from the tagged message.
 			channelID, replyTo = id, ""
 		}
+	}
+	if acts.Event != nil {
+		line, ok := b.createEvent(ctx, l, m, *acts.Event)
+		if ok {
+			done.Event = acts.Event
+		}
+		text = strings.TrimSpace(text + "\n\n" + line)
 	}
 	replyID := ""
 	if text != "" || len(files) > 0 || (poll == nil && !acts.Any()) {

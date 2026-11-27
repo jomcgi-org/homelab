@@ -61,6 +61,8 @@ func NotificationHandler(channels map[string]string, credential func() (string, 
 		reply.Components = append(reply.Components, ReplyComponent{Type: componentText, Content: ref})
 		reply.Nonce = nonce
 		reply.EnforceNonce = true
+		// postedToday finds the ref in top-level components: no card.
+		reply.Accent = 0
 
 		// One check-then-post at a time, so concurrent replays post once.
 		mu.Lock()

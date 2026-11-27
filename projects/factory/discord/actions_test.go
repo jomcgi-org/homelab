@@ -97,7 +97,7 @@ func TestRESTActionCalls(t *testing.T) {
 	want := []string{
 		"PUT /channels/5/messages/9/reactions/%F0%9F%91%8D/@me ",
 		`POST /channels/5/messages/9/threads {"name":"Plans","auto_archive_duration":1440}`,
-		`POST /channels/777/messages {"flags":32768,"components":[{"type":10,"content":"hi"}],"allowed_mentions":{"parse":[],"replied_user":false}}`,
+		`POST /channels/777/messages {"flags":32768,"components":[{"type":17,"accent_color":2783446,"components":[{"type":10,"content":"hi"}]}],"allowed_mentions":{"parse":[],"replied_user":false}}`,
 		"PUT /channels/777/messages/pins/555 ",
 	}
 	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
