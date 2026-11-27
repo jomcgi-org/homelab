@@ -79,9 +79,9 @@ const maxNotices = 16
 
 // Fixed replies; none carries model output or Discord text.
 const (
-	ReplyBusy       = "I'm busy in this channel; try again in a minute."
-	ReplyLimited    = "I've reached my limit for now; try again later."
-	ReplyFailed     = "I couldn't answer that right now."
+	ReplyBusy    = "I'm busy in this channel; try again in a minute."
+	ReplyLimited = "I've reached my limit for now; try again later."
+	ReplyFailed  = "I couldn't answer that right now."
 	// ReplyPollFailed answers a poll-only answer that Discord refused.
 	ReplyPollFailed = "I couldn't post that poll."
 )
