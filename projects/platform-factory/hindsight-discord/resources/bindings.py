@@ -4,9 +4,8 @@ The REST API keeps the tenant key, which only the bridge holds. MCP takes a
 binding token instead. Each binding names its banks and tools; Hindsight
 registers only `recall` (HINDSIGHT_API_MCP_ENABLED_TOOLS), so a token can
 neither retain, reflect nor delete. A binding with several banks is used on
-the multi-bank endpoint `/mcp/`: each call names its bank in `bank_id`, and
-a call without one targets the session bank, which no binding lists, so it
-is refused. Recall results are wrapped as untrusted memory.
+the multi-bank endpoint `/mcp/`: each call must name its bank in `bank_id`,
+and the validator checks it against the binding. Recall results are wrapped as untrusted memory.
 """
 
 import json
@@ -15,6 +14,7 @@ from contextvars import ContextVar
 from hmac import compare_digest
 from typing import NamedTuple
 
+from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
 from fastmcp.tools.base import ToolResult
 from hindsight_api.config import get_config
@@ -110,6 +110,12 @@ class BindingValidator(OperationValidatorExtension):
 
 class RecallBoundary(Middleware):
     async def on_call_tool(self, context, call_next):
+        # A recall must name its bank. Without bank_id Hindsight falls back
+        # to a URL, header or alias bank, which the caller did not choose.
+        if context.message.name == "recall" and not (
+            context.message.arguments or {}
+        ).get("bank_id"):
+            raise ToolError("recall requires bank_id")
         result = await call_next(context)
         if context.message.name != "recall":
             return result

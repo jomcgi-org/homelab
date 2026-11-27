@@ -26,6 +26,7 @@ RECALL_TOKEN = "r" * 64
 SECRET_VALUES = {"tenant-api-key": TENANT_KEY, "recall-token": RECALL_TOKEN}
 # A bank in the recall binding (resources/hindsight.yaml MCP_BINDINGS).
 BANK = "discord-1501965852042330302"
+OTHER = "discord-1"
 
 
 def deployed_env():
@@ -141,9 +142,12 @@ def test_rest_requires_the_tenant_key(server, token, status):
 class MCP:
     """A minimal streamable-HTTP MCP client: initialize, then JSON-RPC calls."""
 
-    def __init__(self, base, path, token):
+    def __init__(self, base, path, token, headers=None):
         self.base, self.path, self.token, self.next_id = base, path, token, 1
-        self.headers = {"Accept": "application/json, text/event-stream"}
+        self.headers = {
+            "Accept": "application/json, text/event-stream",
+            **(headers or {}),
+        }
         status, headers, _ = self.post(
             "initialize",
             {
@@ -237,9 +241,6 @@ def test_recall_token_lists_only_recall_and_recalls_a_named_bank(server, bank):
 @pytest.mark.parametrize(
     "name,arguments",
     [
-        # No bank_id: the session bank is in no binding.
-        ("recall", {"query": "plans"}),
-        ("recall", {"query": "plans", "bank_id": "discord-1"}),
         ("retain", {"content": "planted", "bank_id": BANK}),
         ("reflect", {"query": "plans", "bank_id": BANK}),
         ("delete_bank", {"bank_id": BANK}),
@@ -251,6 +252,37 @@ def test_recall_token_refuses_other_banks_and_tools(server, bank, name, argument
         "tools/call", {"name": name, "arguments": arguments}
     )
     assert refused(reply), reply
+
+
+@pytest.fixture(scope="module")
+def other_bank(server):
+    # A real bank outside the binding, so a refusal is the binding's.
+    status, _, body = request(
+        server, "PUT", f"/v1/default/banks/{OTHER}", TENANT_KEY, {}
+    )
+    assert status in (200, 201), body
+    return OTHER
+
+
+def test_recall_token_cannot_read_a_bank_outside_the_binding(server, bank, other_bank):
+    reply = MCP(server, "/mcp/", RECALL_TOKEN).call(
+        "tools/call",
+        {"name": "recall", "arguments": {"query": "plans", "bank_id": other_bank}},
+    )
+    assert "Operation outside MCP binding" in json.dumps(reply), reply
+
+
+@pytest.mark.parametrize(
+    "path,headers",
+    [("/mcp/", {}), ("/mcp/", {"X-Bank-Id": BANK}), (f"/mcp/{BANK}/", {})],
+    ids=["session-bank", "bank-header", "bank-path"],
+)
+def test_recall_without_bank_id_is_refused(server, bank, path, headers):
+    # Even where Hindsight would fall back to an allowed bank.
+    reply = MCP(server, path, RECALL_TOKEN, headers).call(
+        "tools/call", {"name": "recall", "arguments": {"query": "plans"}}
+    )
+    assert "recall requires bank_id" in json.dumps(reply), reply
 
 
 def test_rest_recall_works_with_the_tenant_key(server, bank):
