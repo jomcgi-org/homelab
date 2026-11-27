@@ -3,6 +3,7 @@ package artifacts
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -178,6 +179,11 @@ func (h *Handler) call(ctx context.Context, id actorjwt.Identity, raw json.RawMe
 			key = a.Server + "/" + a.Channel + "/" + a.Path
 			out, err = h.Store.Put(ctx, a)
 		}
+	case "template":
+		var a struct{}
+		if err = strictDecode(p.Arguments, &a); err == nil {
+			out = map[string]string{"html": Template}
+		}
 	case "list":
 		var a Place
 		if err = strictDecode(p.Arguments, &a); err == nil {
@@ -253,17 +259,29 @@ const placeSchema = `"server":{"type":"string","pattern":"^[0-9]{15,21}$","descr
 
 const pathSchema = `"path":{"type":"string","maxLength":200,"description":"File path under the channel, e.g. report.html or charts/q3.png. Letters, digits, '.', '_', '-'; up to 5 segments; extension .html .md .txt .csv .json .svg or .png."}`
 
+// Template is the house HTML page Bosun starts an artifact from: design
+// tokens, light and dark themes, a system font stack and no external assets.
+//
+//go:embed template.html
+var Template string
+
 // Tools is the fixed tool list.
 var Tools = []Tool{
 	{
 		Name: "put",
 		Description: fmt.Sprintf("Publish one file and return its URL for Joe. Replaces a file at the same path. At most %d bytes. "+
-			"HTML runs sandboxed with no network: inline every style, script and image; no CDN or remote URL loads. PNG content is base64 with encoding base64; other types are UTF-8 text.", MaxBytes),
+			"HTML runs sandboxed with no network: inline every style, script and image; no CDN or remote URL loads. Start an HTML page from the template tool. PNG content is base64 with encoding base64; other types are UTF-8 text.", MaxBytes),
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + placeSchema + `,` + pathSchema + `,` +
 			`"content":{"type":"string","description":"File content."},` +
 			`"encoding":{"type":"string","enum":["utf-8","base64"],"default":"utf-8"}},` +
 			`"required":["server","channel","path","content"],"additionalProperties":false}`),
 		Annotations: map[string]any{"title": "Publish an artifact", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
+	},
+	{
+		Name:        "template",
+		Description: "Return the house HTML template for an artifact page: colour tokens, light and dark themes, cards, stats, a table and an inline SVG chart, with no external assets. Fill it in and publish it with put.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Annotations: map[string]any{"title": "Get the page template", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	},
 	{
 		Name:        "list",

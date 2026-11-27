@@ -1757,6 +1757,23 @@ def test_discord_server_agent_ships_off_in_the_chart() -> None:
     ]
 
 
+def test_discord_server_agent_prompt_sets_visual_style() -> None:
+    # HOME-909: Joe asked for one diagram style and for no invented facts
+    # about real people. The renderer enforces the theme; the prompt keeps
+    # diagrams small.
+    docs = _render(_HOMELAB)
+    agent = _in(docs, "Agent", _HOMELAB_NS, "homelab")["spec"]
+    prompt = " ".join(agent["template"]["inline"]["systemPrompt"].split())
+    for line in (
+        "never set a theme or init",
+        "Tell one story per diagram: at most about 10 nodes",
+        "no emoji in Mermaid",
+        "start from the template tool's HTML",
+        "Never invent motives, quotes or facts about real people",
+    ):
+        assert line in prompt, line
+
+
 def test_discord_server_agent_runs_hermes_with_no_tools() -> None:
     # HOME-907: one namespace, atespace and gVisor WorkerPool for the homelab
     # server; the shared OpenRouter key injected at the egress gateway; a

@@ -347,7 +347,9 @@ directives (`default-src 'none'`, `connect-src 'none'`) stop a page from
 reaching any origin, so it cannot send what it holds past the egress
 gateway's scanner. An HTML artifact must inline its CSS, scripts and
 images; a CDN library does not load. The tools' descriptions tell the
-model this. Residual: a page can still navigate itself to another URL.
+model this. The read-only `template` tool returns the house page
+(`artifacts/template.html`): colour tokens, light and dark themes through
+`prefers-color-scheme`, a system font stack and no external assets. Residual: a page can still navigate itself to another URL.
 
 The prefix is not a security boundary. One homelab session answers Joe in
 all four servers (`servers: all`), so the actor JWT names the homelab
@@ -371,11 +373,11 @@ discord:
           # No Secret: the gateway injects an actor JWT.
           actorJwt:
             audiences: [bosun-artifacts]
-          tools: [put, list, delete]
+          tools: [put, template, list, delete]
 ```
 
 It renders to this RemoteMCPServer in `discord-1501965852042330302`, and
-the Agent's tools name it with `tools: [put, list, delete]`:
+the Agent's tools name it with `tools: [put, template, list, delete]`:
 
 ```yaml
 apiVersion: api.kagent.dev/v1alpha3
@@ -396,6 +398,16 @@ The egress gateway already reaches the service on 8080
 that kagent admits the origin for the actor, as it does for a
 RemoteMCPServer with `headersFrom`. Then a `put` from the agent returns a
 URL that opens after Joe signs in.
+
+### Visual style (HOME-909)
+
+Joe asked for sleek, consistent visuals (2026-11-27). These parts hold it:
+
+| Part | Where |
+| --- | --- |
+| One house theme for every Mermaid, Vega-Lite and SVG image: Inter, slate palette, color emoji, white background, 2x raster. The agent cannot replace it. | `render/theme/`, `render/README.md` |
+| The prompt's "Visual style" lines: one story per diagram, about 10 nodes at most, one direction, short labels, no emoji in Mermaid, Vega-Lite for data, the artifact template for rich pages | `chart/values.yaml` `systemPrompt` |
+| The prompt's "Accuracy" line: no invented motives, quotes or facts about real people; a joke must be obvious | `chart/values.yaml` `systemPrompt` |
 
 ### Research (HOME-909)
 

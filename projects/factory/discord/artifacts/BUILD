@@ -7,6 +7,7 @@ go_library(
         "mcp.go",
         "s3.go",
     ],
+    embedsrcs = ["template.html"],
     importpath = "github.com/jomcgi/homelab/projects/factory/discord/artifacts",
     visibility = ["//visibility:public"],
     deps = ["//projects/factory/broker/actorjwt"],
