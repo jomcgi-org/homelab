@@ -321,3 +321,24 @@ func TestPolicyReadsUsers(t *testing.T) {
 		t.Error("accepted users friends")
 	}
 }
+
+// A session epoch puts every channel in a new session: kagent pins a session
+// to the Agent revision that created it (HOME-915).
+func TestSessionEpochStartsNewChannelSessions(t *testing.T) {
+	if got := EpochChannelRequestID("")(channel, 0); got != ChannelRequestID(channel, 0) {
+		t.Errorf("no epoch = %q", got)
+	}
+	if got := EpochChannelRequestID("tools1")(channel, 2); got != "discord-channel-tools1-"+channel+"-2" {
+		t.Errorf("epoch tools1 = %q", got)
+	}
+	base := `"guilds":{"1":{}},"userLimit":{"count":5,"window":"10m"},"guildLimit":{"count":30,"window":"1h"},"globalLimit":{"count":200,"window":"24h"}`
+	c, err := ParsePolicy([]byte(`{` + base + `,"sessionEpoch":"tools1"}`))
+	if err != nil || c.SessionEpoch != "tools1" {
+		t.Fatalf("policy epoch = %q, %v", c.SessionEpoch, err)
+	}
+	for _, bad := range []string{`"Tools1"`, `"a-b"`, `"12345678901234567"`} {
+		if _, err := ParsePolicy([]byte(`{` + base + `,"sessionEpoch":` + bad + `}`)); err == nil {
+			t.Errorf("accepted sessionEpoch %s", bad)
+		}
+	}
+}

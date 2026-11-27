@@ -280,47 +280,107 @@ identity at the gateway, never from the prompt.
 - **Writes.** The bridge stays the only writer of Discord messages
   (section 5).
 
-## 4. Tools per server
+## 4. Tools
 
-**Recommendation.** A per-guild MCP allowlist in values, empty by default,
-and read-only tools only until Joe names a write tool for one server.
+Joe chose the homelab agent's tools on 2026-11-27
+([HOME-915](https://factory-plan.jomcgi.dev/factory/issue/HOME-915)): web
+search, web fetch, code execution, the Scotland outdoors planner, Hindsight
+recall and factory MCP. Web search, web fetch, code execution and the
+Scotland planner are in deploy values
+(`discord.serverAgents.homelab.serverTools`, `mcpServers`). Factory MCP
+waits for factory-mcp.jomcgi.dev, which is not built yet (HOME-900; binding
+in HOME-916). Recall as a tool waits for a bank bound to the turn's server
+(see "Recall as a tool" below); the bridge still puts the turn's own
+server memories in each prompt.
 
-```yaml
-discord:
-  servers:
-    "1501965852042330302":   # homelab
-      model: <model id>
-      mcpServers:
-        - name: factory
-          url: https://factory-mcp.jomcgi.dev/mcp
-          secret: discord-homelab-factory-mcp
-          tools: [<read-only tool names from HOME-902>]
+```mermaid
+flowchart LR
+  H["Hermes actor (placeholders only)"] -- "Messages API + server tools" --> G["Substrate egress gateway"]
+  H -- "MCP plan, check, aurora, light" --> G
+  G -- "x-api-key" --> A["api.anthropic.com: web_search, web_fetch, code_execution"]
+  G -- "no credential" --> S["scotland-mcp.jomcgi.dev"]
 ```
 
-- The chart renders one RemoteMCPServer per entry in the server's
-  namespace, with discovery off and the listed tools only, as
-  `repositories[].mcpServers` does today.
-- The gateway injects the tool token from key `token` of the named Secret.
-- Hermes' own toolsets stay off through `agent.disabled_toolsets`:
-  terminal, file, code execution, browser, web, delegation, cron, skills
-  and the `discord` and `discord_admin` toolsets
-  ([toolsets](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/reference/toolsets-reference.md)). Web search stays in the
-  model call (`:online`).
-- **Homelab agent.** People other than Joe can post in the homelab server,
-  and an answer shows them what a tool returned. So the allowlist names
-  read tools by the data they return:
+| Tool | Runs at | Limit | Cost (Joe's Anthropic key) |
+| --- | --- | --- | --- |
+| `web_search` (`web_search_20250305`) | Anthropic | 5 per Messages request | $0.01 a search, plus result tokens at the model's input price |
+| `web_fetch` (`web_fetch_20250910`) | Anthropic | 3 per request; only URLs already in the chat | Result tokens only |
+| `code_execution` (`code_execution_20260521`) | Anthropic sandbox, no network | none | Tokens, and container time after the organization's free monthly hours ($0.05 an hour) |
+| Scotland `plan`, `check`, `aurora`, `light` | scotland-connector, public, read-only | Hermes MCP timeout | None |
 
-  | Data class | Example | Slice 5 |
-  | --- | --- | --- |
-  | Public repository state | PR state, check results, merged commits | Allowed |
-  | Status fields | Issue key, column and title; run state and times | Allowed |
-  | Alert state | Firing alert names and severity | Allowed |
-  | Issue and run text | Descriptions, comments, agent output, logs | Refused: can hold private data |
-  | Decisions and credentials | Joe's comments, secrets, tokens | Refused |
+- **Narrow opening.** The kagent fork's Hermes runner (jomcgi-org/kagent#6)
+  names only the bound MCP servers in `platform_toolsets.api_server`, so no
+  built-in Hermes toolset loads, and renders each binding's tools as
+  `tools.include`. MCP sampling, elicitation, resources, prompts, Tool
+  Search and Nous connectors are off. Hermes builds Anthropic `tools` from
+  function tools only, so a runner plugin adds the three server tools to
+  each Messages request. The plugin allows one tool call per model step:
+  Hermes drops server tool blocks from history, so a server call left
+  pending beside an MCP call would never finish. A paused server loop
+  (`pause_turn`) ends the turn with the text so far.
+- **Egress.** kagent grants the actor only the model origin, the control
+  plane and the MCP servers' origins. Anthropic runs the server tools, so
+  they add no origin. The gateway's Cilium policy admits
+  `scotland-mcp.jomcgi.dev`.
+- **New sessions.** kagent pins a session to the Agent revision that
+  created it, so an existing channel session keeps its old tools and
+  prompt. The bridge policy's `sessionEpoch` is part of each channel
+  session's request ID: a new value starts every channel on the current
+  revision. The old context goes; Hindsight memory stays. Argo CD syncs the
+  bridge (wave 0) before the Agent (wave 2), so set a new value in a later
+  change, after kagent shows the new revision as the latest successful
+  one; a turn in between would pin the new ID to the old revision.
+- **Scotland sources.** The prompt asks the agent to lead with the verdict
+  and to credit each `meta.sources` entry, as the connector's instructions
+  require.
 
-  It gets no tool that files, dispatches, approves or merges. factory-mcp (HOME-900) is a Joe-only OAuth server, so
-  the agent needs its own read-only service identity there.
-- Other servers get no MCP tools in the first slices.
+### Tool security
+
+Each turn's prompt holds other people's channel text, recalled memories,
+web pages and tool results. All of it is untrusted, and none of it may
+cause a write.
+
+- **No write tool.** Every bound tool is read-only. The only planned write
+  is factory-mcp's create ticket (HOME-916). The prompt must then allow it
+  only when Joe's own tagging message asks for a ticket.
+- **Discord actions.** The bridge turns a fenced poll, react, thread or
+  pin block in an answer into a Discord action. A fetched page could hold
+  such a block, so the prompt allows one only when the tagging message
+  asks for that action and never from a page, memory or tool result. The
+  bridge does not check this yet; a follow-up can require the action word
+  in Joe's message before it acts.
+- **Allowlists, not prompts, stop new tools.** `tools.include` lists each
+  MCP tool by exact name; the compiler refuses a binding without a list, a
+  `requireApproval` binding (Hermes denies every approval) and header
+  values with `${`, which Hermes expands.
+- **Placeholders only.** The actor holds `kagent-credential-injected` for
+  the model key; the egress gateway replaces it.
+- **Exfiltration.** A search query and a fetched URL leave the cluster
+  through Anthropic. The prompt forbids memories, private details or
+  secrets in a query or URL; web fetch reads only URLs already in the chat.
+  A planted URL in channel text can still be fetched. Each turn holds the
+  server's recalled memories in the same session that searches, so the
+  prompt is the only control on what a query carries: memory text could
+  reach a search engine. Joe decides whether to keep this or to run
+  searches without the session's memories (Open decisions).
+- **Untrusted results.** The prompt tells the agent never to follow
+  instructions in tool results, pages or memories.
+
+### Recall as a tool
+
+hindsight-discord has a recall-only MCP token for the four server banks
+(`resources/bindings.py`, live since #8759), but no Agent binds it yet.
+The token accepts any of the four banks and the model names the bank, and
+nothing trusted tells Hindsight which server a turn came from. A fetched
+page or a memory could then steer a recall into another server's bank,
+and the answer would post that server's memories in a group channel.
+Options, recommended first:
+
+| Option | Enforcement | Cost |
+| --- | --- | --- |
+| Bind the bank to the session: the bridge records channel to server for each session it creates, and the Hindsight extension accepts an actor JWT and allows only that session's server bank | Gateway and Hindsight, no prompt | A session-to-server map that Hindsight can read, and actor JWT on the RemoteMCPServer |
+| One Agent per server, each with a one-bank token (section 3's design) | Credentials per atespace | Four Agents and WorkerPools; Joe's cross-server session goes |
+| Bind the token now and keep the prompt rule (own bank unless Joe names another server) | Prompt only | Injected text can still cause a cross-server read |
 
 ### Artifacts (HOME-909)
 
@@ -797,6 +857,8 @@ Each decision names the rule that needs Joe.
 | Homelab agent's factory access | factory-mcp is Joe-only (HOME-900) | Read-only service identity for the agent; no factory tools |
 | Model key per server | HOME-162 rule 2 | One OpenRouter key and limit per server; one shared key with bridge limits only |
 | Hermes `MEMORY.md` writes | HOME-162 rule 1 | Off; on for the homelab server only; on everywhere |
+| Web search beside server memories | HOME-915 tool security | Keep one session with memories and searches, prompt rule only; run searches in a turn without the session's memories; drop web search |
+| Recall as a tool | HOME-915, "Recall as a tool" | Bind the bank to the session at the gateway; one Agent per server; bind now with the prompt rule only |
 | Private channels in recall (follow-up) | HOME-904 | Tag non-public channels at ingest and leave them out of server-wide recall; keep server-wide recall as decided |
 | Session scope | HOME-162 rule 4 | One session per server; one session per channel (one actor each) |
 | First server | HOME-905 scope | homelab only; homelab and Loom together |
