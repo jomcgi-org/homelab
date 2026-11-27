@@ -1,5 +1,6 @@
 # invariant: CLUS-1
 # invariant: CLUS-2
+# invariant: CLUS-7
 # k3s server configuration shared by every factory home node.
 #
 # Installed to /etc/rancher/k3s/config.yaml by install-node.sh. Per-node join
