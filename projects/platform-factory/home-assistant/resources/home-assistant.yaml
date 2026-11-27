@@ -61,6 +61,26 @@ spec:
               mountPath: /seed/http-storage.json
               subPath: http-storage.json
               readOnly: true
+        # Authentik sign-in (configuration.yaml auth_oidc). The script checks
+        # the release zip against a pinned sha256.
+        - name: auth-oidc
+          image: ghcr.io/home-assistant/home-assistant:2026.11.3@sha256:24e541ddae5818bf8eb27898b9ba00d0c344a655aa5097e9e9bd4b19356be847
+          command: [python3, -I, /seed/install-auth-oidc.py]
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: configuration
+              mountPath: /seed/install-auth-oidc.py
+              subPath: install-auth-oidc.py
+              readOnly: true
       containers:
         - name: home-assistant
           image: ghcr.io/home-assistant/home-assistant:2026.11.3@sha256:24e541ddae5818bf8eb27898b9ba00d0c344a655aa5097e9e9bd4b19356be847
