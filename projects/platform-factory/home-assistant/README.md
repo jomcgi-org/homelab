@@ -35,21 +35,26 @@ git; the UI shows it read-only.
 
 ```mermaid
 flowchart LR
-  P[Phone browser] --> A[Authentik: household group + MFA]
+  P[Phone browser] --> A[Authentik: household + MFA]
   A --> E[Edge: home.jomcgi.dev only]
-  E --> H[Home Assistant login: non-admin user]
+  E --> H[HA auth_oidc: same Authentik session]
   H --> D[Heating dashboard]
 ```
 
+Home Assistant signs people in through Authentik with the
+[hass-oidc-auth](https://github.com/christiaangoossens/hass-oidc-auth)
+integration. The `auth-oidc` init container installs a pinned release. The
+first sign-in creates the person's HA user: `authentik Admins` become admins,
+`household` become users.
+
 To add a person:
 
-1. In Authentik, add their account to the `household` group. The edge admits
-   that group on home.jomcgi.dev only.
-2. In Home Assistant, go to Settings → People → Add person. Turn on
-   **Allow login** and leave **Administrator** off.
-3. On their phone, open home.jomcgi.dev, sign in to both, open **Heating** and
-   add it to the home screen. Profile → **Dashboard** sets it as their
-   default.
+1. In Authentik, add their account to the `household` group.
+2. On their phone, open home.jomcgi.dev, sign in, open **Heating** and add it
+   to the home screen. Profile → **Dashboard** sets it as their default.
+
+The owner's password login is the break-glass:
+`https://home.jomcgi.dev/?skip_oidc_redirect=true`.
 
 ## HTTP settings
 
