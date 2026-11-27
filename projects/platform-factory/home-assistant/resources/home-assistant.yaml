@@ -154,3 +154,11 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+    # Philips TV JointSpace API on the LAN (HTTP 1925, HTTPS 1926).
+    - toCIDR: [192.168.4.23/32]
+      toPorts:
+        - ports:
+            - port: "1925"
+              protocol: TCP
+            - port: "1926"
+              protocol: TCP
