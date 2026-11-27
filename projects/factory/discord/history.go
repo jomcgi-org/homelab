@@ -50,8 +50,10 @@ type Component struct {
 // HistoryMessage is a message read from a channel's history.
 type HistoryMessage struct {
 	Message
-	Attachments []Attachment `json:"attachments"`
-	Components  []Component  `json:"components"`
+	Attachments []Attachment     `json:"attachments"`
+	Components  []Component      `json:"components"`
+	Embeds      []HistoryEmbed   `json:"embeds"`
+	Stickers    []HistorySticker `json:"sticker_items"`
 }
 
 // Text is a message's text: its content, or for a Components V2 message,
@@ -170,6 +172,10 @@ type Documents interface {
 type Importer struct {
 	Source HistorySource
 	Store  Documents
+	// Places names the mentions in stored text: users from each message,
+	// channels and roles from the gateway's cache. Nil names users only;
+	// other mentions become unknown.
+	Places *Places
 	Config Config
 	// BotID is Bosun's user: its replies are kept; other bots' and webhooks'
 	// messages are left out unless IncludeBots.
@@ -425,7 +431,9 @@ func (im *Importer) store(ctx context.Context, guildID string, c Channel, day ti
 	var b strings.Builder
 	for i := len(lines) - 1; i >= 0; i-- {
 		m := lines[i]
-		fmt.Fprintf(&b, "%s (%s): %s", m.Author.Username, SentAt(m.Message).UTC().Format(time.RFC3339), m.Text())
+		im.Places.Learn(guildID, m.Message.Users()...)
+		text := im.Places.Resolve(guildID, m.Text(), m.Mentions)
+		fmt.Fprintf(&b, "%s (%s): %s", m.Author.Username, SentAt(m.Message).UTC().Format(time.RFC3339), text)
 		for _, a := range m.Attachments {
 			fmt.Fprintf(&b, " [attachment: %s]", a.Filename)
 		}

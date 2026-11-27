@@ -9,7 +9,16 @@ chart exist (slice 2). Slice 4 (HOME-909) routes tagged messages to the
 homelab agent: a policy entry `serverAgents` maps each guild to the Agent,
 and the bridge keeps one session per channel with request ID
 `discord-channel-<channel>` (`operator.go`, `ChannelRequestID`). Until slice 3, the bridge still recalls
-and puts memories in each prompt. See [Joe only](#joe-only-one-session) for
+and puts memories in each prompt. In a server with `ingest`, each prompt
+also carries `channel_messages_since_your_last_turn` (`channel.go`): the
+bridge reads one page of the channel's history from Discord before the
+tagged message and keeps the messages after Bosun's last one there (at most
+50 lines and 8,000 characters, newest kept; 30 lines when no message of
+Bosun's is in the page). The boundary comes from Discord, so a retained
+ingest buffer or a restarted bridge loses no context. The channel's session
+gets each line once. Text that leaves the bridge (prompt, ingest, import)
+names mentions (`mentions.go`): `@username (nick)`, `@role`, `#channel`,
+`:emoji:`; an unknown user is `@unknown-user`, never a raw ID. See [Joe only](#joe-only-one-session) for
 who the bot answers today. Actions: when
 the agent's answer holds a fenced `poll` block (JSON, Discord's poll
 limits), the bridge posts it as a Discord poll after the text reply

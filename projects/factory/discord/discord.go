@@ -35,7 +35,11 @@ func SentAt(m Message) time.Time {
 type User struct {
 	ID       string `json:"id"`
 	Username string `json:"username"`
-	Bot      bool   `json:"bot"`
+	// GlobalName is the user's display name; Member, in a mention, holds
+	// the server nick.
+	GlobalName string  `json:"global_name"`
+	Bot        bool    `json:"bot"`
+	Member     *Member `json:"member,omitempty"`
 }
 
 // Message is the subset of a Discord MESSAGE_CREATE the bridge reads.
@@ -58,6 +62,18 @@ type Message struct {
 	// turn reads it, under the users: operator gate (HOME-909); the
 	// operator session never does.
 	Referenced *Referenced `json:"referenced_message,omitempty"`
+	// Member is the author's server member; it holds the author's nick.
+	Member *Member `json:"member,omitempty"`
+}
+
+// Users is the message's author, with its nick, and its mentions: the users
+// its text names.
+func (m Message) Users() []User {
+	a := m.Author
+	if m.Member != nil {
+		a.Member = m.Member
+	}
+	return append([]User{a}, m.Mentions...)
 }
 
 // Referenced is the subset of a replied-to message the bridge reads.
@@ -65,6 +81,8 @@ type Referenced struct {
 	ID      string `json:"id"`
 	Author  User   `json:"author"`
 	Content string `json:"content"`
+	// Mentions are the users its text names.
+	Mentions []User `json:"mentions"`
 }
 
 // RepliesTo reports whether m is a reply to a message user id wrote, with

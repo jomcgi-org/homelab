@@ -12,7 +12,7 @@ import (
 func TestNewBackfillReadsTheEnvironment(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	build := func() (*discord.Backfill, error) {
-		return newBackfill(log, discord.Config{}, &discord.REST{}, "http://h/", nil, nil)
+		return newBackfill(log, discord.Config{}, &discord.REST{}, nil, "http://h/", nil, nil)
 	}
 	if b, err := build(); b != nil || err != nil {
 		t.Fatalf("off by default: %v, %v", b, err)

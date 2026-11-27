@@ -107,6 +107,10 @@ func run(log *slog.Logger) error {
 		Log:     log,
 		// Only allowlisted servers are cached: anyone can add the bot.
 		Places: &discord.Places{Keep: func(id string) bool { _, ok := policy.Guilds[id]; return ok }},
+		// History reads a channel's conversation since Bosun's last
+		// message; Lookup names a mentioned user that no message named.
+		History: rest,
+		Lookup:  &discord.UserLookup{Users: rest},
 	}
 	if u := os.Getenv("DISCORD_RENDER_URL"); u != "" {
 		bridge.Render = &discord.HTTPRenderer{BaseURL: u}
@@ -145,7 +149,7 @@ func run(log *slog.Logger) error {
 	}
 
 	reg := prometheus.NewRegistry()
-	backfill, err := newBackfill(log, policy, rest, cfg.hindsightURL, fileValue(cfg.hindsightKey), reg)
+	backfill, err := newBackfill(log, policy, rest, bridge.Places, cfg.hindsightURL, fileValue(cfg.hindsightKey), reg)
 	if err != nil {
 		return err
 	}
