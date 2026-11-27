@@ -313,14 +313,17 @@ entries:
             for group in Group.objects.filter(attributes__has_key="discord_server_id")
         }
         groups = []
-        response = client.session.get(
-            "https://discord.com/api/users/@me/guilds",
-            headers={"Authorization": "Bearer " + token["access_token"]},
-            timeout=10,
-        )
-        if response.status_code == 200:
-            ids = {str(guild.get("id")) for guild in response.json()}
-            groups = sorted(name for server, name in servers.items() if server in ids)
+        try:
+            response = client.session.get(
+                "https://discord.com/api/users/@me/guilds",
+                headers={"Authorization": "Bearer " + token["access_token"]},
+                timeout=10,
+            )
+            if response.status_code == 200:
+                ids = {str(guild.get("id")) for guild in response.json()}
+                groups = sorted(name for server, name in servers.items() if server in ids)
+        except Exception:
+            groups = []
         return {"username": "discord-" + str(info["id"]), "groups": groups}
   - model: authentik_sources_oauth.oauthsource
     id: discord

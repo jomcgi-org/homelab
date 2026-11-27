@@ -117,6 +117,13 @@ def test_discord_sign_in_maps_only_allowlisted_servers():
     assert sign_in(200, []) == {"username": "discord-7", "groups": []}
     # A failed lookup fails closed: no server groups until the next sign-in.
     assert sign_in(429, [homelab]) == {"username": "discord-7", "groups": []}
+    client = Mock()
+    client.session.get.side_effect = TimeoutError("discord")
+    with patch.dict("sys.modules", {"authentik.core.models": models}):
+        out = run(
+            expression, info={"id": 7}, client=client, token={"access_token": "x"}
+        )
+    assert out == {"username": "discord-7", "groups": []}
 
 
 def test_a_synced_member_passes_the_session_gate_and_the_session_is_bounded():
