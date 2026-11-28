@@ -112,6 +112,25 @@ spec:
                         minimum: 8192
                         type: integer
                     type: object
+                  memory:
+                    description: |-
+                      Memory turns on Hermes's built-in memory, MEMORY.md and USER.md, and
+                      keeps both files in an MCP server instead of only on the Actor's
+                      volume. The model gets Hermes's memory tool. Unset keeps memory off.
+                    properties:
+                      remoteMCPServer:
+                        description: |-
+                          RemoteMCPServer names a RemoteMCPServer bound to the agent. The adapter
+                          reads each file with its memory_read tool before a turn and writes a
+                          changed file back with memory_write after it, through the same egress
+                          credential as the binding. The binding must not list memory_read or
+                          memory_write, so the model cannot call them.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - remoteMCPServer
+                    type: object
                   serverTools:
                     description: |-
                       ServerTools adds Anthropic server tools to each Messages API request of

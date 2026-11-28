@@ -36,7 +36,16 @@ Hindsight of its own yet (slice 3), so the bridge recalls for it.
 {{- if or (not $m.url) (empty $m.tools) }}
 {{- fail (printf "discord.serverAgents.%s.mcpServers %s needs url and tools: Hermes registers only listed tools" $server $m.name) }}
 {{- end }}
+{{- if or (has "memory_read" $m.tools) (has "memory_write" $m.tools) }}
+{{- fail (printf "discord.serverAgents.%s.mcpServers %s lists memory_read or memory_write: they are for the runner's memory sync, not the model" $server $m.name) }}
 {{- end }}
+{{- end }}
+{{- /* memory names the binding that holds Hermes's MEMORY.md and USER.md (HOME-921); off until that binding exists. */}}
+{{- if and $a.memory (ne $a.memory "notes") }}
+{{- fail (printf "discord.serverAgents.%s.memory must be notes or empty: only the notes vault serves memory_read and memory_write" $server) }}
+{{- end }}
+{{- $memory := "" }}
+{{- range $m := $mcp }}{{- if and $a.memory (eq $m.name $a.memory) }}{{- $memory = $m.name }}{{- end }}{{- end }}
 ---
 # Kept: deleting it would take the WorkerPool and the session's snapshots.
 apiVersion: v1
@@ -192,8 +201,8 @@ spec:
 {{- end }}
 ---
 # Hermes Agent with the kagent fork's runner (projects/factory/harness/hermes).
-# The runner turns every built-in Hermes toolset, memory and lazy install
-# off, and denies every approval. The Harness CRD admits only a digest reference,
+# The runner turns every built-in Hermes toolset and lazy install off, and
+# memory too unless spec.hermes.memory is set, and denies every approval. The Harness CRD admits only a digest reference,
 # which helm_chart(images) writes into the published chart.
 apiVersion: api.kagent.dev/v1alpha3
 kind: Harness
@@ -205,7 +214,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  {{- if or $a.compression $a.serverTools }}
+  {{- if or $a.compression $a.serverTools $memory }}
   hermes:
     {{- with $a.compression }}
     # Compact before a long chat resends its whole history each turn
@@ -236,6 +245,13 @@ spec:
       {{- if .codeExecution }}
       codeExecution: true
       {{- end }}
+    {{- end }}
+    {{- with $memory }}
+    # Hermes's memory tool on; the runner keeps MEMORY.md and USER.md in
+    # this binding's vault, one copy per server (server-agents.md, "Notes
+    # vault").
+    memory:
+      remoteMCPServer: {{ . }}
     {{- end }}
   {{- else }}
   hermes: {}
@@ -277,7 +293,8 @@ spec:
       {{- /* A binding named notes (HOME-918) adds the notes vault's write rule. */}}
       {{- $notesPrompt := "" }}
       {{- range $m := $mcp }}{{- if eq $m.name "notes" }}{{- $notesPrompt = ($d.notes | default dict).prompt | default "" }}{{- end }}{{- end }}
-      systemPrompt: {{ printf "%s%s%s%s%s" $a.systemPrompt ($a.toolsPrompt | default "") $web $ghPrompt $notesPrompt | quote }}
+      {{- $memoryPrompt := ternary (($d.notes | default dict).memoryPrompt | default "") "" (not (empty $memory)) }}
+      systemPrompt: {{ printf "%s%s%s%s%s%s" $a.systemPrompt ($a.toolsPrompt | default "") $web $ghPrompt $notesPrompt $memoryPrompt | quote }}
       {{- else }}
       systemPrompt: {{ $a.systemPrompt | quote }}
       {{- end }}

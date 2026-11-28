@@ -216,10 +216,36 @@ class _FakeModel(BaseHTTPRequestHandler):
         _FakeModel.calls.append(
             {"path": self.path, "auth": self.headers.get("Authorization"), "body": body}
         )
-        users = [m for m in body.get("messages", []) if m.get("role") == "user"]
+        messages = body.get("messages", [])
+        users = [m for m in messages if m.get("role") == "user"]
         text = f"Hermes answer {len(users)}"
         usage = {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
+        # "remember <fact>" makes one memory tool call, as a model would.
+        call = None
+        last = messages[-1] if messages else {}
+        if (
+            last.get("role") == "user"
+            and str(last.get("content")).startswith("remember ")
+            and "memory" in [t["function"]["name"] for t in body.get("tools") or []]
+        ):
+            fact = str(last["content"]).removeprefix("remember ")
+            call = {
+                "id": "call_memory",
+                "type": "function",
+                "function": {
+                    "name": "memory",
+                    "arguments": json.dumps(
+                        {
+                            "target": "memory",
+                            "operations": [{"action": "add", "content": fact}],
+                        }
+                    ),
+                },
+            }
         if not body.get("stream"):
+            message = {"role": "assistant", "content": None if call else text}
+            if call:
+                message["tool_calls"] = [call]
             self._send(
                 json.dumps(
                     {
@@ -230,26 +256,35 @@ class _FakeModel(BaseHTTPRequestHandler):
                         "choices": [
                             {
                                 "index": 0,
-                                "finish_reason": "stop",
-                                "message": {"role": "assistant", "content": text},
+                                "finish_reason": "tool_calls" if call else "stop",
+                                "message": message,
                             }
                         ],
                     }
                 )
             )
             return
+        delta = {"role": "assistant", "content": text}
+        if call:
+            delta = {"role": "assistant", "tool_calls": [{"index": 0, **call}]}
         chunks = [
             {
                 "choices": [
                     {
                         "index": 0,
-                        "delta": {"role": "assistant", "content": text},
+                        "delta": delta,
                         "finish_reason": None,
                     }
                 ]
             },
             {
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "tool_calls" if call else "stop",
+                    }
+                ],
                 "usage": usage,
             },
         ]
@@ -280,9 +315,14 @@ def _get(url: str) -> int:
         return 0
 
 
-def _hermes_config(base_url: str) -> dict:
-    """config.yaml as kagent-hermes renders it (driver.RenderConfig)."""
-    return {
+def _hermes_config(base_url: str, memory: bool = False) -> dict:
+    """config.yaml as kagent-hermes renders it (driver.RenderConfig).
+
+    With memory, as for a Harness with spec.hermes.memory (HOME-921): the
+    memory toolset is the one built-in toolset on, and nudge_interval 0 turns
+    off Hermes's background memory review.
+    """
+    config = {
         "model": {"default": MODEL, "provider": "kagent"},
         "providers": {
             "kagent": {
@@ -310,10 +350,39 @@ def _hermes_config(base_url: str) -> dict:
         "security": {"allow_lazy_installs": False},
         "auxiliary": {"title_generation": {"enabled": False}},
     }
+    if memory:
+        config["platform_toolsets"] = {"api_server": ["memory"]}
+        config["agent"] = {
+            "disabled_toolsets": [t for t in _DISABLED_TOOLSETS if t != "memory"]
+        }
+        config["memory"] = {
+            "memory_enabled": True,
+            "user_profile_enabled": True,
+            "provider": "",
+            "nudge_interval": 0,
+            "write_approval": False,
+            "memory_char_limit": 2200,
+            "user_char_limit": 1375,
+        }
+    return config
+
+
+# MEMORY.md and USER.md as the runner loads them from the vault (HOME-921).
+_MEMORY = "Joe runs the homelab\n§\nThe factory runs on node-1"
+_USER = "Joe prefers short answers"
 
 
 @pytest.fixture(scope="module")
 def gateway(rootfs):
+    yield from _gateway(rootfs, memory=False)
+
+
+@pytest.fixture(scope="module")
+def memory_gateway(rootfs):
+    yield from _gateway(rootfs, memory=True)
+
+
+def _gateway(rootfs, memory: bool):
     _FakeModel.calls.clear()
     model = ThreadingHTTPServer(("127.0.0.1", 0), _FakeModel)
     threading.Thread(target=model.serve_forever, daemon=True).start()
@@ -323,7 +392,13 @@ def gateway(rootfs):
     data = Path(tempfile.mkdtemp(dir=rootfs / "tmp"))
     home = data / "hermes"
     home.mkdir()
-    (home / "config.yaml").write_text(yaml.safe_dump(_hermes_config(base_url)))
+    (home / "config.yaml").write_text(
+        yaml.safe_dump(_hermes_config(base_url, memory), allow_unicode=True)
+    )
+    if memory:
+        (home / "memories").mkdir()
+        (home / "memories" / "MEMORY.md").write_text(_MEMORY)
+        (home / "memories" / "USER.md").write_text(_USER)
     api = {
         "API_SERVER_ENABLED": "true",
         "API_SERVER_HOST": "127.0.0.1",
@@ -583,3 +658,26 @@ def test_model_calls_carry_no_tools(gateway) -> None:
         )
         system = body["messages"][0]["content"]
         assert "Platform: api_server" in system
+
+
+def test_memory_config_gives_only_the_memory_tool_and_loads_the_files(
+    memory_gateway,
+) -> None:
+    # HOME-921: with spec.hermes.memory the model gets Hermes's memory tool
+    # and no other, MEMORY.md and USER.md are in its prompt, and the tool
+    # adds an entry with Hermes's delimiter, which the runner syncs.
+    session = "kagent-" + secrets.token_hex(16)
+    out = _respond(memory_gateway, session, "remember Joe walks the Cuillin")
+    assert out["status"] in ("completed", "incomplete"), out
+    calls = [c for c in _FakeModel.calls if c["path"].endswith("/chat/completions")]
+    assert calls, "no model call"
+    for call in calls:
+        tools = [t["function"]["name"] for t in call["body"].get("tools") or []]
+        assert tools == ["memory"]
+        system = call["body"]["messages"][0]["content"]
+        assert "Joe runs the homelab" in system
+        assert "The factory runs on node-1" in system
+        assert _USER in system
+    memory = (memory_gateway["home"] / "memories" / "MEMORY.md").read_text()
+    assert memory == _MEMORY + "\n§\nJoe walks the Cuillin"
+    assert (memory_gateway["home"] / "memories" / "USER.md").read_text() == _USER
