@@ -489,3 +489,29 @@ func TestABridgeFailureIsAStorageError(t *testing.T) {
 		t.Errorf("bridge down: ok=%v %q", ok, msg)
 	}
 }
+
+// A deep note's trash and history copies can still be read back.
+func TestDeepNotesCanBeReadBackFromTrashAndHistory(t *testing.T) {
+	url, _ := setup(t)
+	// 8 segments, 194 characters with .md: the most a note may have.
+	seg := strings.Repeat("n", 23)
+	deep := strings.Repeat(seg+"/", 7) + seg
+	mustCall(t, url, "s1", "notes_write", map[string]any{"path": deep, "content": "one"})
+	mustCall(t, url, "s1", "notes_write", map[string]any{"path": deep, "content": "two", "replace": true})
+	mustCall(t, url, "s1", "notes_delete", map[string]any{"path": deep})
+	mustCall(t, url, "s1", "notes_write", map[string]any{"path": deep, "content": "three"})
+	trashed := mustCall(t, url, "s1", "notes_delete", map[string]any{"path": deep})["trashedAs"].(string)
+	all := mustCall(t, url, "s1", "notes_list", map[string]any{"include_trash": true})["notes"].([]any)
+	if len(all) != 3 {
+		t.Fatalf("list = %v", all)
+	}
+	for _, n := range all {
+		p := n.(map[string]any)["path"].(string)
+		if _, msg, ok := call(t, url, "s1", "notes_read", map[string]any{"path": p}); !ok {
+			t.Errorf("read %s: %s", p, msg)
+		}
+	}
+	if !strings.HasPrefix(trashed, ".trash/") {
+		t.Errorf("trashed as %q", trashed)
+	}
+}
