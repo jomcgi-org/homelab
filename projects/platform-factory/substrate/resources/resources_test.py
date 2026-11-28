@@ -467,10 +467,12 @@ def test_microvm_spike_namespace_allows_only_the_router_and_the_gateway() -> Non
 _ROUTER_CLIENTS = [
     "spiffe://cluster.local/ns/ate-system/sa/atenet-client",
     "spiffe://cluster.local/ns/kagent/sa/kagent-controller",
+    # The fork Jobs and later the fork runner (Joe, 2026-11-28, HOME-924).
+    "spiffe://cluster.local/ns/ate-system/sa/ate-client",
 ]
 
 
-def test_router_allows_exactly_the_two_client_identities() -> None:
+def test_router_allows_exactly_the_three_client_identities() -> None:
     # The router checks a client by its SPIFFE ID alone, and an allowed ID can
     # reach any actor in any atespace. engine-gate left the list when Joe
     # deferred the Semgrep tier (2026-11-24). egress-scan, which parses
@@ -825,6 +827,9 @@ _FORK_OBJECTS = {
     ("CiliumNetworkPolicy", "ate-system", "ate-api-server-gvisor-fork-conformance"),
     ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-assets-init"),
     ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-conformance"),
+    ("CiliumNetworkPolicy", "ate-system", "ate-api-server-gvisor-fork-x5"),
+    ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-x5"),
+    ("Job", "ate-system", "gvisor-fork-x5-1"),
     ("CiliumNetworkPolicy", _FORK_NS, "substrate-workers"),
     ("Job", "ate-system", "gvisor-fork-assets-init"),
     ("Job", "ate-system", "gvisor-fork-conformance-7"),

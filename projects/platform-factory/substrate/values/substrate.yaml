@@ -56,9 +56,12 @@ atenetRouter:
   # engine-gate ID (egress-scan/gate) was here from 2026-11-23 to 2026-11-24 and
   # left when Joe deferred the Semgrep tier (egress-scan/ARCHITECTURE.md
   # "Decided" 9). egress-scan, which parses untrusted bytes, never held one.
+  # ate-client (the fork Jobs, and later the fork runner, HOME-922) is here
+  # since 2026-11-28 (Joe, HOME-924). It is already a global owner of the API.
   ingressAllowedSPIFFEIDs:
     - spiffe://cluster.local/ns/ate-system/sa/atenet-client
     - spiffe://cluster.local/ns/kagent/sa/kagent-controller
+    - spiffe://cluster.local/ns/ate-system/sa/ate-client
 
 # Which Secrets each atespace may inject at the egress gateway. kagent runs each
 # Agent in the atespace named after its namespace and reads credentials from

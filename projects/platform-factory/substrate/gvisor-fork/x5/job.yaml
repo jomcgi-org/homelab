@@ -1,0 +1,172 @@
+# The X5 Job (HOME-924): fork children of a FORK_EGRESS_GATEWAY template take a
+# request through the router and call mcp-grafana through the egress gateway,
+# with a call outside their EgressPolicy and a public DNS name refused. x5.py
+# says what it runs and how its log reads. It runs once on sync (suspend false,
+# backoffLimit 0). Its pod template is immutable: a change to it or to the
+# generated ConfigMap bumps the run suffix. The README, "gVisor sandbox fork",
+# "Gate X5", has the verify and rollback steps.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gvisor-fork-x5-1
+  namespace: ate-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  suspend: false
+  backoffLimit: 0
+  # The worker wait (900 s), the seed (600 s), the phases and their cleanup.
+  activeDeadlineSeconds: 2400
+  template:
+    metadata:
+      labels:
+        app: gvisor-fork-x5
+    spec:
+      serviceAccountName: ate-client
+      restartPolicy: Never
+      # SIGTERM (the deadline, a delete) runs the script's cleanup: the
+      # children, the template, the seed wait (up to 120 s) and the atespace.
+      terminationGracePeriodSeconds: 300
+      automountServiceAccountToken: true
+      imagePullSecrets:
+        - name: ghcr-imagepull-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: x5
+          image: python:3.14.10-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
+          command: [python3, -I, /config/x5.py]
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: HOME
+              value: /tmp
+            - name: SAMPLES
+              value: "10"
+            - name: POOL_BATCH
+              value: "4"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+              ephemeral-storage: 64Mi
+            limits:
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: cli
+              mountPath: /cli
+              readOnly: true
+            - name: ate-token
+              mountPath: /var/run/ate
+              readOnly: true
+            - name: router
+              mountPath: /var/run/router
+              readOnly: true
+            - name: router-ca
+              mountPath: /var/run/router-ca
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: config
+          configMap:
+            name: gvisor-fork-x5
+        # The fork build of kubectl-ate, as in conformance-job.yaml.
+        - name: cli
+          image:
+            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-c7f37a993862@sha256:7e9c7b9d285a5c3bfd897da797acf88521c526ed478af618d5d8958c3241e7a6
+            pullPolicy: IfNotPresent
+        # The ate API's JWT provider accepts this audience (api-server-config.yaml).
+        - name: ate-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: api.ate-system.svc
+                  expirationSeconds: 3600
+                  path: token
+        # The client certificate the router checks (SPIFFE ID of this
+        # ServiceAccount) and the CA that signed the router's serving
+        # certificate. Same signers as atenet-router.yaml.
+        - name: router
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+        - name: router-ca
+          projected:
+            sources:
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: gvisor-fork-x5
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: gvisor-fork-x5
+  egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: ate-api-server
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: atenet-router
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ate-api-server-gvisor-fork-x5
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: ate-api-server
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: gvisor-fork-x5
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

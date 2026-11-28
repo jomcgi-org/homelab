@@ -1658,3 +1658,65 @@ def test_latency_pools_the_rounds_of_a_concurrent_burst(tmp_path: Path) -> None:
     assert found[("cold_k2", "cold", "total_ms")]["n"] == "6"
     assert run.stdout.count("event=burst k=2 round=") == 3
     assert not _left(state)
+
+
+# Gate X5 (x5/): fork children with gateway egress, through the router.
+
+_X5 = _HERE / "x5"
+
+
+def _x5_module():
+    spec = importlib.util.spec_from_file_location("x5", _X5 / "x5.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_x5_template_forks_with_gateway_egress_and_a_pinned_image() -> None:
+    template = yaml.safe_load(_x5_module().template_text("print(1)\n", (_X5 / "template.yaml").read_text()))
+    fork = template["forkConfig"]
+    assert fork["egress"] == "FORK_EGRESS_GATEWAY"
+    assert fork["singleUse"] is True and fork["mode"] == "FORK_MODE_SEED_AND_FORK"
+    (container,) = template["containers"]
+    assert container["command"] == ["python3", "-I", "-c", "print(1)\n"]
+    assert "@sha256:" in container["image"]
+    assert not container.get("env"), "template env is public: every child inherits it"
+    assert _fork_template_errors(template) == []
+
+
+def test_x5_policy_admits_only_mcp_grafana() -> None:
+    policy = yaml.safe_load((_X5 / "policy.yaml").read_text())
+    assert policy == {"rules": [{"http": {
+        "hostnames": ["mcp-grafana.grafana.svc.cluster.local"], "ports": {"numbers": [8000]}}}]}
+
+
+def test_x5_probe_checkpoints_before_it_binds() -> None:
+    source = (_X5 / "probe.py").read_text()
+    main = source[source.index("def main()"):]
+    assert main.index("checkpoint()") < main.index("HTTPServer(")
+    # The denied host must not be one the policy admits.
+    assert "hindsight-api.hindsight.svc.cluster.local:8888" in source
+
+
+def test_x5_verdict() -> None:
+    verdict = _x5_module().verdict
+    good = {"allowed": {"status": 401}, "denied": {"status": 403}, "dns": {"error": "gaierror"}}
+    assert verdict(good) == {"allowed": True, "denied": True, "dns": True}
+    assert verdict({**good, "denied": {"error": "ConnectionResetError"}})["denied"]
+    assert not verdict({**good, "allowed": {"status": 403}})["allowed"]
+    assert not verdict({**good, "allowed": {"error": "timeout"}})["allowed"]
+    assert not verdict({**good, "denied": {"status": 401}})["denied"]
+    assert not verdict({**good, "dns": {"addresses": ["93.184.215.14"]}})["dns"]
+
+
+def test_x5_job_runs_once_as_ate_client_with_the_fork_cli() -> None:
+    docs = list(yaml.safe_load_all((_X5 / "job.yaml").read_text()))
+    (job,) = [d for d in docs if d["kind"] == "Job"]
+    assert job["metadata"]["name"] == "gvisor-fork-x5-1"
+    assert job["spec"]["suspend"] is False and job["spec"]["backoffLimit"] == 0
+    pod = job["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "ate-client"
+    (cli,) = [v for v in pod["volumes"] if v["name"] == "cli"]
+    assert cli["image"]["reference"] == _conformance_job()["spec"]["template"]["spec"]["volumes"][
+        [v["name"] for v in _conformance_job()["spec"]["template"]["spec"]["volumes"]].index("cli")
+    ]["image"]["reference"]
