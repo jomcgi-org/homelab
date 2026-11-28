@@ -1674,13 +1674,18 @@ def _x5_module():
 
 def test_x5_template_forks_with_gateway_egress_and_a_pinned_image() -> None:
     template = yaml.safe_load(
-        _x5_module().template_text("print(1)\n", (_X5 / "template.yaml").read_text())
+        _x5_module().template_text(
+            "print(1)\n",
+            (_X5 / "template.yaml").read_text(),
+            ["192.0.2.1", "192.0.2.2"],
+        )
     )
     fork = template["forkConfig"]
     assert fork["egress"] == "FORK_EGRESS_GATEWAY"
     assert fork["singleUse"] is True and fork["mode"] == "FORK_MODE_SEED_AND_FORK"
     (container,) = template["containers"]
     assert container["command"] == ["python3", "-I", "-c", "print(1)"]
+    assert container["args"] == ["192.0.2.1", "192.0.2.2"]
     assert "@sha256:" in container["image"]
     assert not container.get("env"), "template env is public: every child inherits it"
     assert _fork_template_errors(template) == []
@@ -1708,6 +1713,49 @@ def test_x5_probe_checkpoints_before_it_binds() -> None:
     assert "hindsight-api.hindsight.svc.cluster.local:8888" in source
 
 
+def test_x5_child_posts_to_resolved_addresses_with_service_hosts(monkeypatch) -> None:
+    spec = importlib.util.spec_from_file_location("probe", _X5 / "probe.py")
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    received = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append(
+                (self.server.server_address, self.path, self.headers["Host"])
+            )
+            self.send_response(401)
+            self.end_headers()
+
+    addresses = ["127.0.0.1", "127.0.0.2"]
+    monkeypatch.setattr(sys, "argv", ["probe", *addresses])
+    monkeypatch.setattr(probe, "resolve", lambda name: {})
+    with (
+        http.server.HTTPServer((addresses[0], 0), Handler) as allowed,
+        http.server.HTTPServer((addresses[1], 0), Handler) as denied,
+    ):
+        allowed_host = f"mcp.invalid:{allowed.server_port}"
+        denied_host = f"other.invalid:{denied.server_port}"
+        monkeypatch.setattr(probe, "ALLOWED_URL", f"http://{allowed_host}/mcp")
+        monkeypatch.setattr(probe, "DENIED_URL", f"http://{denied_host}/")
+        threads = []
+        for server in (allowed, denied):
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            threads.append(thread)
+        try:
+            probe.run_checks()
+        finally:
+            for server in (allowed, denied):
+                server.shutdown()
+            for thread in threads:
+                thread.join()
+        assert received == [
+            (allowed.server_address, "/mcp", allowed_host),
+            (denied.server_address, "/", denied_host),
+        ]
+
+
 def test_x5_verdict() -> None:
     verdict = _x5_module().verdict
     good = {
@@ -1717,7 +1765,8 @@ def test_x5_verdict() -> None:
     }
     assert verdict(good) == {"allowed": True, "denied": True, "dns": True}
     assert verdict({**good, "denied": {"error": "ConnectionResetError"}})["denied"]
-    assert not verdict({**good, "allowed": {"status": 403}})["allowed"]
+    for status in (404, 403, 502, 503, 504):
+        assert not verdict({**good, "allowed": {"status": status}})["allowed"]
     assert not verdict({**good, "allowed": {"error": "timeout"}})["allowed"]
     assert not verdict({**good, "denied": {"status": 401}})["denied"]
     assert not verdict({**good, "dns": {"addresses": ["93.184.215.14"]}})["dns"]
@@ -1726,7 +1775,7 @@ def test_x5_verdict() -> None:
 def test_x5_job_runs_once_as_ate_client_with_the_fork_cli() -> None:
     docs = list(yaml.safe_load_all((_X5 / "job.yaml").read_text()))
     (job,) = [d for d in docs if d["kind"] == "Job"]
-    assert job["metadata"]["name"] == "gvisor-fork-x5-3"
+    assert job["metadata"]["name"] == "gvisor-fork-x5-4"
     assert job["spec"]["suspend"] is False and job["spec"]["backoffLimit"] == 0
     pod = job["spec"]["template"]["spec"]
     assert pod["serviceAccountName"] == "ate-client"

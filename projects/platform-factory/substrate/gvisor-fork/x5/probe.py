@@ -12,8 +12,8 @@ returns from the checkpoint, binds port 80 and serves:
 The checks, from inside the child's own network namespace:
 
   allowed   an MCP `initialize` POST to ALLOWED_URL, which the child's
-            EgressPolicy admits through the egress gateway. Any HTTP answer from
-            the origin passes: the probe holds no MCP token, so 401 is expected.
+            EgressPolicy admits through the egress gateway. The origin returns 401 for this
+            credential-free request.
   denied    a POST to DENIED_URL, which the policy does not admit. The gateway
             must refuse it: a connection error or a gateway status, never an
             answer from the origin.
@@ -69,16 +69,17 @@ def checkpoint() -> None:
         sys.exit(f"probe: unexpected checkpoint result {result!r}")
 
 
-def post(url: str, body: bytes) -> dict:
+def post(url: str, address: str, body: bytes) -> dict:
     parts = urlsplit(url)
     start = time.monotonic()
-    conn = http.client.HTTPConnection(parts.hostname, parts.port or 80, timeout=TIMEOUT)
+    conn = http.client.HTTPConnection(address, parts.port or 80, timeout=TIMEOUT)
     try:
         conn.request(
             "POST",
             parts.path or "/",
             body=body,
             headers={
+                "Host": parts.netloc,
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/event-stream",
             },
@@ -114,8 +115,8 @@ def resolve(name: str) -> dict:
 
 def run_checks() -> dict:
     return {
-        "allowed": post(ALLOWED_URL, INITIALIZE),
-        "denied": post(DENIED_URL, INITIALIZE),
+        "allowed": post(ALLOWED_URL, sys.argv[1], INITIALIZE),
+        "denied": post(DENIED_URL, sys.argv[2], INITIALIZE),
         "dns": resolve(DNS_NAME),
     }
 

@@ -8,7 +8,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: gvisor-fork-x5-3
+  name: gvisor-fork-x5-4
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: "2"
@@ -48,6 +48,10 @@ spec:
               value: "1"
             - name: HOME
               value: /tmp
+            - name: ALLOWED_HOST
+              value: mcp-grafana.grafana.svc.cluster.local
+            - name: DENIED_HOST
+              value: hindsight-api.hindsight.svc.cluster.local
             - name: SAMPLES
               value: "10"
             - name: POOL_BATCH
