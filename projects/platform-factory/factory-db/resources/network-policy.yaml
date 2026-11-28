@@ -73,6 +73,10 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory-discord
             app.kubernetes.io/name: bosun-history
+        # Bosun's factory requests (HOME-941) in the connector database.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: bosun-requests
         # Replication and pg_basebackup between instances.
         - matchLabels:
             cnpg.io/cluster: factory-db

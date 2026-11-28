@@ -88,6 +88,13 @@ LOGINS = [
         "factory-discord",
         "discord-archive-reader-db",
     ),
+    # Bosun's factory requests (HOME-941).
+    (
+        "factory-db-bosun-requests-login",
+        "factory_bosun_requests",
+        "factory-discord",
+        "bosun-requests-db",
+    ),
     # history_sql (HOME-909): one login per Discord server.
     (
         "factory-db-discord-sql-185442367703220224-login",
@@ -121,6 +128,7 @@ DATABASES = {
     "factory_reaper": "factory_connector",
     "factory_leaderboard": "factory_connector",
     "factory_discord_archive_reader": "factory_discord_archive",
+    "factory_bosun_requests": "factory_connector",
     "factory_discord_sql_185442367703220224": "factory_discord_archive",
     "factory_discord_sql_1290668195249917964": "factory_discord_archive",
     "factory_discord_sql_1501965852042330302": "factory_discord_archive",

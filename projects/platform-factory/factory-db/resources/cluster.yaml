@@ -184,6 +184,20 @@ spec:
         connectionLimit: 6
         passwordSecret:
           name: factory-db-discord-archive-reader-login
+      # Bosun's factory requests (HOME-941): bosun-requests may INSERT a
+      # request and SELECT its status in factory_connector, nothing else.
+      - name: factory_bosun_requests
+        ensure: present
+        login: true
+        inherit: false
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        connectionLimit: 4
+        passwordSecret:
+          name: factory-db-bosun-requests-login
       # Bosun's history_sql (HOME-909): one login per server of
       # bridge.policy.guilds, each a member of factory_discord_sql only.
       # The archive's row security shows a member only the rows of the

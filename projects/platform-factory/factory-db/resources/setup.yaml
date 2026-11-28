@@ -155,6 +155,18 @@ stringData:
 apiVersion: v1
 kind: Secret
 metadata:
+  name: factory-db-bosun-requests-login
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: factory_bosun_requests
+---
+apiVersion: v1
+kind: Secret
+metadata:
   name: factory-db-discord-sql-185442367703220224-login
   namespace: factory-db
   annotations:
@@ -274,6 +286,7 @@ rules:
       - factory-db-leaderboard-login
       - factory-db-discord-archive-login
       - factory-db-discord-archive-reader-login
+      - factory-db-bosun-requests-login
       - factory-db-discord-sql-185442367703220224-login
       - factory-db-discord-sql-1290668195249917964-login
       - factory-db-discord-sql-1501965852042330302-login
