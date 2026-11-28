@@ -27,6 +27,5 @@ go_test(
     deps = [
         "//projects/factory/broker/actorjwt",
         "//projects/factory/connector/internal/pgtest",
-        "@com_github_lib_pq//:pq",
     ],
 )
