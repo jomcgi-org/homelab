@@ -318,7 +318,8 @@ flowchart LR
 
 - **Narrow opening.** The kagent fork's Hermes runner (jomcgi-org/kagent#6)
   names only the bound MCP servers in `platform_toolsets.api_server`, so no
-  built-in Hermes toolset loads, and renders each binding's tools as
+  built-in Hermes toolset loads, except `memory` when the Harness sets
+  `spec.hermes.memory` (see "Notes vault"), and renders each binding's tools as
   `tools.include`. MCP sampling, elicitation, resources, prompts, Tool
   Search and Nous connectors are off. Hermes builds Anthropic `tools` from
   function tools only, so a runner plugin adds the three server tools to
@@ -403,7 +404,15 @@ cause a write.
   notes write only when Joe's tagging message asks to note, save or
   delete something, and keeps other people's messages and memories out
   of a note unless Joe asks. The vault's server comes from the bridge's
-  session record, not from the model; nothing deletes a note for good. `delete` is not bound: it cannot be
+  session record, not from the model; nothing deletes a note for good.
+  With memory sync, Hermes' `memory` tool edits `MEMORY.md` and
+  `USER.md`, which every member can read and every channel's prompt
+  holds. The prompt (`discord.notes.memoryPrompt`) allows a memory edit
+  only when Joe's tagging message asks to remember or forget something, or
+  Joe's own words in it state a lasting fact about him, never from other
+  people's messages, recalled memories, pages, notes or tool results. The
+  prompt is the control here too; Hermes' own scan refuses injection-like
+  entries. `delete` is not bound: it cannot be
   undone. The prompt allows `put` only when the tagging message asks for a
   page or file, asks for a new path unless Joe asks to replace one, and
   keeps memories and other people's messages out of a file unless Joe
@@ -537,11 +546,55 @@ sequenceDiagram
   message asks for it, and never copies other people's messages or
   recalled memories into a note unless Joe asks. Reading is allowed any
   time.
-- **Memory sync.** `memory_read` returns a file and its version (SHA-256,
-  `""` for a missing file); `memory_write` replaces it only from the
-  current version, else it changes nothing and returns the newer copy to
-  merge into. They are for the Hermes runner (HOME-921), not for the model:
-  the binding's `tools` list leaves them out.
+- **Memory sync (HOME-921).** The Harness's `spec.hermes.memory` names the
+  `notes` binding (chart `discord.serverAgents.<key>.memory`, on when that
+  binding exists). The fork's runner (jomcgi-org/kagent#8) then turns on
+  Hermes' memory tool and syncs `MEMORY.md` and `USER.md` with
+  `memory_read` and `memory_write`, which return a file and its version
+  (SHA-256, `""` for a missing file). The model never gets these two
+  tools: the chart and the compiler refuse a binding that lists them.
+
+  ```mermaid
+  sequenceDiagram
+    participant R as Runner (channel A actor)
+    participant N as /notes/mcp
+    participant O as Channel B actor
+    R->>N: memory_read (before the turn)
+    N-->>R: content, version v1
+    R->>R: memories/ for Hermes; the turn edits MEMORY.md
+    O->>N: memory_write from v1 (B wrote first)
+    N-->>O: version v2
+    R->>N: memory_write from v1 (after the turn)
+    N-->>R: conflict, B's copy at v2
+    R->>R: apply A's entry adds and removes to B's copy
+    R->>N: memory_write from v2
+    N-->>R: version v3
+  ```
+
+  - **Load.** Before each turn the runner writes the vault's copy into
+    `$HERMES_HOME/memories/`. A new session puts both files in its prompt.
+    A continuing session reuses the prompt it started with, for the prompt
+    cache, so another channel's change reaches it only when Hermes
+    rebuilds the prompt (at compaction) or a new `sessionEpoch` starts new
+    sessions. Its memory tool still edits the newest copy.
+  - **Write-back and merge.** After a turn a changed file goes back from
+    the version the runner read. On a conflict the runner applies this
+    session's entry changes (Hermes entries split on `\n§\n`) to the newer
+    copy and retries, at most 3 times. A merge over Hermes' limit (2,200
+    characters for `MEMORY.md`, 1,375 for `USER.md`) keeps the newer copy's
+    entries, applies only this session's removals, and logs. A missing
+    local file loads again; it never empties the vault's copy.
+  - **Outage.** A failed call logs and the turn goes on with the local
+    copy; the next turn writes it back. A missing file starts empty. The
+    runner's last synced copy is in `$HERMES_HOME`, so a new process on the
+    same volume still merges.
+  - **No background saves.** `nudge_interval: 0` turns off Hermes'
+    periodic memory review, which would save facts from a conversation
+    without the model's turn choosing to.
+  - **Credential.** The runner calls the binding's URL with the binding's
+    placeholder header. kagent binds the actor JWT per origin and header,
+    and the actor's TCP goes to the egress gateway, so the gateway injects
+    the token for the runner's calls too.
 - **One replica.** bosun-artifacts runs one pod, and a lock for each key
   makes append, delete and the version check atomic. During a rollout an
   old and a new pod serve for a moment, so two writes to one key can race
@@ -554,9 +607,12 @@ sequenceDiagram
 (`discord.serverAgents.homelab.mcpServers`): name `notes`, URL
 `http://bosun-artifacts.factory-discord.svc.cluster.local:8080/notes/mcp`,
 `actorJwt.audiences: [bosun-artifacts]`, tools `notes_list`, `notes_read`,
-`notes_search`, `notes_write`, `notes_append` and `notes_delete`. Then a new
-`sessionEpoch`, in a later change, moves existing channels onto it (see
-"New sessions").
+`notes_search`, `notes_write`, `notes_append` and `notes_delete`. With
+that entry the chart also renders `spec.hermes.memory` and the memory
+prompt (`discord.notes.memoryPrompt`); the controller must be the fork
+build with jomcgi-org/kagent#8, else it ignores the field and memory stays
+off. Then a new `sessionEpoch`, in a later change, moves existing channels
+onto it (see "New sessions").
 
 #### Notes viewer (HOME-920)
 
@@ -1122,7 +1178,7 @@ turn, and one memory owner per kind of fact.
   | Memory | Owner | Holds |
   | --- | --- | --- |
   | Session context | Hermes, compacted | The recent turns in this server |
-  | Agent notes | Hermes `MEMORY.md`, off at first | The agent's own durable notes, at most 2,200 characters |
+  | Agent notes | Hermes `MEMORY.md` and `USER.md` in the notes vault, per server (HOME-921) | The agent's own durable notes and facts about Joe, at most 2,200 and 1,375 characters |
   | Server history | Hindsight, bridge ingest | Every human message, server-wide |
 
 - **No double memory.** For a server with an agent, the bridge stops putting
@@ -1136,8 +1192,9 @@ turn, and one memory owner per kind of fact.
   older.
 - **Agent notes.** `MEMORY.md` loads into every session's system prompt
   ([memory](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/memory.md)), and people other than Joe
-  write the turns. Slice 2 disables the memory tool so a Discord user cannot
-  plant a standing instruction. Joe decides whether to turn it on.
+  write the turns. Joe turned the memory tool on with the files in the
+  notes vault ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-921#comment-12939));
+  the prompt rule in "Tool security" keeps other people's text out.
 
 ## 6. Migration from Bosun and HOME-162 rule changes
 

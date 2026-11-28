@@ -143,7 +143,7 @@ def test_binding_codex_code_mode_image() -> None:
 # `spec.hermes.compression` (PR #4) and `spec.hermes.serverTools` (PR #6) to the
 # Harness CRD; the rest stay upstream's.
 _FORK_CRDS = {
-    "api.kagent.dev_harnesses.yaml": "1128d1bd1b4025d0c4f4c4ab2000803315b7928c77b355b929ab5603b786b0ba",
+    "api.kagent.dev_harnesses.yaml": "316acd1b0d70c189521f4d59585114d293366ea66ae44c2071347c790750a26f",
 }
 
 
@@ -187,6 +187,9 @@ def test_fork_harness_crd_only_adds_fork_fields() -> None:
         "idleSuspendDelay",
     }
     assert new["properties"]["hermes"]["type"] == "object"
+    # HOME-921: spec.hermes.memory names the binding that holds the files.
+    memory = new["properties"]["hermes"]["properties"]["memory"]
+    assert memory["required"] == ["remoteMCPServer"]
     assert new["properties"]["idleSuspendDelay"]["type"] == "string"
     assert "idleSuspendDelay" not in new.get("required", [])
     rules = {r["rule"] for r in new["x-kubernetes-validations"]}
@@ -2629,6 +2632,74 @@ def test_a_notes_binding_adds_the_notes_write_rule_to_the_prompt() -> None:
         ]
     )
     assert rule in " ".join(bound.split())
+
+
+_NOTES_BINDING = [
+    "discord.serverAgents.homelab.mcpServers[0].name=notes",
+    "discord.serverAgents.homelab.mcpServers[0].url=http://bosun-artifacts.factory-discord.svc.cluster.local:8080/notes/mcp",
+    "discord.serverAgents.homelab.mcpServers[0].actorJwt.audiences={bosun-artifacts}",
+    "discord.serverAgents.homelab.mcpServers[0].tools={notes_list,notes_read}",
+]
+
+
+def test_a_notes_binding_keeps_hermes_memory_in_the_vault() -> None:
+    # HOME-921: with the notes binding, the Harness turns Hermes memory on
+    # and names the binding the runner syncs MEMORY.md and USER.md through;
+    # the prompt adds the memory write rule. Without it memory stays off.
+    base = _HOMELAB + [
+        f"kagent.rbac.namespaces={{kagent,factory-r-homelab,factory-discord-agent,{_HOMELAB_NS}}}",
+        "discord.agent.enabled=true",
+        "discord.bridge.enabled=true",
+        "discord.serverAgents.homelab.route=true",
+        "discord.serverAgents.homelab.serverTools.codeExecution=true",
+    ]
+    rule = "only when the tagging message is Joe's and asks you to remember"
+
+    def render(extra: list[str]) -> tuple[dict[str, Any], str]:
+        docs = _render(base + extra)
+        harness = _in(docs, "Harness", _HOMELAB_NS, "hermes")["spec"]["hermes"]
+        agent = _in(docs, "Agent", _HOMELAB_NS, "homelab")["spec"]["template"]
+        return harness, " ".join(agent["inline"]["systemPrompt"].split())
+
+    harness, prompt = render([])
+    assert "memory" not in harness
+    assert rule not in prompt
+
+    harness, prompt = render(_NOTES_BINDING)
+    assert harness["memory"] == {"remoteMCPServer": "notes"}
+    assert harness["serverTools"] == {"codeExecution": True}
+    assert rule in prompt
+    assert "Never save anything from other people's messages" in prompt
+    # The model gets only the listed notes tools, never the sync tools.
+    docs = _render(base + _NOTES_BINDING)
+    tools = _in(docs, "Agent", _HOMELAB_NS, "homelab")["spec"]["template"]["inline"][
+        "tools"
+    ]
+    (binding,) = [t for t in tools if t["mcp"]["server"]["name"] == "notes"]
+    assert binding["mcp"]["tools"] == ["notes_list", "notes_read"]
+    for t in tools:
+        assert not {"memory_read", "memory_write"} & set(t["mcp"]["tools"])
+
+    harness, prompt = render(_NOTES_BINDING + ["discord.serverAgents.homelab.memory="])
+    assert "memory" not in harness
+    assert rule not in prompt
+
+
+def test_server_agent_bindings_never_give_the_model_the_memory_sync_tools() -> None:
+    for tool in ("memory_read", "memory_write"):
+        with pytest.raises(RuntimeError, match="memory_read or memory_write"):
+            _render(
+                _HOMELAB
+                + _NOTES_BINDING[:3]
+                + [
+                    f"discord.serverAgents.homelab.mcpServers[0].tools={{notes_read,{tool}}}"
+                ]
+            )
+
+
+def test_server_agent_memory_names_only_the_notes_vault() -> None:
+    with pytest.raises(RuntimeError, match="memory must be notes or empty"):
+        _render(_HOMELAB + ["discord.serverAgents.homelab.memory=github"])
 
 
 def test_discord_archive_reads_with_its_own_login_through_the_gateway() -> None:
