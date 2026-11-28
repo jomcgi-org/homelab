@@ -19,6 +19,7 @@ func TestParseExploreAcceptsOnlyPublicRepoSyntax(t *testing.T) {
 	ok := []string{
 		`{"repo":"jomcgi-org/homelab","question":"Where is the bridge?","research":"new"}`,
 		`{"repo":"a/b.c_d-e","question":"q","research":"1501965852042330302"}`,
+		`{"repo_search":"agent substrate","question":"q","research":"new"}`,
 	}
 	for _, spec := range ok {
 		if _, err := ParseExplore(spec); err != nil {
@@ -38,6 +39,13 @@ func TestParseExploreAcceptsOnlyPublicRepoSyntax(t *testing.T) {
 		`{"repo":"a/b","question":"q","research":"123"}`,
 		`{"repo":"a/b","question":"q"}`,
 		`{"repo":"a/b","question":"q","research":"new","token":"x"}`,
+		`{"repo":"a/b","repo_search":"b","question":"q","research":"new"}`,
+		`{"repo_search":"agent substrate","question":"q","research":"1501965852042330302"}`,
+		`{"repo_search":"x is:private","question":"q","research":"new"}`,
+		`{"repo_search":"\"x\" OR y","question":"q","research":"new"}`,
+		`{"repo_search":"@everyone","question":"q","research":"new"}`,
+		`{"repo_search":"` + strings.Repeat("x", 101) + `","question":"q","research":"new"}`,
+		`{"repo_search":" ","question":"q","research":"new"}`,
 	}
 	for _, spec := range bad {
 		if _, err := ParseExplore(spec); err == nil {
@@ -147,6 +155,19 @@ func (f *lockedReplies) all() []string {
 }
 
 type fakeRepos map[string]Repository
+
+// searchRepos also answers repository searches.
+type searchRepos struct {
+	fakeRepos
+	hits map[string]string
+}
+
+func (f searchRepos) Search(_ context.Context, q string) (string, error) {
+	if r, ok := f.hits[q]; ok {
+		return r, nil
+	}
+	return "", ErrNoMatch
+}
 
 func (f fakeRepos) Public(_ context.Context, repo string) (Repository, error) {
 	r, ok := f[repo]
@@ -394,5 +415,107 @@ func TestABusyResearchSpendsNoLimit(t *testing.T) {
 	b.mu.Unlock()
 	if !ok {
 		t.Error("the busy refusal spent the limit")
+	}
+}
+
+func TestParseExploreTidiesRepoSearch(t *testing.T) {
+	req, err := ParseExplore(`{"repo_search":"  agent   substrate ","question":"q","research":"new"}`)
+	if err != nil || req.RepoSearch != "agent substrate" || req.Repo != "" {
+		t.Fatalf("ParseExplore = %+v, %v", req, err)
+	}
+}
+
+func TestSearchPicksThePublicMatchCachesAndHoldsTheLimit(t *testing.T) {
+	now := time.Date(2026, 11, 28, 1, 0, 0, 0, time.UTC)
+	var calls []string
+	limited := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.Query().Get("q"))
+		if r.URL.Path != "/search/repositories" {
+			http.NotFound(w, r)
+			return
+		}
+		if limited {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", fmt.Sprint(now.Add(30*time.Second).Unix()))
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if r.URL.Query().Get("q") == "nothing here is:public" {
+			fmt.Fprint(w, `{"items":[]}`)
+			return
+		}
+		fmt.Fprint(w, `{"items":[{"full_name":"x/hidden","private":true,"visibility":"private"},{"full_name":"kagent-dev/substrate","private":false,"visibility":"public"}]}`)
+	}))
+	defer srv.Close()
+	g := &GitHubPublic{BaseURL: srv.URL, Now: func() time.Time { return now }}
+	ctx := context.Background()
+	if repo, err := g.Search(ctx, "agent substrate"); err != nil || repo != "kagent-dev/substrate" {
+		t.Fatalf("Search = %q, %v", repo, err)
+	}
+	if calls[0] != "agent substrate is:public" {
+		t.Errorf("query = %q", calls[0])
+	}
+	// Cached, in any case: no second request.
+	if repo, _ := g.Search(ctx, "Agent Substrate"); repo != "kagent-dev/substrate" || len(calls) != 1 {
+		t.Errorf("cached Search = %q after %d calls", repo, len(calls))
+	}
+	if _, err := g.Search(ctx, "nothing here"); !errors.Is(err, ErrNoMatch) {
+		t.Errorf("no match = %v", err)
+	}
+	limited = true
+	if _, err := g.Search(ctx, "other"); !errors.Is(err, ErrSearchLimited) {
+		t.Errorf("limited = %v", err)
+	}
+	// Until the reset, a search makes no request.
+	n := len(calls)
+	if _, err := g.Search(ctx, "another"); !errors.Is(err, ErrSearchLimited) || len(calls) != n {
+		t.Errorf("held limit = %v after %d calls", err, len(calls)-n)
+	}
+	limited = false
+	now = now.Add(time.Minute)
+	if _, err := g.Search(ctx, "another"); err != nil {
+		t.Errorf("after reset = %v", err)
+	}
+}
+
+const exploreSearch = "On it.\n```explore\n{\"repo_search\":\"homelab bridge\",\"question\":\"Where does the bridge parse actions?\",\"research\":\"new\"}\n```"
+
+func TestARepoSearchSaysWhichRepositoryItChose(t *testing.T) {
+	b, rep, op, _ := newExploreBridge(exploreSearch)
+	b.Repos = searchRepos{b.Repos.(fakeRepos), map[string]string{"homelab bridge": "jomcgi-org/homelab"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); b.Wait() }()
+	b.start(ctx)
+	b.Turn(ctx, tagged("1501965852042330301", "look into the homelab bridge"))
+	posts := waitPosts(t, rep, 3)
+	if posts[1] != `thread-1: Researching jomcgi-org/homelab, the best public match for "homelab bridge" (research 1501965852042330301). I'll post here when it's done.` {
+		t.Fatalf("posts = %q", posts)
+	}
+	if rep.actions[0] != "thread "+channel+"/r1 Research: jomcgi-org/homelab" {
+		t.Errorf("actions = %v", rep.actions)
+	}
+	if p := op.wait(1); !strings.Contains(p[0], `"repo":"jomcgi-org/homelab"`) {
+		t.Errorf("explorer prompt = %s", p[0])
+	}
+}
+
+func TestARepoSearchWithNoMatchAsksJoeAndSpendsNoLimit(t *testing.T) {
+	b, rep, op, _ := newExploreBridge(strings.ReplaceAll(exploreSearch, "homelab bridge", "no such thing"))
+	b.Repos = searchRepos{b.Repos.(fakeRepos), nil}
+	b.Config.Explore.Limit = Limit{Count: 1, Window: time.Hour}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); b.Wait() }()
+	b.start(ctx)
+	b.Turn(ctx, tagged("1501965852042330301", "x"))
+	posts := waitPosts(t, rep, 2)
+	if posts[1] != channel+": "+fmt.Sprintf(ReplyRepoNoMatch, "no such thing") || len(rep.actions) != 0 {
+		t.Fatalf("posts = %q, actions = %v", posts, rep.actions)
+	}
+	b.mu.Lock()
+	ok := b.takeExplore(b.now())
+	b.mu.Unlock()
+	if !ok || len(op.contexts) != 0 {
+		t.Error("a failed search spent the limit or ran the explorer")
 	}
 }

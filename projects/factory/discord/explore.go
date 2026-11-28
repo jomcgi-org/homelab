@@ -8,8 +8,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,9 +49,13 @@ const (
 
 // ExploreRequest is a validated explore block.
 type ExploreRequest struct {
-	// Repo is owner/name of a GitHub repository.
-	Repo     string
-	Question string
+	// Repo is owner/name of a GitHub repository. It is empty until the
+	// bridge resolves RepoSearch.
+	Repo string
+	// RepoSearch is words to find a public repository by, when Bosun is
+	// unsure of owner/name. Only a new research takes it.
+	RepoSearch string
+	Question   string
 	// Research is "new" or the ID of an earlier research.
 	Research string
 }
@@ -62,6 +68,9 @@ var (
 	repoName  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 	// researchID is the Discord message ID that started a research.
 	researchID = regexp.MustCompile(`^[0-9]{15,21}$`)
+	// repoSearch is search words: no qualifiers, quotes or mentions, so the
+	// bridge can quote them in its reply.
+	repoSearch = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,99}$`)
 )
 
 // ValidRepo reports whether s is owner/name in GitHub's syntax.
@@ -72,24 +81,37 @@ func ValidRepo(s string) bool {
 }
 
 // ParseExplore reads an explore block: {"repo": "owner/name", "question":
-// "...", "research": "new" or an earlier research ID}.
+// "...", "research": "new" or an earlier research ID}. A new research may
+// give "repo_search": "words" in place of "repo".
 func ParseExplore(spec string) (ExploreRequest, error) {
 	var s struct {
-		Repo     string `json:"repo"`
-		Question string `json:"question"`
-		Research string `json:"research"`
+		Repo       string `json:"repo"`
+		RepoSearch string `json:"repo_search"`
+		Question   string `json:"question"`
+		Research   string `json:"research"`
 	}
 	if err := decodeStrict(spec, &s); err != nil {
 		return ExploreRequest{}, err
 	}
 	q := strings.TrimSpace(s.Question)
-	if !ValidRepo(s.Repo) || q == "" || utf8.RuneCountInString(q) > maxQuestionChars {
+	search := strings.Join(strings.Fields(s.RepoSearch), " ")
+	switch {
+	case s.Repo != "" && s.RepoSearch != "":
+		return ExploreRequest{}, errAction
+	case s.RepoSearch != "":
+		if !repoSearch.MatchString(search) || s.Research != "new" {
+			return ExploreRequest{}, errAction
+		}
+	case !ValidRepo(s.Repo):
+		return ExploreRequest{}, errAction
+	}
+	if q == "" || utf8.RuneCountInString(q) > maxQuestionChars {
 		return ExploreRequest{}, errAction
 	}
 	if s.Research != "new" && !researchID.MatchString(s.Research) {
 		return ExploreRequest{}, errAction
 	}
-	return ExploreRequest{Repo: s.Repo, Question: q, Research: s.Research}, nil
+	return ExploreRequest{Repo: s.Repo, RepoSearch: search, Question: q, Research: s.Research}, nil
 }
 
 // Repository is what GitHub's unauthenticated API says of a public
@@ -109,25 +131,58 @@ type RepoChecker interface {
 	Public(ctx context.Context, repo string) (Repository, error)
 }
 
+// RepoSearcher finds a public repository by search words.
+type RepoSearcher interface {
+	Search(ctx context.Context, query string) (string, error)
+}
+
+// Search errors: no public repository matches, or GitHub's unauthenticated
+// search limit is spent.
+var (
+	ErrNoMatch       = errors.New("discord: no public repository matches")
+	ErrSearchLimited = errors.New("discord: repository search is rate limited")
+)
+
+// Bounds on repository search. GitHub lets an unauthenticated caller make
+// 10 searches a minute, so the bridge keeps each answer for a while.
+const (
+	searchCacheTTL     = 6 * time.Hour
+	maxSearchCache     = 256
+	searchLimitBackoff = time.Minute
+)
+
 // GitHubPublic asks GitHub's API about a repository with no credentials,
 // so only a public one answers.
 type GitHubPublic struct {
 	Client  *http.Client
 	BaseURL string // https://api.github.com when empty.
+	Now     func() time.Time
+
+	mu      sync.Mutex
+	cache   map[string]searchHit // lower-case query -> answer
+	limited time.Time            // no search until then
 }
 
-// Public returns the repository when GitHub serves it to anyone.
-func (g *GitHubPublic) Public(ctx context.Context, repo string) (Repository, error) {
-	if !ValidRepo(repo) {
-		return Repository{}, ErrNotPublic
+type searchHit struct {
+	repo string // empty: no match
+	at   time.Time
+}
+
+func (g *GitHubPublic) now() time.Time {
+	if g.Now != nil {
+		return g.Now()
 	}
+	return time.Now()
+}
+
+func (g *GitHubPublic) get(ctx context.Context, path string) (*http.Response, error) {
 	base := g.BaseURL
 	if base == "" {
 		base = "https://api.github.com"
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/repos/"+repo, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 	if err != nil {
-		return Repository{}, err
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "bosun-discord-bridge")
@@ -135,7 +190,83 @@ func (g *GitHubPublic) Public(ctx context.Context, repo string) (Repository, err
 	if c == nil {
 		c = &http.Client{Timeout: 15 * time.Second}
 	}
-	resp, err := c.Do(req)
+	return c.Do(req)
+}
+
+// Search returns owner/name of GitHub's best public match for query. It
+// keeps answers for searchCacheTTL and makes no request while GitHub's
+// rate limit is spent.
+func (g *GitHubPublic) Search(ctx context.Context, query string) (string, error) {
+	key := strings.ToLower(query)
+	now := g.now()
+	g.mu.Lock()
+	hit, cached := g.cache[key]
+	limited := now.Before(g.limited)
+	g.mu.Unlock()
+	if cached && now.Sub(hit.at) < searchCacheTTL {
+		if hit.repo == "" {
+			return "", ErrNoMatch
+		}
+		return hit.repo, nil
+	}
+	if limited {
+		return "", ErrSearchLimited
+	}
+	resp, err := g.get(ctx, "/search/repositories?per_page=5&q="+url.QueryEscape(query+" is:public"))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests || resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		until := now.Add(searchLimitBackoff)
+		if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil && time.Unix(reset, 0).After(now) {
+			until = time.Unix(reset, 0)
+		}
+		g.mu.Lock()
+		g.limited = until
+		g.mu.Unlock()
+		if resp.StatusCode != http.StatusOK {
+			return "", ErrSearchLimited
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github search: status %d", resp.StatusCode)
+	}
+	var r struct {
+		Items []struct {
+			FullName   string `json:"full_name"`
+			Private    *bool  `json:"private"`
+			Visibility string `json:"visibility"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&r); err != nil {
+		return "", err
+	}
+	repo := ""
+	for _, it := range r.Items {
+		if it.Private != nil && !*it.Private && it.Visibility == "public" && ValidRepo(it.FullName) {
+			repo = it.FullName
+			break
+		}
+	}
+	g.mu.Lock()
+	if g.cache == nil || len(g.cache) >= maxSearchCache {
+		g.cache = map[string]searchHit{}
+	}
+	g.cache[key] = searchHit{repo: repo, at: now}
+	g.mu.Unlock()
+	if repo == "" {
+		return "", ErrNoMatch
+	}
+	return repo, nil
+}
+
+// Public returns the repository when GitHub serves it to anyone.
+func (g *GitHubPublic) Public(ctx context.Context, repo string) (Repository, error) {
+	if !ValidRepo(repo) {
+		return Repository{}, ErrNotPublic
+	}
+	resp, err := g.get(ctx, "/repos/"+repo)
 	if err != nil {
 		return Repository{}, err
 	}
@@ -407,14 +538,52 @@ func clipRunes(s string, n int) string {
 // threadName names a research thread, at most maxThreadName characters.
 func threadName(repo string) string { return clipRunes("Research: "+repo, maxThreadName-1) }
 
+// Fixed replies when a repository search finds nothing.
+const (
+	ReplyRepoNoMatch = "I couldn't find a public GitHub repository for %q; tell me its owner/name."
+	ReplyRepoLimited = "I can't search GitHub right now; tell me the repository's owner/name."
+)
+
+// resolveRepo sets req.Repo from req.RepoSearch, or posts why it cannot.
+func (b *Bridge) resolveRepo(ctx context.Context, l *slog.Logger, req *ExploreRequest, channelID string) bool {
+	if req.RepoSearch == "" {
+		return true
+	}
+	searcher, ok := b.Repos.(RepoSearcher)
+	if !ok {
+		b.send(ctx, l, channelID, ReplyRepoLimited)
+		return false
+	}
+	sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	repo, err := searcher.Search(sctx, req.RepoSearch)
+	cancel()
+	switch {
+	case err == nil:
+		req.Repo = repo
+		return true
+	case errors.Is(err, ErrNoMatch):
+		b.send(ctx, l, channelID, fmt.Sprintf(ReplyRepoNoMatch, req.RepoSearch))
+	default:
+		if !errors.Is(err, ErrSearchLimited) {
+			l.WarnContext(ctx, "repository search failed", "error", err)
+		}
+		b.send(ctx, l, channelID, ReplyRepoLimited)
+	}
+	return false
+}
+
 // startExplore runs one explore block after the turn's reply is posted:
 // reply where the research goes, then run the explorer in the background.
 // channelID and replyID are where the reply landed; inThread is true when
-// that is a thread.
-func (b *Bridge) startExplore(ctx context.Context, l *slog.Logger, m Message, req ExploreRequest, channelID, replyID string, inThread bool) bool {
+// that is a thread. It returns the request with its repository resolved,
+// and whether the block was handled.
+func (b *Bridge) startExplore(ctx context.Context, l *slog.Logger, m Message, req ExploreRequest, channelID, replyID string, inThread bool) (ExploreRequest, bool) {
 	cfg := b.Config.Explore
 	if b.Explorer == nil || !cfg.enabled() {
-		return false
+		return req, false
+	}
+	if !b.resolveRepo(ctx, l, &req, channelID) {
+		return req, false
 	}
 	research := req.Research
 	if req.New() {
@@ -422,7 +591,7 @@ func (b *Bridge) startExplore(ctx context.Context, l *slog.Logger, m Message, re
 	}
 	if !b.Explorer.claim(research) {
 		b.send(ctx, l, channelID, ReplyExploreBusy)
-		return true
+		return req, true
 	}
 	b.mu.Lock()
 	allowed := b.takeExplore(b.now())
@@ -430,7 +599,7 @@ func (b *Bridge) startExplore(ctx context.Context, l *slog.Logger, m Message, re
 	if !allowed {
 		b.Explorer.release(research)
 		b.send(ctx, l, channelID, ReplyExploreLimited)
-		return true
+		return req, true
 	}
 	// A new research gets its own thread from the reply; Discord refuses a
 	// thread inside a thread, and then it stays where it is.
@@ -443,14 +612,18 @@ func (b *Bridge) startExplore(ctx context.Context, l *slog.Logger, m Message, re
 			}
 		}
 	}
-	b.send(ctx, l, channelID, fmt.Sprintf("Researching %s (research %s). I'll post here when it's done.", req.Repo, research))
+	chose := ""
+	if req.RepoSearch != "" {
+		chose = fmt.Sprintf(", the best public match for %q", req.RepoSearch)
+	}
+	b.send(ctx, l, channelID, fmt.Sprintf("Researching %s%s (research %s). I'll post here when it's done.", req.Repo, chose, research))
 	b.wg.Add(1)
 	go func() {
 		defer b.wg.Done()
 		defer b.Explorer.release(research)
 		b.explore(ctx, l, m, req, research, channelID)
 	}()
-	return true
+	return req, true
 }
 
 // explore runs the explorer turn and posts its answer.
