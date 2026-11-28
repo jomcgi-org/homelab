@@ -150,6 +150,12 @@ def rootfs():
                         continue
                     member.uid = member.gid = os.getuid()
                     layer.extract(member, root, filter="fully_trusted")
+        # Go's os/exec opens /dev/null for the gateway's unconnected stdin.
+        # The OCI runtime normally provides it. This chroot skips device
+        # nodes, so provide the same EOF for readers without creating a device.
+        dev = root / "dev"
+        dev.mkdir(exist_ok=True)
+        (dev / "null").touch(mode=0o444)
         # Substrate projects these files into the actor before startup.
         identity = root / "run/kagent/identity"
         identity.mkdir(parents=True, exist_ok=True)
