@@ -504,6 +504,17 @@ discord:
           actorJwt:
             audiences: [bosun-history]
           tools: [history_search, history_around, history_day]
+        # Bosun's notes vault (HOME-918, discord/notes, served by
+        # bosun-artifacts at /notes/mcp): the server comes from the bridge's
+        # record of the session, not from the model. No hard delete:
+        # notes_delete moves a note to .trash/. memory_read and memory_write
+        # are for the Hermes runner, not the model. Naming it notes adds
+        # discord.notes.prompt (Joe, 2026-11-28, HOME-918 comment 12931).
+        - name: notes
+          url: http://bosun-artifacts.factory-discord.svc.cluster.local:8080/notes/mcp
+          actorJwt:
+            audiences: [bosun-artifacts]
+          tools: [notes_list, notes_read, notes_search, notes_write, notes_append, notes_delete]
   # Bosun's artifact tools at artifact.jomcgi.dev (HOME-917).
   artifacts:
     enabled: true
