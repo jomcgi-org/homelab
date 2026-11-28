@@ -173,7 +173,7 @@ presigned GET after Joe confirms (projects/factory/discord/share.go), with a
 read-only key for the bucket. A link is /s/<key>?X-Amz-...: this route
 rewrites only the path prefix to /<bucket>/ and keeps Host, which the
 signature covers, and Garage's S3 API checks the signature and the expiry.
-A bad, expired or unsigned request gets Garage's 403. No sign-in: the
+A bad or unsigned request gets Garage's 403, an expired one its 400. No sign-in: the
 signature is the credential. GET and HEAD only. Every response gets the
 artifact sandbox headers and noindex, and no cache may keep it past expiry.
 */}}

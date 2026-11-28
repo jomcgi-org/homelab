@@ -191,7 +191,6 @@ tampered = link[:-1] + ("0" if link[-1] != "0" else "1")
 past = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
 for name, path in {
     "tampered": tampered,
-    "expired": presign(report, ro_id, ro_secret, ttl=60, at=past),
     "other path, same signature": link.replace("report.html", "other.html", 1),
     "unsigned": "/s/" + report,
     "unsigned list": "/s/",
@@ -201,6 +200,11 @@ for name, path in {
     status, _, _ = anonymous(path)
     assert status == 403, (name, status)
     print("artifact.jomcgi.dev share", name, status)
+# Garage v2.5.0 refuses an expired link while it parses the query, as a bad
+# request ("Date is too old"), before it checks the signature.
+status, _, body = anonymous(presign(report, ro_id, ro_secret, ttl=60, at=past))
+assert status == 400 and b"<h1>shared</h1>" not in body, ("expired", status)
+print("artifact.jomcgi.dev share expired", status)
 # Only GET and HEAD skip sign-in; anything else meets the Authentik policy.
 status, _, _ = anonymous(link, "DELETE")
 assert status == 302, ("DELETE", status)
