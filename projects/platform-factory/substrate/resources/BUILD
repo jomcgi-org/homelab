@@ -21,8 +21,8 @@ py_venv_binary(
     data = [
         "atenet-egress-config.yaml",
         "egress-scan/gateway-patch.yaml",
-        "egress-scan/gateway-policy-tls.yaml",
         "egress-scan/gateway-policy.yaml",
+        "egress-scan/gateway-policy-tls.yaml",
     ],
     main = "render_egress_gateway.py",
     visibility = ["//:__subpackages__"],
