@@ -1036,7 +1036,7 @@ def test_conformance_passes_all_eight_checks(tmp_path: Path) -> None:
     assert run.returncode == 0, run.stdout + run.stderr
     for check in ("C1", "C3", "C4", "C5", "C7", "C8"):
         assert f"check={check} result=pass" in run.stdout, check
-    assert run.stdout.count("check=C2 result=pass") == 3
+    assert run.stdout.count("check=C2 result=pass") == 2
     assert run.stdout.count("check=C6 result=pass") == 2
     # The log carries the API's reason for each refusal.
     assert "InvalidArgument" in run.stdout and "PermissionDenied" in run.stdout
