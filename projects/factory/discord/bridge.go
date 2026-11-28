@@ -137,7 +137,8 @@ type Bridge struct {
 	// agent, in one persistent session per channel, keyed by channel ID.
 	Servers map[string]SessionAgent
 	// Explorer runs explore blocks on the explorer Agent and Repos checks
-	// that their repositories are public; both unused while
+	// that their repositories are public. When Repos is a RepoSearcher, it
+	// also resolves an explore block's repo_search. Both unused while
 	// Config.Explore is zero.
 	Explorer *Explorer
 	Repos    RepoChecker
@@ -583,8 +584,7 @@ func (b *Bridge) deliver(ctx context.Context, l *slog.Logger, actor Actor, m Mes
 		if from == "" && channelID == m.ChannelID {
 			from = m.ID // No reply to start the research thread from.
 		}
-		if b.startExplore(ctx, l, m, *req, channelID, from, done.Thread != "") {
-			r := *req
+		if r, ok := b.startExplore(ctx, l, m, *req, channelID, from, done.Thread != ""); ok {
 			if r.New() {
 				r.Research = m.ID
 			}

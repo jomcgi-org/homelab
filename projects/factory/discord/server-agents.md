@@ -368,9 +368,12 @@ flowchart LR
 - **Egress.** The server reaches only `api.github.com`; only the egress
   gateway reaches the server.
 - **Rule.** The system prompt tells the agent that memories may be stale:
-  for code, repositories, releases or anything current, check with a tool
-  (GitHub for quick facts, an explore block for a deep dive) and say what it
+  for code, repositories or releases, use an explore block; for anything
+  else current, check with a tool (GitHub when on) and say what it
   checked.
+
+The GitHub tools stay off (Joe, 2026-11-28: no token, "we just clone"):
+Bosun answers repository questions with an explore block.
 
 Turning it on, in order:
 
@@ -694,7 +697,9 @@ history and when memories, and the Capabilities paragraph lists it.
 Bosun can research a public GitHub repository through an explorer agent
 that clones it in a sandbox. Bosun writes a fenced `explore` block:
 `{"repo": "owner/name", "question": "...", "research": "new"}`. For a
-follow-up, `research` is the research ID that the thread shows.
+follow-up, `research` is the research ID that the thread shows. When Bosun
+is not sure of owner/name, a new research can give `"repo_search": "words"`
+in place of `repo`.
 
 ```mermaid
 sequenceDiagram
@@ -734,9 +739,19 @@ sequenceDiagram
   `GET https://api.github.com/repos/owner/name` with no credentials. It
   refuses unless GitHub answers 200 with `private: false` and `visibility:
   public`. The bridge's egress policy admits `api.github.com` for this.
+- **Repository search.** For `repo_search` the bridge calls
+  `GET https://api.github.com/search/repositories?q=<words> is:public` with
+  no credentials and takes the first public result. The "Researching ..."
+  message names that repository and the words. GitHub allows 10
+  unauthenticated searches a minute: the bridge keeps each answer for 6 h
+  and, while GitHub reports the limit spent, makes no search. With no match
+  or no search, the bridge asks Joe for owner/name and spends no explorer
+  turn. The public check then runs as for `repo`.
 - **Validation.** The block must be strict JSON: `repo` in GitHub's
-  owner/name syntax (no URL, no `.git`), a question of 1 to 2,000
-  characters, and `research` either `new` or a Discord snowflake.
+  owner/name syntax (no URL, no `.git`) or, for a new research only,
+  `repo_search` of 1 to 100 letters, digits, spaces and `._/-` (no search
+  qualifiers or quotes); a question of 1 to 2,000 characters; and
+  `research` either `new` or a Discord snowflake.
 - **Sessions.** One kagent session per research, with request ID
   `discord-explore-<research>` and the research ID as its name. A new
   research's ID is the ID of Joe's tagged message. The actor suspends 10 min
