@@ -1,3 +1,4 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 load(":libs.bzl", "LIBS")
 
@@ -29,4 +30,10 @@ py_test(
         "LIB_NAMES": " ".join(LIBS.keys()),
         "PAGES": " ".join(["$(rootpath %s)" % page for page in PAGES]),
     },
+)
+
+bzl_library(
+    name = "libs",
+    srcs = ["libs.bzl"],
+    visibility = ["//visibility:public"],
 )
