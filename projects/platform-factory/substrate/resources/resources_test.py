@@ -264,7 +264,14 @@ def test_the_receiver_route_keeps_substrate_authorization_and_scoped_mtls() -> N
     config_name = "atenet-egress-agentgateway-config"
     current = yaml.safe_load((_HERE / "atenet-egress-config.yaml").read_text())
     mounted = yaml.safe_load(_mounted_gateway_config(docs)["data"]["config.yaml"])
-    assert mounted["binds"][0]["listeners"][0] == current["binds"][0]["listeners"][0]
+    mounted_https = mounted["binds"][0]["listeners"][0]
+    # The egress scan of the catch-all route (HOME-938) is the only change;
+    # test_egress_scan_changes_only_the_hindsight_and_abliteration_routes
+    # checks it.
+    for r in mounted_https["routes"]:
+        if "name" not in r:
+            r["policies"].pop("extAuthz")
+    assert mounted_https == current["binds"][0]["listeners"][0]
     upstream_path = _HERE / "upstream/substrate/atenet-egress.yaml"
     upstream = [item for item in yaml.safe_load_all(upstream_path.read_text()) if item]
     original = yaml.safe_load(
