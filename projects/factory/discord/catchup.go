@@ -3,8 +3,10 @@ package discord
 import (
 	"cmp"
 	"context"
+	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -110,6 +112,7 @@ func (b *Bridge) catchUpChannel(ctx context.Context, src CatchUpSource, gid stri
 		}
 	}
 	slices.SortFunc(msgs, func(a, c HistoryMessage) int { return cmp.Compare(snowflakeID(a.ID), snowflakeID(c.ID)) })
+	gloves := b.glovesDuring(ctx, c.ID, cutoff, msgs, bot)
 	answered := map[string]bool{}
 	for _, h := range msgs {
 		if h.Author.ID == bot && h.Reference != nil && h.Reference.MessageID != "" {
@@ -134,6 +137,12 @@ func (b *Bridge) catchUpChannel(ctx context.Context, src CatchUpSource, gid stri
 		if b.modeCommand(m).Kind != cmdNone {
 			continue // A restart puts the gloves back on; a missed command stays missed (HOME-938).
 		}
+		if gloves[m.ID] {
+			// Sent in gloves off: never a normal turn (HOME-938). It gets
+			// no answer; Joe can send it again.
+			b.Log.InfoContext(ctx, "catch-up: gloves-off message left unanswered", "guild", gid, "channel", m.ChannelID, "message", m.ID)
+			continue
+		}
 		if b.answer(ctx, m) {
 			b.Log.InfoContext(ctx, "catch-up turn", "guild", gid, "channel", m.ChannelID, "message", m.ID)
 			queued++
@@ -146,4 +155,54 @@ func (b *Bridge) catchUpChannel(ctx context.Context, src CatchUpSource, gid stri
 func snowflakeID(id string) uint64 {
 	n, _ := strconv.ParseUint(id, 10, 64)
 	return n
+}
+
+// glovesDuring returns Joe's messages in msgs (oldest first, since cutoff)
+// sent while Bosun's notices say gloves off was on (HOME-938): after a
+// "🥊 Gloves off until <t:X:R>" notice and before X or a "Gloves back on".
+// The page before cutoff is read too, for a notice older than the window.
+// A message the bridge cannot place stays a normal one.
+func (b *Bridge) glovesDuring(ctx context.Context, channelID string, cutoff time.Time, msgs []HistoryMessage, bot string) map[string]bool {
+	var older []HistoryMessage
+	if b.History != nil && b.Config.Unsafe.enabled() {
+		page, err := b.History.MessagesBefore(ctx, channelID, Snowflake(cutoff))
+		if err != nil {
+			b.Log.WarnContext(ctx, "catch-up: history before the window unavailable", "channel", channelID, "error", err)
+		}
+		older = slices.Clone(page)
+		slices.SortFunc(older, func(a, c HistoryMessage) int { return cmp.Compare(snowflakeID(a.ID), snowflakeID(c.ID)) })
+	}
+	var until time.Time
+	out := map[string]bool{}
+	for _, h := range append(older, msgs...) {
+		at := SentAt(h.Message)
+		if h.Author.ID == bot {
+			text := h.Text()
+			if end, ok := glovesOffUntil(text); ok {
+				until = end
+			} else if strings.HasPrefix(text, ReplyGlovesOn) {
+				until = time.Time{}
+			}
+			continue
+		}
+		if at.Before(until) {
+			out[h.ID] = true
+		}
+	}
+	return out
+}
+
+var glovesOffNotice = regexp.MustCompile(`^🥊 Gloves off until <t:(\d+):R>`)
+
+// glovesOffUntil reads the end time of a gloves-off notice.
+func glovesOffUntil(text string) (time.Time, bool) {
+	m := glovesOffNotice.FindStringSubmatch(text)
+	if m == nil {
+		return time.Time{}, false
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(n, 0), true
 }

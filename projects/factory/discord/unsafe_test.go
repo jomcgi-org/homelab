@@ -31,6 +31,8 @@ func TestParseModeCommand(t *testing.T) {
 		"gloves off for two hours please":       off(2 * time.Hour),
 		"gloves off 1.5h":                       off(90 * time.Minute),
 		"ok bosun, time to take the gloves off": off(0),
+		"is it gloves off?":                     none, // A question.
+		"is it time to take the gloves off":     none,
 		"gloves on":                             on,
 		"Bosun gloves on":                       on,
 		"gloves back on":                        on,

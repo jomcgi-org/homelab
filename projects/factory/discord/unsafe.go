@@ -119,8 +119,7 @@ var commandWords = map[string]bool{
 	"take": true, "taking": true, "put": true, "your": true, "the": true, "them": true, "em": true,
 	"pls": true, "plz": true, "please": true, "now": true, "ok": true, "okay": true, "hey": true,
 	"yo": true, "mate": true, "time": true, "to": true, "go": true, "again": true, "and": true,
-	"can": true, "could": true, "you": true, "lets": true, "let": true, "us": true, "its": true,
-	"it": true, "is": true, "for": true, "a": true, "an": true, "one": true, "two": true,
+	"can": true, "could": true, "you": true, "lets": true, "let": true, "us": true, "for": true, "a": true, "an": true, "one": true, "two": true,
 	"three": true, "four": true, "half": true, "hour": true, "hours": true, "hr": true, "hrs": true,
 	"h": true, "min": true, "mins": true, "minute": true, "minutes": true, "m": true, "s": true,
 }

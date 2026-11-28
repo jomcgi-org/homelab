@@ -2,10 +2,13 @@ package discord
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
 
 type catchUpSource struct {
@@ -107,3 +110,50 @@ func TestCatchUpNeedsJoesID(t *testing.T) {
 		t.Errorf("turns = %d, reads = %v", n, src.reads)
 	}
 }
+
+// After a restart, Joe's tag sent while Bosun's notice says gloves off was
+// on is not a normal turn (HOME-938). A "Gloves back on" notice ends that.
+func TestCatchUpLeavesGlovesOffTagsUnanswered(t *testing.T) {
+	for name, tc := range map[string]struct {
+		glovesOn bool
+		want     int
+	}{"gloves off": {false, 0}, "gloves back on": {true, 1}} {
+		t.Run(name, func(t *testing.T) {
+			agent := &fakeAgent{answer: "ok"}
+			b, _, _ := newBridge(agent)
+			b.Config.Operator.UserID = "u1"
+			b.Config.UserLimit = Limit{}
+			b.Config.Unsafe = UnsafeConfig{Agent: unsafeRef, Duration: 30 * time.Minute, MaxDuration: 4 * time.Hour}
+			now := b.now()
+			bosun := func(id, text string) HistoryMessage {
+				h := HistoryMessage{Message: Message{ID: id, ChannelID: channel, Author: User{ID: bot, Bot: true}}}
+				h.Components = []Component{{Type: componentText, Content: text}}
+				return h
+			}
+			// The notice is older than the catch-up window.
+			notice := bosun(at(now.Add(-20*time.Minute), 1), fmt.Sprintf("🥊 Gloves off until <t:%d:R>: plain chat, no tools and no memory.", now.Add(10*time.Minute).Unix()))
+			b.History = &channelHistory{msgs: []HistoryMessage{notice}}
+			var after []HistoryMessage
+			if tc.glovesOn {
+				after = append(after, bosun(at(now.Add(-5*time.Minute), 2), ReplyGlovesOn))
+			}
+			joe := User{ID: "u1", Username: "joe"}
+			tag := HistoryMessage{Message: Message{ID: at(now.Add(-3*time.Minute), 3), ChannelID: channel, Author: joe,
+				Content: "<@" + bot + "> a joke", Mentions: []User{{ID: bot}}}}
+			after = append(after, tag)
+			src := &catchUpSource{
+				channels: []Channel{{ID: channel, Type: 0, LastMessageID: tag.ID}},
+				messages: map[string][]HistoryMessage{channel: after},
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if n := b.CatchUp(ctx, src, 15*time.Minute); n != tc.want {
+				t.Errorf("catch-up turns = %d, want %d", n, tc.want)
+			}
+			cancel()
+			b.Wait()
+		})
+	}
+}
+
+var unsafeRef = kagent.AgentRef{Namespace: "discord-unsafe", Name: "unsafe"}
