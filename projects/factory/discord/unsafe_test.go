@@ -316,14 +316,18 @@ func TestTheArchiveSkipsUnsafeTurns(t *testing.T) {
 	marks := &fakeMarks{live: map[string]bool{"21": true}}
 	a.Unsafe = marks
 	reply := func(id, ref string) HistoryMessage {
-		h := HistoryMessage{Message: Message{ID: id, ChannelID: arcChannel, GuildID: arcGuild, Type: 19,
-			Author: User{ID: arcBot, Bot: true}, Reference: &Reference{MessageID: ref}}}
+		h := HistoryMessage{Message: Message{
+			ID: id, ChannelID: arcChannel, GuildID: arcGuild, Type: 19,
+			Author: User{ID: arcBot, Bot: true}, Reference: &Reference{MessageID: ref},
+		}}
 		h.Components = []Component{{Type: componentText, Content: "edgy\n\n" + unsafeFooter(time.Unix(1, 0))}}
 		return h
 	}
 	plain := func(id, text string) HistoryMessage {
-		return HistoryMessage{Message: Message{ID: id, ChannelID: arcChannel, GuildID: arcGuild,
-			Author: User{ID: "u1", Username: "ann"}, Content: text}}
+		return HistoryMessage{Message: Message{
+			ID: id, ChannelID: arcChannel, GuildID: arcGuild,
+			Author: User{ID: "u1", Username: "ann"}, Content: text,
+		}}
 	}
 	a.Event("MESSAGE_CREATE", archiveEvent(t, plain("21", "live spicy")))
 	a.Event("MESSAGE_CREATE", archiveEvent(t, reply("22", "21")))

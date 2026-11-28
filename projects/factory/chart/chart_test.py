@@ -3026,16 +3026,25 @@ def test_discord_unsafe_mode_agent_is_plain_chat_on_abliteration() -> None:
     agent = _in(docs, "Agent", ns, "unsafe")["spec"]["template"]["inline"]
     assert "tools" not in agent
     assert _in(docs, "Harness", ns, "hermes")["spec"]["hermes"] == {}
-    assert not [d for d in docs if d["kind"] == "RemoteMCPServer" and d["metadata"].get("namespace") == ns]
+    assert not [
+        d
+        for d in docs
+        if d["kind"] == "RemoteMCPServer" and d["metadata"].get("namespace") == ns
+    ]
     policy = yaml.safe_load(
-        _in(docs, "ConfigMap", "factory-discord", "discord-bridge-policy")["data"]["policy.json"]
+        _in(docs, "ConfigMap", "factory-discord", "discord-bridge-policy")["data"][
+            "policy.json"
+        ]
     )
     assert policy["unsafe"] == {
         "agent": f"{ns}/unsafe",
         "duration": "30m",
         "maxDuration": "4h",
     }
-    assert "serverAgents" not in policy or f"{ns}/unsafe" not in policy["serverAgents"].values()
+    assert (
+        "serverAgents" not in policy
+        or f"{ns}/unsafe" not in policy["serverAgents"].values()
+    )
     rules = _controller_egress(
         _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")["spec"]
     )["toPorts"][0]["rules"]["http"]
