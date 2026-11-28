@@ -502,6 +502,11 @@ func (im *Importer) channel(ctx context.Context, guildID string, c Channel, toda
 				unsafe[ref] = true
 				continue
 			}
+			if ref := blockedReplyRef(m, im.BotID); ref != "" {
+				// Bosun's plain blocked reply stays; the refused message it
+				// answers, on this or a later page, is never remembered.
+				unsafe[ref] = true
+			}
 			if unsafe[m.ID] || !im.keep(m) {
 				continue
 			}

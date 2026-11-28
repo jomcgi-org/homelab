@@ -51,11 +51,11 @@ const (
 const glovesTopUpURL = "https://abliteration.ai/console/billing"
 
 // ReplyNoCredits answers a gloves-off turn with no credits left.
-const ReplyNoCredits = "Out of gloves-off credits. Top up: <" + glovesTopUpURL + ">, then tap " + retryEmoji + " to retry."
+const ReplyNoCredits = "Out of gloves-off credits. Top up: " + glovesTopUpURL + ", then tap " + retryEmoji + " to retry."
 
 // ReplyNoCreditsResend answers when no retry can wait: too many wait, or
 // the Replier cannot react.
-const ReplyNoCreditsResend = "Out of gloves-off credits. Top up: <" + glovesTopUpURL + ">, then send it again."
+const ReplyNoCreditsResend = "Out of gloves-off credits. Top up: " + glovesTopUpURL + ", then send it again."
 
 // pendingRetry is a gloves-off turn waiting for Joe's 🔄.
 type pendingRetry struct {

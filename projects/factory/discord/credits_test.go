@@ -238,3 +238,10 @@ func TestAFullRetryStoreAsksJoeToResend(t *testing.T) {
 		t.Errorf("notice = %q, reactions %v", got, rep.reacts)
 	}
 }
+
+// The notice is Joe's wording, with the billing page.
+func TestTheNoCreditsNoticeText(t *testing.T) {
+	if want := "Out of gloves-off credits. Top up: https://abliteration.ai/console/billing, then tap 🔄 to retry."; ReplyNoCredits != want {
+		t.Errorf("ReplyNoCredits = %q, want %q", ReplyNoCredits, want)
+	}
+}

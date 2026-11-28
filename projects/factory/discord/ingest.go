@@ -104,8 +104,10 @@ func (i *Ingestor) Add(guildID, channelID, messageID string, at time.Time, text 
 // AddHeld buffers the line of a tagged message whose turn decides whether
 // it may be stored (HOME-938): a refused message never reaches Hindsight
 // or a later prompt. The turn's end releases or drops it.
-func (i *Ingestor) AddHeld(guildID, channelID, messageID string, at time.Time, text string) {
-	i.add(guildID, channelID, messageID, at, text, true)
+// It reports whether it buffered the line: a repeated message ID adds
+// nothing, so its hold belongs to the first delivery.
+func (i *Ingestor) AddHeld(guildID, channelID, messageID string, at time.Time, text string) bool {
+	return i.add(guildID, channelID, messageID, at, text, true)
 }
 
 // Release lets a held line flush.
@@ -142,7 +144,7 @@ func (i *Ingestor) settle(guildID, channelID, messageID string, drop bool) {
 	}
 }
 
-func (i *Ingestor) add(guildID, channelID, messageID string, at time.Time, text string, held bool) {
+func (i *Ingestor) add(guildID, channelID, messageID string, at time.Time, text string, held bool) bool {
 	now := i.now()
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -151,7 +153,7 @@ func (i *Ingestor) add(guildID, channelID, messageID string, at time.Time, text 
 			i.seen = map[string]time.Time{}
 		}
 		if _, dup := i.seen[messageID]; dup {
-			return
+			return false
 		}
 		i.seen[messageID] = now
 		if len(i.seen)%1024 == 0 {
@@ -173,6 +175,7 @@ func (i *Ingestor) add(guildID, channelID, messageID string, at time.Time, text 
 	c.lines = append(c.lines, line)
 	c.bytes += len(text)
 	i.trimLocked(c)
+	return true
 }
 
 func (i *Ingestor) channelLocked(guildID, channelID string) *ingestChannel {

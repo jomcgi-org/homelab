@@ -99,6 +99,17 @@ const maxArchiveUnsafe = 4096
 // skipUnsafe reports whether m is an unsafe mode turn or reply. With live,
 // a message of Joe's is decided now; a backfill page only reads decisions.
 func (a *Archiver) skipUnsafe(m HistoryMessage, live bool) bool {
+	if ref := blockedReplyRef(m, a.bot()); ref != "" {
+		// Bosun's plain blocked reply is kept; the refused message it
+		// answers is not archived again by a backfill page.
+		a.mu.Lock()
+		if a.unsafe == nil || len(a.unsafe) >= maxArchiveUnsafe {
+			a.unsafe = map[string]bool{}
+		}
+		a.unsafe[ref] = true
+		a.mu.Unlock()
+		return false
+	}
 	if ref, ok := unsafeReplyRef(m, a.bot()); ok {
 		a.mu.Lock()
 		if a.unsafe == nil || len(a.unsafe) >= maxArchiveUnsafe {

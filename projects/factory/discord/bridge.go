@@ -418,8 +418,9 @@ func (b *Bridge) ingest(m Message) (held bool) {
 	}
 	line := m.Author.Username + " (" + at.UTC().Format(time.RFC3339) + "): " + text
 	if b.Accept(m) {
-		b.Ingest.AddHeld(m.GuildID, m.ChannelID, m.ID, at, line)
-		return true
+		// A repeated delivery holds nothing, so it cannot release the
+		// first delivery's hold.
+		return b.Ingest.AddHeld(m.GuildID, m.ChannelID, m.ID, at, line)
 	}
 	b.Ingest.Add(m.GuildID, m.ChannelID, m.ID, at, line)
 	return false

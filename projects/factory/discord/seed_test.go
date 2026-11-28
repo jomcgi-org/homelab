@@ -376,3 +376,37 @@ func TestTheSeedLeavesARefusalAndItsOfferOut(t *testing.T) {
 		}
 	}
 }
+
+// A reply to the offer, such as Joe's "lol", reaches the seed as its own
+// text but quotes neither the offer nor the refused message; nor does a
+// reply to the refused message (HOME-945).
+func TestASeedQuotesNeitherTheOfferNorTheRefusal(t *testing.T) {
+	for _, restarted := range []bool{false, true} {
+		b, _, _ := ingestBridge(&fakeAgent{})
+		server := &freshSessionAgent{}
+		b.Servers = map[string]SessionAgent{guild: server}
+		if !restarted {
+			b.block("102")
+		}
+		offerBody := offerText("Dario fainted at that spicy one.", time.Unix(1, 0))
+		offer := bosunSaid("103", 3)
+		offer.Components = []Component{{Type: componentText, Content: offerBody}}
+		offer.Reference = &Reference{MessageID: "102"}
+		lol := said("104", "joe", "lol", 4)
+		lol.Type = 19
+		lol.Referenced = &Referenced{ID: "103", Author: User{ID: bot, Bot: true}, Components: offer.Components}
+		again := said("105", "ann", "what was it?", 5)
+		again.Type = 19
+		again.Referenced = &Referenced{ID: "102", Author: User{ID: "id-joe", Username: "joe"}, Content: "the refused joke"}
+		b.History = &channelHistory{msgs: []HistoryMessage{again, lol, offer, said("102", "joe", "the refused joke", 2)}}
+		b.Turn(context.Background(), tagged("200", "hi"))
+		prompt := server.lastPrompt()
+		if strings.Contains(prompt, "spicy") || strings.Contains(prompt, "refused joke") || strings.Contains(prompt, offerAsk) {
+			t.Errorf("restarted=%v: the offer or the refusal was quoted: %s", restarted, prompt)
+		}
+		got, seeded := seedLines(t, prompt)
+		if !seeded || strings.Join(got, "|") != "joe: lol|ann: what was it?" {
+			t.Errorf("restarted=%v: seeded=%v lines %q", restarted, seeded, got)
+		}
+	}
+}

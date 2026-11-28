@@ -222,3 +222,88 @@ func TestARenewedNoticeGetsItsOwnLifetime(t *testing.T) {
 	cancel()
 	b.Wait()
 }
+
+// Bosun's plain blocked reply stays in a backfilled day; the refused
+// message it answers does not, even on a later (older) page.
+func TestBackfillLeavesOutAMessageWithAPlainBlockedReply(t *testing.T) {
+	refusal := msg("r2", "bosun", day(16, 12), "")
+	refusal.Author.Bot = true
+	refusal.Components = []Component{{Type: componentText, Content: ReplyBlocked}}
+	refusal.Reference = &Reference{MessageID: "r1"}
+	src := &fakeHistory{
+		channels: map[string][]Channel{"g1": {{ID: "c1", Name: "general", Type: 0}}},
+		messages: map[string][]HistoryMessage{"c1": {
+			msg("r3", "ann", day(16, 13), "after"),
+			refusal,
+			msg("r1", "joe", day(16, 11), "the refused joke"),
+			msg("r0", "ann", day(16, 10), "before"),
+		}},
+	}
+	docs := &fakeDocs{}
+	if _, err := newImporter(src, docs, map[string]Guild{"g1": {History: true}}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := docs.docs["g1/discord:c1:2026-11-16:history"].Content
+	if strings.Contains(got, "refused joke") || !strings.Contains(got, ReplyBlocked) || !strings.Contains(got, "before") || !strings.Contains(got, "after") {
+		t.Errorf("day = %q", got)
+	}
+}
+
+// The archive backfill keeps Bosun's plain blocked reply and leaves out the
+// refused message it answers.
+func TestArchivePageLeavesOutAMessageWithAPlainBlockedReply(t *testing.T) {
+	store := &fakeArchive{}
+	a := newTestArchiver(store)
+	refusal := HistoryMessage{Message: Message{ID: "32", ChannelID: arcChannel, GuildID: arcGuild, Type: 19,
+		Author: User{ID: arcBot, Bot: true}, Reference: &Reference{MessageID: "31"}}}
+	refusal.Components = []Component{{Type: componentText, Content: ReplyBlocked}}
+	joke := HistoryMessage{Message: Message{ID: "31", ChannelID: arcChannel, GuildID: arcGuild,
+		Author: User{ID: "u1", Username: "joe"}, Content: "the refused joke"}}
+	a.Page(context.Background(), arcGuild, Channel{ID: arcChannel}, "", []HistoryMessage{refusal})
+	a.Page(context.Background(), arcGuild, Channel{ID: arcChannel}, "32", []HistoryMessage{joke})
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var ids []string
+	for _, r := range store.rows {
+		ids = append(ids, r.ID)
+	}
+	if strings.Join(ids, ",") != "32" {
+		t.Errorf("archived %v, want only Bosun's reply 32", ids)
+	}
+}
+
+// A repeated gateway delivery of a tagged message, while its turn runs,
+// does not release the first delivery's hold: a flush still stores nothing
+// before the refusal drops it.
+func TestADuplicateDeliveryKeepsTheHold(t *testing.T) {
+	b, _, _, rep, _ := offerBridge(t)
+	b.Unsafe, b.OfferWriter = nil, nil
+	gate := make(chan struct{})
+	slow := &gatedBlocker{gate: gate}
+	b.Servers = map[string]SessionAgent{guild: slow}
+	mem := b.Ingest.Memory.(*ingestMemory)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := byJoe(tagged("1", "the spicy joke"))
+	b.Handle(ctx, m)
+	waitFor(t, func() bool { return slow.count() == 1 })
+	b.Handle(ctx, m) // Discord delivers it again.
+	if err := b.Ingest.Flush(ctx, guild, channel); err != nil {
+		t.Fatal(err)
+	}
+	if got := mem.contents(); len(got) != 0 {
+		t.Fatalf("a flush after the repeat stored %q", got)
+	}
+	close(gate)
+	waitFor(t, func() bool { return len(rep.texts()) == 1 })
+	cancel()
+	b.Wait()
+	if err := b.Ingest.Flush(context.Background(), guild, channel); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range mem.contents() {
+		if strings.Contains(c, "spicy") {
+			t.Errorf("Hindsight got the refused message: %q", c)
+		}
+	}
+}
