@@ -45,9 +45,9 @@ const (
 	maxRetries = 16
 )
 
-// glovesTopUpURL is where Joe buys credits (docs.abliteration.ai, "API
-// errors": "Top up in the console").
-const glovesTopUpURL = "https://abliteration.ai/console"
+// glovesTopUpURL is where Joe buys credits: the console's billing page
+// (Joe, 2026-11-28; docs.abliteration.ai "API errors" names the console).
+const glovesTopUpURL = "https://abliteration.ai/console/billing"
 
 // ReplyNoCredits answers a gloves-off turn with no credits left.
 const ReplyNoCredits = "Out of gloves-off credits. Top up: <" + glovesTopUpURL + ">, then tap " + retryEmoji + " to retry."
