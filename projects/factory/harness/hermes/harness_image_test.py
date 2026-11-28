@@ -11,6 +11,7 @@ model credential.
 
 from __future__ import annotations
 
+import fcntl
 import glob
 import gzip
 import hashlib
@@ -21,7 +22,9 @@ import shutil
 import signal
 import socket
 import stat
+import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -857,6 +860,41 @@ class _TaskStore:
 
 def test_a2a_turn_through_packaged_runner(rootfs):
     _need_userns()
+    # The runner always binds 80 and 8081. Give the runner and both peers
+    # their own loopback, including the low-port setting an actor gets.
+    subprocess.run(
+        [
+            "unshare",
+            "--map-root-user",
+            "--net",
+            "--pid",
+            "--fork",
+            "--kill-child",
+            "--mount-proc",
+            sys.executable,
+            "-c",
+            "import runpy, sys; from pathlib import Path; "
+            "runpy.run_path(sys.argv[1])['_run_isolated_turn'](Path(sys.argv[2]))",
+            __file__,
+            str(rootfs),
+        ],
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+        timeout=330,
+        check=True,
+    )
+
+
+def _run_isolated_turn(rootfs: Path):
+    # Enable loopback in the new network namespace (SIOCGIFFLAGS,
+    # SIOCSIFFLAGS and IFF_UP), without depending on host iproute2.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        request = struct.pack("16sH22x", b"lo", 0)
+        current = fcntl.ioctl(sock, 0x8913, request)
+        flags = struct.unpack_from("H", current, 16)[0]
+        fcntl.ioctl(sock, 0x8914, struct.pack("16sH22x", b"lo", flags | 1))
+    low_port = Path("/proc/sys/net/ipv4/ip_unprivileged_port_start")
+    if int(low_port.read_text()) > 80:
+        low_port.write_text("80")
     store = _TaskStore()
     _FakeModel.calls.clear()
     with (
