@@ -138,8 +138,10 @@ func TestCatchUpLeavesGlovesOffTagsUnanswered(t *testing.T) {
 				after = append(after, bosun(at(now.Add(-5*time.Minute), 2), ReplyGlovesOn))
 			}
 			joe := User{ID: "u1", Username: "joe"}
-			tag := HistoryMessage{Message: Message{ID: at(now.Add(-3*time.Minute), 3), ChannelID: channel, Author: joe,
-				Content: "<@" + bot + "> a joke", Mentions: []User{{ID: bot}}}}
+			tag := HistoryMessage{Message: Message{
+				ID: at(now.Add(-3*time.Minute), 3), ChannelID: channel, Author: joe,
+				Content: "<@" + bot + "> a joke", Mentions: []User{{ID: bot}},
+			}}
 			after = append(after, tag)
 			src := &catchUpSource{
 				channels: []Channel{{ID: channel, Type: 0, LastMessageID: tag.ID}},
