@@ -26,6 +26,7 @@ containers:
       - -I
       - -c
       - PROBE_SOURCE
+    args: PROBE_ADDRESSES
     wakeupProbe:
       httpGet:
         path: /healthz

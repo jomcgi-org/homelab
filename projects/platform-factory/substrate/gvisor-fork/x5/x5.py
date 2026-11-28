@@ -13,7 +13,7 @@ the router's ingress allowlist (values/substrate.yaml).
      mode ondemand  create, policy, resume, request, one child at a time
      mode pool      POOL_BATCH children prepared first, then one request each
   3. Pass when every child's checks pass:
-     allowed  mcp-grafana answered through the gateway (any HTTP status)
+     allowed  mcp-grafana answered through the gateway (HTTP 401)
      denied   the host outside the policy got no answer from its origin
      dns      the public name did not resolve
 
@@ -35,6 +35,7 @@ import json
 import math
 import os
 import signal
+import socket
 import ssl
 import subprocess
 import sys
@@ -203,6 +204,10 @@ def stats(mode: str, metric: str, values: list[float]) -> None:
 
 # The API refuses a container argument over 4096 characters.
 ARG_LIMIT = 4096
+PROBE_HOSTS = (
+    "mcp-grafana.grafana.svc.cluster.local",
+    "hindsight-api.hindsight.svc.cluster.local",
+)
 
 
 def compact(source: str) -> str:
@@ -222,7 +227,7 @@ def compact(source: str) -> str:
     return ast.unparse(tree)
 
 
-def template_text(source: str, template: str) -> str:
+def template_text(source: str, template: str, addresses: list[str]) -> str:
     """The template with probe.py's code as its command's last argument."""
     if template.count("PROBE_SOURCE") != 2:  # the comment and the argument
         raise Failed(
@@ -232,7 +237,9 @@ def template_text(source: str, template: str) -> str:
     if len(code) > ARG_LIMIT:
         raise Failed(f"probe.py is {len(code)} characters as code, over {ARG_LIMIT}")
     head, _, tail = template.rpartition("PROBE_SOURCE")
-    return head + json.dumps(code) + tail
+    return (
+        head + json.dumps(code) + tail.replace("PROBE_ADDRESSES", json.dumps(addresses))
+    )
 
 
 class Router:
@@ -284,7 +291,7 @@ def verdict(checks: dict) -> dict[str, bool]:
         checks.get("dns", {}),
     )
     return {
-        "allowed": "status" in allowed and allowed["status"] not in (403, 502, 503),
+        "allowed": allowed.get("status") == 401,
         "denied": "error" in denied or denied.get("status") == 403,
         "dns": "error" in dns,
     }
@@ -345,11 +352,11 @@ def record(mode: str, rows: list[dict]) -> bool:
     for check in ("allowed", "denied", "dns"):
         stats(
             mode,
-            f"{check}_ms",
+            "mcp_ms" if check == "allowed" else f"{check}_ms",
             [
                 float(r["checks"][check]["ms"])
                 for r in answered
-                if "ms" in r["checks"].get(check, {})
+                if r["pass"][check] and "ms" in r["checks"].get(check, {})
             ],
         )
     if mode == "ondemand":
@@ -389,7 +396,9 @@ def run() -> bool:
     )
     log(event="worker", seconds=f"{waited:.2f}")
     text = template_text(
-        (CONFIG / "probe.py").read_text(), (CONFIG / "template.yaml").read_text()
+        (CONFIG / "probe.py").read_text(),
+        (CONFIG / "template.yaml").read_text(),
+        [socket.gethostbyname(host) for host in PROBE_HOSTS],
     )
     rendered = WORK / "template.yaml"
     rendered.write_text(text)
