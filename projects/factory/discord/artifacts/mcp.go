@@ -267,7 +267,7 @@ const placeSchema = `"server":{"type":"string","pattern":"^([0-9]{15,21}|private
 const pathSchema = `"path":{"type":"string","maxLength":200,"description":"File path under the channel, e.g. report.html or charts/q3.png. Letters, digits, '.', '_', '-'; up to 5 segments; extension .html .md .txt .csv .json .svg or .png."}`
 
 // pageTemplate is the house HTML page Bosun starts an artifact from. It
-// loads the house design system (house-1.css and house-1.js) and the pinned
+// loads the house design system (house-2.css and house-2.js) and the pinned
 // libraries from /_lib/ (projects/factory/discord/libs).
 //
 //go:embed template.html

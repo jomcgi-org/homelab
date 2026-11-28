@@ -6,6 +6,8 @@ exports_files(
     [
         "house/house-1.css",
         "house/house-1.js",
+        "house/house-2.css",
+        "house/house-2.js",
         "selftest/architecture.html",
     ],
     visibility = ["//projects/factory/connector/image:__pkg__"],

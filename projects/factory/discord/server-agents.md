@@ -758,7 +758,7 @@ itself to another URL.
 brief (`artifacts/brief.md`), the base page (`artifacts/template.html`) and,
 on request, one of three example pages (`artifacts/examples/`: explainer,
 report, comparison). Every page loads the house design system
-(`libs/house/house-1.css` and `house-1.js`) and the pinned
+(`libs/house/house-2.css` and `house-2.js`) and the pinned
 libraries, each with an `integrity` hash. The design system copies
 jomcgi.dev's look as values (`jomcgi-site/web/src/palette.css`, `home.css`):
 near-white or near-black page, hairlines, ink text, one blue accent, green
@@ -767,11 +767,14 @@ with a solid offset shadow. Restraint is the default, after Dieter Rams; one
 `.statement` per page is the bold editorial moment, after Tracy Ma (the
 design catalog in #8730). Components: hero, statement, stat tiles with a dark
 readout, cards with Lucide icons, steps, timeline, callouts, comparison,
-code, figures. Mermaid uses the ELK layout: on
+code, figures, and controls for a page to try (stage, buttons, segmented
+control, toggle, readout). Page CSS uses only the house tokens. Mermaid
+diagrams keep a 36rem minimum width and scroll sideways. Mermaid uses the
+ELK layout: on
 Joe's architecture diagram it kept every edge out of the group and off the
 nodes, where dagre crossed a label and a node. A library file's name carries
 its version, and old versions stay, so a page keeps the look it was
-published with.
+published with: `house-1` stays served for the pages that link it.
 
 ```mermaid
 flowchart LR
