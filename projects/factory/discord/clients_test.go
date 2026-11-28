@@ -72,6 +72,18 @@ func TestHindsightRecallsTheServerAndRetainsInTheChannel(t *testing.T) {
 	if string(item) != `{"content":"ann: hi","context":"Discord channel c1","document_id":"discord:c1:2026-11-17","observation_scopes":[["channel:c1"]],"tags":["channel:c1"],"timestamp":"2026-11-17T23:30:00Z","update_mode":"append"}` {
 		t.Errorf("retain item = %s", item)
 	}
+	// A remembered fact (HOME-919) is its own document in the same bank,
+	// tagged with its channel and kind:remembered.
+	if err := h.RetainFact(ctx, "g1", "c1", "m9", at, "[kind=remembered] fact"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(calls); n != 4 || calls[3] != "POST /v1/default/banks/discord-g1/memories" {
+		t.Fatalf("calls = %v", calls)
+	}
+	fact, _ := json.Marshal(bodies["/v1/default/banks/discord-g1/memories"]["items"].([]any)[0])
+	if string(fact) != `{"content":"[kind=remembered] fact","context":"Joe asked Bosun to remember this, in Discord channel c1","document_id":"discord:c1:remembered:m9","observation_scopes":[["channel:c1"]],"tags":["channel:c1","kind:remembered"],"timestamp":"2026-11-17T23:30:00Z","update_mode":"replace"}` {
+		t.Errorf("fact item = %s", fact)
+	}
 }
 
 // The gateway identifies with the bot token and only guild and message

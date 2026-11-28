@@ -444,8 +444,13 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	} else {
 		l.InfoContext(ctx, "recall skipped: no words to search")
 	}
+	note := b.remember(ctx, l, m, text)
 	research := b.takeResults(m.ChannelID)
 	prompt := Prompt(m, b.Places.Lookup(m.GuildID, m.ChannelID), text, memories, since, b.bot(), research...)
+	if note != "" {
+		// Trusted: the bridge wrote it, so it stays outside the JSON.
+		prompt = note + "\n\n" + prompt
+	}
 	var answer string
 	if a, ok := b.Servers[m.GuildID]; ok {
 		// Each channel, a thread included, is one session (Joe, 2026-11-27).

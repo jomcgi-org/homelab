@@ -18,6 +18,15 @@ type Memory interface {
 	Retain(ctx context.Context, guildID, channelID string, at time.Time, content string) error
 }
 
+// FactMemory is a Memory that stores an explicit fact as its own item
+// (HOME-919). A Memory without it gets the fact through Retain.
+type FactMemory interface {
+	RetainFact(ctx context.Context, guildID, channelID, messageID string, at time.Time, content string) error
+}
+
+// RememberedTag marks a fact that Joe asked Bosun to remember (HOME-919).
+const RememberedTag = "kind:remembered"
+
 // Hindsight is the hindsight-discord REST API, called with the tenant key.
 // Each server has its own bank (discord-<guild_id>, HOME-162 contract rule
 // 8). Every retain carries its channel's tag. A recall reads the whole bank:
@@ -85,6 +94,19 @@ func NewRetain(channelID string, at time.Time, content string) RetainItem {
 	}
 }
 
+// NewFact builds the item for a fact that Joe asked Bosun to remember. It
+// is its own document, keyed by the tagging message, so a repeat replaces
+// it and the day's channel document is unchanged. Its observations stay in
+// the channel's scope, as for an exchange.
+func NewFact(channelID, messageID string, at time.Time, content string) RetainItem {
+	item := NewRetain(channelID, at, content)
+	item.Context = "Joe asked Bosun to remember this, in Discord channel " + channelID
+	item.DocumentID = "discord:" + channelID + ":remembered:" + messageID
+	item.UpdateMode = "replace"
+	item.Tags = append(item.Tags, RememberedTag)
+	return item
+}
+
 // Recall returns the server's memories for query, from every channel.
 func (h *Hindsight) Recall(ctx context.Context, guildID, query string) ([]string, error) {
 	if err := h.ensureBank(ctx, guildID); err != nil {
@@ -114,6 +136,16 @@ func (h *Hindsight) Retain(ctx context.Context, guildID, channelID string, at ti
 		return err
 	}
 	body := map[string]any{"items": []RetainItem{NewRetain(channelID, at, content)}, "async": false}
+	return h.call(ctx, http.MethodPost, "/v1/default/banks/"+BankID(guildID)+"/memories", body, nil)
+}
+
+// RetainFact stores a remembered fact in the server's bank and waits until
+// Hindsight has stored it.
+func (h *Hindsight) RetainFact(ctx context.Context, guildID, channelID, messageID string, at time.Time, content string) error {
+	if err := h.ensureBank(ctx, guildID); err != nil {
+		return err
+	}
+	body := map[string]any{"items": []RetainItem{NewFact(channelID, messageID, at, content)}, "async": false}
 	return h.call(ctx, http.MethodPost, "/v1/default/banks/"+BankID(guildID)+"/memories", body, nil)
 }
 
