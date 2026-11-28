@@ -124,27 +124,44 @@ func TestTheSeedIsBoundedInCharacters(t *testing.T) {
 	}
 }
 
-// A message the filter blocked, and a reply's quote of it, stay out of the
-// seed as they stay out of every later turn.
+// A seed reads no further back than Bosun's newest blocked reply: what came
+// before it may hold what the filter refused, even after a restart empties
+// the blocked set (review of #8821). A blocked message after it, and a
+// reply's quote of it, stay out too.
 func TestTheSeedLeavesBlockedMessagesOut(t *testing.T) {
-	b, _, _ := ingestBridge(&fakeAgent{})
-	server := &freshSessionAgent{}
-	b.Servers = map[string]SessionAgent{guild: server}
-	b.block("102")
-	reply := said("103", "dave", "ha", 3)
-	reply.Type = 19
-	reply.Referenced = &Referenced{ID: "102", Author: User{ID: "id-ann", Username: "ann"}, Content: "the refused joke"}
-	refusal := bosunSaid("104", 4)
-	refusal.Components = []Component{{Type: componentText, Content: ReplyBlocked}}
-	b.History = &channelHistory{msgs: []HistoryMessage{refusal, reply, said("102", "ann", "the refused joke", 2), said("101", "ann", "hello", 1)}}
-	b.Turn(context.Background(), tagged("200", "hi"))
-	prompt := server.lastPrompt()
-	if strings.Contains(prompt, "refused joke") {
-		t.Errorf("the blocked message reached the seed: %s", prompt)
-	}
-	got, seeded := seedLines(t, prompt)
-	if !seeded || len(got) != 3 || got[0] != "ann: hello" || got[1] != "dave: ha" {
-		t.Errorf("lines = %q", got)
+	for _, restarted := range []bool{false, true} {
+		b, _, _ := ingestBridge(&fakeAgent{})
+		server := &freshSessionAgent{}
+		b.Servers = map[string]SessionAgent{guild: server}
+		if !restarted {
+			b.block("102")
+			b.block("106")
+		}
+		refusal := bosunSaid("103", 3)
+		refusal.Components = []Component{{Type: componentText, Content: ReplyBlocked}}
+		reply := said("107", "dave", "ha", 7)
+		reply.Type = 19
+		reply.Referenced = &Referenced{ID: "106", Author: User{ID: "id-ann", Username: "ann"}, Content: "a second refused joke"}
+		msgs := []HistoryMessage{reply, said("105", "ann", "after", 5), refusal, said("102", "ann", "the refused joke", 2), said("101", "ann", "hello", 1)}
+		if restarted {
+			// Bosun answers each blocked message, so after a restart the
+			// newest refusal is newer than every blocked message.
+			reply.Referenced = &Referenced{ID: "105", Author: User{ID: "id-ann", Username: "ann"}, Content: "after"}
+			msgs[0] = reply
+		} else {
+			msgs = append([]HistoryMessage{said("106", "ann", "a second refused joke", 6)}, msgs...)
+			msgs[0], msgs[1] = msgs[1], msgs[0] // 107 is newest, then 106.
+		}
+		b.History = &channelHistory{msgs: msgs}
+		b.Turn(context.Background(), tagged("200", "hi"))
+		prompt := server.lastPrompt()
+		if strings.Contains(prompt, "refused joke") || strings.Contains(prompt, "hello") {
+			t.Errorf("restarted=%v: blocked or earlier content reached the seed: %s", restarted, prompt)
+		}
+		got, seeded := seedLines(t, prompt)
+		if !seeded || len(got) != 2 || got[0] != "ann: after" || got[1] != "dave: ha" {
+			t.Errorf("restarted=%v: lines = %q", restarted, got)
+		}
 	}
 }
 
