@@ -67,7 +67,7 @@ kagent:
   # Agents and the controller's watch: kagent's own namespace plus each
   # repository binding's.
   rbac:
-    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-r-homelab-planner, factory-discord-agent, factory-discord-operator, discord-1501965852042330302, discord-explorer]
+    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-r-homelab-planner, factory-discord-agent, factory-discord-operator, discord-1501965852042330302, discord-explorer, discord-unsafe]
   # The controller's metrics for Prometheus
   # (projects/platform-factory/prometheus): HTTPS on 8443, admitting a token
   # whose subject may GET /metrics.
@@ -525,6 +525,15 @@ discord:
           actorJwt:
             audiences: [bosun-artifacts]
           tools: [notes_list, notes_read, notes_search, notes_write, notes_append, notes_delete]
+    # Joe's gloves-off agent (HOME-938): abliteration.ai, no tools. His
+    # 1Password item factory-discord-abliteration exists (Joe, 2026-11-28);
+    # prepaid credits only, with auto-reload off.
+    unsafe:
+      enabled: true
+  # Joe's gloves off (HOME-938, Joe 2026-11-28): his tags only, 30 min by
+  # default, 4 h at most.
+  unsafe:
+    enabled: true
   # Bosun's artifact tools at artifact.jomcgi.dev (HOME-917).
   artifacts:
     enabled: true

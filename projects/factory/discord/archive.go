@@ -46,11 +46,54 @@ type Archiver struct {
 	Metrics     *ArchiveMetrics
 	// Queue bounds the live events waiting to be written.
 	Queue int
+	// Unsafe names Joe's unsafe mode turns (HOME-938, the Bridge); nil
+	// names none. Unsafe turns and their replies are never archived.
+	Unsafe UnsafeMarks
 
 	mu    sync.Mutex
 	botID string
 	once  sync.Once
 	ops   chan archiveOp
+	// unsafe holds the messages that an unsafe mode reply answers, which a
+	// later (older) backfill page or a live edit must not archive.
+	unsafe map[string]bool
+}
+
+// UnsafeMarks names unsafe mode turns (Bridge.UnsafeTurn, unsafe.go).
+type UnsafeMarks interface {
+	// UnsafeTurn decides whether a live message is an unsafe turn.
+	UnsafeTurn(m Message) bool
+	// UnsafeMessage reports a message already decided an unsafe turn.
+	UnsafeMessage(id string) bool
+}
+
+// maxArchiveUnsafe bounds Archiver.unsafe; past it the set starts again.
+const maxArchiveUnsafe = 4096
+
+// skipUnsafe reports whether m is an unsafe mode turn or reply. With live,
+// a message of Joe's is decided now; a backfill page only reads decisions.
+func (a *Archiver) skipUnsafe(m HistoryMessage, live bool) bool {
+	if ref, ok := unsafeReplyRef(m, a.bot()); ok {
+		a.mu.Lock()
+		if a.unsafe == nil || len(a.unsafe) >= maxArchiveUnsafe {
+			a.unsafe = map[string]bool{}
+		}
+		if ref != "" {
+			a.unsafe[ref] = true
+		}
+		a.mu.Unlock()
+		return true
+	}
+	a.mu.Lock()
+	skip := a.unsafe[m.ID]
+	a.mu.Unlock()
+	if skip || a.Unsafe == nil {
+		return skip
+	}
+	if live {
+		return a.Unsafe.UnsafeTurn(m.Message)
+	}
+	return a.Unsafe.UnsafeMessage(m.ID)
 }
 
 type archiveOp struct {
@@ -99,7 +142,7 @@ func (a *Archiver) Event(t string, data json.RawMessage) {
 		}
 		place := a.Places.Lookup(m.GuildID, m.ChannelID)
 		parent, known := a.Places.parentOf(m.GuildID, m.ChannelID)
-		if !a.admit(m.GuildID, m.ChannelID, parent, known) {
+		if !a.admit(m.GuildID, m.ChannelID, parent, known) || a.skipUnsafe(m, true) {
 			return
 		}
 		r, ok := a.row(m.GuildID, Channel{ID: m.ChannelID, Name: place.Channel.Name, ParentID: parent}, m)
@@ -112,7 +155,7 @@ func (a *Archiver) Event(t string, data json.RawMessage) {
 		if json.Unmarshal(data, &m) != nil || m.Edited == nil || m.GuildID == "" {
 			return // Not an edit: an embed unfurl or a pin.
 		}
-		if _, ok := a.Config.Guilds[m.GuildID]; !ok {
+		if _, ok := a.Config.Guilds[m.GuildID]; !ok || a.skipUnsafe(m, false) {
 			return
 		}
 		// An edit changes only a row the archive holds, so no admission
@@ -254,6 +297,9 @@ func (a *Archiver) Page(ctx context.Context, guildID string, c Channel, before s
 	present := make([]string, 0, len(page))
 	for _, m := range page {
 		present = append(present, m.ID)
+		if a.skipUnsafe(m, false) {
+			continue
+		}
 		if r, ok := a.row(guildID, c, m); ok {
 			rows = append(rows, r)
 		}

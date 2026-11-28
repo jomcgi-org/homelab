@@ -29,6 +29,18 @@ type policyFile struct {
 	// SessionEpoch, when set, is part of every server agent channel
 	// session's request ID; a new value starts new sessions (HOME-915).
 	SessionEpoch string `json:"sessionEpoch"`
+	// Unsafe turns on Joe's unsafe mode (HOME-938, unsafe.go).
+	Unsafe *unsafeFile `json:"unsafe"`
+}
+
+// unsafeFile places unsafe mode. Both fields are required.
+type unsafeFile struct {
+	// Agent is the tool-free agent, "namespace/name".
+	Agent string `json:"agent"`
+	// Duration is how long gloves off lasts when Joe names no time, and
+	// MaxDuration caps a time he names: each 1m to 24h.
+	Duration    string `json:"duration"`
+	MaxDuration string `json:"maxDuration"`
 }
 
 // exploreFile bounds research (explore.go). Every field is required.
@@ -161,6 +173,26 @@ func ParsePolicy(data []byte) (Config, error) {
 		return Config{}, fmt.Errorf("sessionEpoch: %q must be at most 16 lower-case letters and digits", p.SessionEpoch)
 	}
 	c.SessionEpoch = p.SessionEpoch
+	if u := p.Unsafe; u != nil {
+		ns, name, ok := strings.Cut(u.Agent, "/")
+		if !ok || ns == "" || name == "" || strings.Contains(name, "/") {
+			return Config{}, fmt.Errorf("unsafe: agent %q is not namespace/name", u.Agent)
+		}
+		d, err := time.ParseDuration(u.Duration)
+		if err != nil || d < time.Minute || d > 24*time.Hour {
+			return Config{}, fmt.Errorf("unsafe: duration %q is not 1m to 24h", u.Duration)
+		}
+		for _, ref := range c.ServerAgents {
+			if ref.Namespace == ns && ref.Name == name {
+				return Config{}, fmt.Errorf("unsafe: agent %s also answers normal turns", u.Agent)
+			}
+		}
+		limit, err := time.ParseDuration(u.MaxDuration)
+		if err != nil || limit < d || limit > 24*time.Hour {
+			return Config{}, fmt.Errorf("unsafe: maxDuration %q is not duration to 24h", u.MaxDuration)
+		}
+		c.Unsafe = UnsafeConfig{Agent: kagent.AgentRef{Namespace: ns, Name: name}, Duration: d, MaxDuration: limit}
+	}
 	switch p.Users {
 	case "", "all":
 	case "operator":

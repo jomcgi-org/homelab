@@ -70,8 +70,18 @@ func (b *Bridge) sinceLastTurn(ctx context.Context, m Message) (lines []ChannelL
 	limit, found := maxSinceLines, false
 	var keep []HistoryMessage
 	var last HistoryMessage
+	// Unsafe mode turns (HOME-938) are not this agent's: drop each unsafe
+	// reply and the message it answers. A reply is newer than its message.
+	unsafe := map[string]bool{}
 	for _, h := range msgs { // Newest first.
 		if h.ChannelID != "" && h.ChannelID != m.ChannelID {
+			continue
+		}
+		if ref, ok := unsafeReplyRef(h, bot); ok {
+			unsafe[ref] = true
+			continue
+		}
+		if unsafe[h.ID] || b.UnsafeMessage(h.ID) {
 			continue
 		}
 		if bot != "" && h.Author.ID == bot {

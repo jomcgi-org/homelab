@@ -131,16 +131,20 @@ def _mounted_gateway_config(docs: list[dict]) -> dict:
     return _one(docs, "ConfigMap", mounted)
 
 
-def test_egress_scan_changes_only_the_hindsight_and_browser_routes() -> None:
-    applied = _mounted_gateway_config(_docs())
-    config = yaml.safe_load(applied["data"]["config.yaml"])
-    (route,) = next(
+def _internal_listener(config: dict, protocol: str) -> dict:
+    return next(
         listener
         for bind in config["binds"]
         if bind.get("mode") == "internal"
         for listener in bind["listeners"]
-        if listener["protocol"] == "HTTP"
-    )["routes"]
+        if listener["protocol"] == protocol
+    )
+
+
+def test_egress_scan_changes_only_the_scanned_routes() -> None:
+    applied = _mounted_gateway_config(_docs())
+    config = yaml.safe_load(applied["data"]["config.yaml"])
+    (route,) = _internal_listener(config, "HTTP")["routes"]
     checks = route["policies"].pop("extAuthz")["conditional"]
     wanted = [
         ("hindsight-api.hindsight.svc.cluster.local", 8888, "hindsight"),
@@ -166,21 +170,34 @@ def test_egress_scan_changes_only_the_hindsight_and_browser_routes() -> None:
             "packAsBytes": True,
         }
         assert check["policies"] == {"http": {"requestTimeout": "80ms"}}
+    # HOME-938: the terminated HTTPS catch-all route scans abliteration.ai.
+    (tls_route,) = [
+        r for r in _internal_listener(config, "HTTPS")["routes"] if "name" not in r
+    ]
+    (tls_check,) = tls_route["policies"].pop("extAuthz")["conditional"]
+    assert tls_check["condition"] == (
+        'destination.hostname == "api.abliteration.ai" && destination.port == 443'
+    )
+    assert tls_check["failureMode"] == "deny"
+    assert tls_check["protocol"]["grpc"]["context"] == {"route": "abliteration"}
+    for key in ("host", "includeRequestBody", "policies"):
+        assert tls_check[key] == checks[0][key], key
     assert config == yaml.safe_load((_HERE / "atenet-egress-config.yaml").read_text())
 
 
 def test_the_metric_route_allowlist_names_the_scanned_hosts() -> None:
     # The route label of the scanner metrics is bounded by an allowlist, and a
     # scanned host outside it would count as "other" for ever.
-    policy = yaml.safe_load((_HERE / "egress-scan" / "gateway-policy.yaml").read_text())
     scanned = set()
-    for check in policy["conditional"]:
-        match = re.fullmatch(
-            r'destination\.hostname == "([a-z0-9.-]+)" && destination\.port == ([0-9]+)',
-            check["condition"],
-        )
-        assert match, f"cannot read the scanned host from {check['condition']!r}"
-        scanned.add(f"{match[1]}:{match[2]}")
+    for name in ("gateway-policy.yaml", "gateway-policy-tls.yaml"):
+        policy = yaml.safe_load((_HERE / "egress-scan" / name).read_text())
+        for check in policy["conditional"]:
+            match = re.fullmatch(
+                r'destination\.hostname == "([a-z0-9.-]+)" && destination\.port == ([0-9]+)',
+                check["condition"],
+            )
+            assert match, f"cannot read the scanned host from {check['condition']!r}"
+            scanned.add(f"{match[1]}:{match[2]}")
     chart_values = _HERE.parent / "egress-scan" / "chart" / "values.yaml"
     routes = set(yaml.safe_load(chart_values.read_text())["metrics"]["routes"])
     assert scanned == routes, (scanned, routes)

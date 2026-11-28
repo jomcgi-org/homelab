@@ -83,6 +83,8 @@ type Config struct {
 	// ID. kagent pins a session to the Agent revision that created it, so
 	// a new epoch starts every channel on the current revision (HOME-915).
 	SessionEpoch string `json:"-"`
+	// Unsafe places Joe's unsafe mode (HOME-938, unsafe.go); zero for none.
+	Unsafe UnsafeConfig `json:"-"`
 }
 
 // dedupeWindow is how long a message ID is remembered. An older message
@@ -155,6 +157,9 @@ type Bridge struct {
 	// SessionPlaces records each server agent session's server and channel
 	// before its turn (HOME-918); nil records none.
 	SessionPlaces *SessionPlaces
+	// Unsafe answers unsafe mode turns (HOME-938, unsafe.go), one session
+	// per channel window; nil while Config.Unsafe is zero.
+	Unsafe SessionAgent
 
 	mu    sync.Mutex
 	botID string
@@ -182,6 +187,10 @@ type Bridge struct {
 	// refused, for the dedupe window. A later turn's context leaves them
 	// out, so one refused message does not refuse the next turn.
 	blocked map[string]time.Time
+	// windows holds each channel's unsafe mode; decided holds each unsafe
+	// turn decision by message ID (unsafe.go).
+	windows map[string]unsafeWindow
+	decided map[string]unsafeDecision
 }
 
 // SessionAgent runs turns in one persistent session per key.
@@ -191,8 +200,9 @@ type SessionAgent interface {
 
 // notice is a fixed reply sent off the gateway's reader.
 type notice struct {
-	m    Message
-	text string
+	m     Message
+	text  string
+	files []File
 }
 
 // SetBot records the bot's own user from READY.
@@ -235,7 +245,9 @@ func (b *Bridge) Handle(ctx context.Context, m Message) {
 	if b.operatorScope(ctx, m) {
 		return // The operator's channels: no ingest and no public turn.
 	}
-	b.ingest(m)
+	if !b.UnsafeTurn(m) {
+		b.ingest(m) // An unsafe turn is never stored (HOME-938).
+	}
 	b.answer(ctx, m)
 }
 
@@ -251,6 +263,7 @@ func (b *Bridge) answer(ctx context.Context, m Message) bool {
 	if !b.Accept(m) {
 		return false
 	}
+	cmd := b.modeCommand(m)
 	if b.Config.OperatorOnly && !b.fromOperator(m) {
 		return false // Joe alone is answered; others get no turn and no reply.
 	}
@@ -258,6 +271,11 @@ func (b *Bridge) answer(ctx context.Context, m Message) bool {
 	if !ok {
 		return false // A repeat, too old, or the bridge is draining.
 	}
+	if cmd.Kind != cmdNone {
+		b.setMode(ctx, notices, m, cmd) // Joe's gloves command (HOME-938).
+		return true
+	}
+	b.UnsafeTurn(m)               // Decides once, before the turn queues (unsafe.go).
 	operator := b.fromOperator(m) // Before b.mu: fromOperator takes it.
 	b.mu.Lock()
 	allowed, retry := b.take(b.now(), m, operator)
@@ -271,7 +289,7 @@ func (b *Bridge) answer(ctx context.Context, m Message) bool {
 	}
 	b.mu.Unlock()
 	if !allowed {
-		b.queueNotice(ctx, notices, m, LimitedReply(retry))
+		b.queueNotice(ctx, notices, m, b.noticeFor(m, LimitedReply(retry)))
 		return false
 	}
 	return b.enqueue(ctx, notices, q, m)
@@ -286,7 +304,7 @@ func (b *Bridge) enqueue(ctx context.Context, notices chan notice, q chan Messag
 		return true
 	default:
 		b.track(-1)
-		b.queueNotice(ctx, notices, m, ReplyBusy)
+		b.queueNotice(ctx, notices, m, b.noticeFor(m, ReplyBusy))
 		return false
 	}
 }
@@ -343,9 +361,14 @@ func (b *Bridge) ingest(m Message) {
 // queueNotice never blocks the gateway: when the notice queue is full, the
 // notice is dropped.
 func (b *Bridge) queueNotice(ctx context.Context, notices chan notice, m Message, text string) {
+	b.queueNoticeFiles(ctx, notices, m, text, nil)
+}
+
+// queueNoticeFiles queues a fixed reply with images, such as a gloves GIF.
+func (b *Bridge) queueNoticeFiles(ctx context.Context, notices chan notice, m Message, text string, files []File) {
 	b.track(1)
 	select {
-	case notices <- notice{m, text}:
+	case notices <- notice{m, text, files}:
 	default:
 		b.track(-1)
 		b.Log.WarnContext(ctx, "notice dropped", "channel", m.ChannelID, "message", m.ID)
@@ -361,7 +384,7 @@ func (b *Bridge) notify(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case n := <-b.notices:
-			b.reply(ctx, n.m, n.text)
+			b.replyWith(ctx, n.m, n.text, n.files)
 			b.track(-1)
 		}
 	}
@@ -419,6 +442,10 @@ func (b *Bridge) typing(ctx context.Context, channelID string) (stop func()) {
 // Turn runs one turn for an accepted message.
 func (b *Bridge) Turn(ctx context.Context, m Message) {
 	b.Places.Learn(m.GuildID, m.Users()...)
+	if w, ok := b.unsafeWindowOf(m.ID); ok {
+		b.unsafeTurn(ctx, m, w)
+		return
+	}
 	b.Lookup.Fill(ctx, b.Places, m.GuildID, m.Content, m.Mentions)
 	text := b.Places.Resolve(m.GuildID, b.stripMention(m.Content), m.Mentions)
 	l := b.Log.With("guild", m.GuildID, "channel", m.ChannelID, "message", m.ID)
@@ -442,6 +469,9 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	}
 	if r := m.Referenced; r != nil && b.blockedID(r.ID) {
 		m.Referenced = nil // A reply to a blocked message quotes none of it.
+	}
+	if r := m.Referenced; r != nil && r.Author.ID == b.bot() && IsUnsafeReply(r.Text()) {
+		m.Referenced = nil // An unsafe mode reply never reaches the normal agent.
 	}
 	// A server agent sees the message's images and the replied-to
 	// message's, in that order (HOME-939). Bosun's agent gets text only.

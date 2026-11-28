@@ -91,6 +91,23 @@ func wireServerAgents(log *slog.Logger, b *discord.Bridge, a2a *kagent.A2A, sess
 	}
 }
 
+// wireUnsafe runs Joe's unsafe mode turns (HOME-938) on the policy's
+// tool-free agent, one session per channel window.
+func wireUnsafe(log *slog.Logger, b *discord.Bridge, a2a *kagent.A2A, sessions *kagent.Sessions) {
+	u := b.Config.Unsafe
+	if u.Agent.Name == "" {
+		log.Info("gloves off not set up")
+		return
+	}
+	b.Unsafe = &discord.KagentOperator{
+		A2A:       a2a,
+		Sessions:  sessions,
+		Agent:     u.Agent,
+		RequestID: discord.UnsafeRequestID,
+	}
+	log.Info("gloves off available", "agent", u.Agent.Namespace+"/"+u.Agent.Name, "duration", u.Duration.String(), "max", u.MaxDuration.String())
+}
+
 // wireExplorer runs explore blocks on the policy's explorer Agent
 // (HOME-909): one persistent session per research, and a public-repository
 // check against GitHub's API without credentials.
