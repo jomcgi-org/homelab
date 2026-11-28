@@ -1841,9 +1841,13 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
             "minTailUserMessages": 3,
             "model": "claude-sonnet-5-5",
         },
-        # Code execution (HOME-915); web search and fetch wait for Joe's
-        # decision (server-agents.md, Open decisions).
-        "serverTools": {"codeExecution": True},
+        # Code execution (HOME-915); web search and fetch with the prompt
+        # rule only (Joe, 2026-11-28).
+        "serverTools": {
+            "codeExecution": True,
+            "webSearch": {"maxUses": 5},
+            "webFetch": {"maxUses": 3},
+        },
         # The deploy values bind notes, so the runner syncs memory there.
         "memory": {"remoteMCPServer": "notes"},
     }
@@ -1932,13 +1936,14 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
         "Publish a page or file",
         # The tools, once live (HOME-915).
         "Run Python in a sandbox without network",
+        # Web search and fetch (Joe, 2026-11-28).
+        "you can also search and fetch web pages",
         # Counts come from history_sql, never estimates (HOME-909).
         "query history_sql and use its numbers; never estimate or invent them",
     ):
         assert line in prompt, line
     assert "You have no tools" not in prompt
     assert "bank_id" not in prompt
-    assert "web_search" not in prompt and "search and fetch web pages" not in prompt
     assert "earlier turns from every server" not in prompt
     # Components V2 formatting and scheduled events (HOME-909).
     for line in (
