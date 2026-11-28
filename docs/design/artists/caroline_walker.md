@@ -5,12 +5,12 @@ tags: { discipline: [painting], density: reductive, mode: [observational] }
 
 # Caroline Walker
 
-Scottish figurative painter, born 1982 in Dunfermline. She paints women at work and at home, often seen through windows or doorways.
+Scottish figurative painter, born 1982 in Dunfermline. [Stephen Friedman](https://www.stephenfriedman.com/artists/81-caroline-walker/biography/) She paints women at work and at home, often seen through windows or doorways. [Ocula](https://ocula.com/artists/caroline-walker/grimm-gallery/)
 
 ## Timeline
 - **2004**: BA in Painting, Glasgow School of Art. [Grimm](https://grimmgallery.com/artists/47-caroline-walker/)
 - **2009**: MA in Painting, Royal College of Art. [Grimm](https://grimmgallery.com/artists/47-caroline-walker/)
-- **2009–2022**: lived and worked in London.
+- **2009–2022**: lived and worked in London, with a studio in north London. [Art Collection](https://artcollection.dcms.gov.uk/person/walker-caroline), [Apollo](https://apollo-magazine.com/in-the-studio-with-caroline-walker/)
 - **2022**: moved back to Scotland and started the *Nurture* series. [Wallpaper](https://www.wallpaper.com/art/exhibitions-shows/caroline-walker-hepworth-wakefield)
 - **Now**: lives and works in Dunfermline. [Stephen Friedman](https://www.stephenfriedman.com/artists/81-caroline-walker/biography/)
 

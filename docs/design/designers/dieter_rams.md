@@ -5,7 +5,7 @@ tags: { discipline: [industrial], density: reductive, mode: [systematic] }
 
 # Dieter Rams
 
-German industrial designer. Joined Braun in 1955 and ran its design department from 1961 to 1995. Designed furniture for Vitsœ and wrote the ten principles of good design.
+German industrial designer. Joined Braun in 1955 and ran its design department from 1961 to 1995. [Vitsœ](https://issuu.com/ammargazali/docs/the_power_of_good_design) Designed furniture for Vitsœ and wrote the ten principles of good design. [Vitsœ](https://www.vitsoe.com/dieter-rams)
 
 ## Key works
 - **SK 4 radio-phonograph** (1956, Braun, with Hans Gugelot): a clear acrylic lid instead of a wooden cabinet. People called it "Snow White's Coffin". [Wikipedia](https://en.wikipedia.org/wiki/Dieter_Rams)

@@ -5,7 +5,7 @@ tags: { discipline: [editorial, graphic], density: maximal, mode: [conceptual, h
 
 # Tracy Ma
 
-Graphic designer born in Hong Kong and raised in Toronto. Known for the strange, collage-heavy covers she made for Bloomberg Businessweek, and later for visual editing at The New York Times.
+Graphic designer born in Hong Kong and raised in Toronto. [Booklyn](https://booklyn.org/artists/tracy-ma) Known for the strange, collage-heavy covers she made for Bloomberg Businessweek, and later for visual editing at The New York Times. [SSENSE](https://www.ssense.com/en-us/editorial/design/graphic-times-with-new-york-times-designer-tracy-ma), [tracyma.com](https://www.tracyma.com/)
 
 ## Timeline
 - **2010**: graduated in design from York University, Toronto. [Booklyn](https://booklyn.org/artists/tracy-ma)
