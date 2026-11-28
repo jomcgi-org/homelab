@@ -93,6 +93,11 @@ fn svg_allowed(input: &str) -> bool {
 // attribute reads a quoted attribute of one tag: the name must follow
 // whitespace, and whitespace may surround the '='.
 fn attribute(tag: &str, name: &str) -> Option<String> {
+    raw_attribute(tag, name).map(|value| value.trim().to_string())
+}
+
+// raw_attribute is attribute without the trim.
+fn raw_attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let mut from = 0;
     while let Some(found) = tag[from..].find(name) {
         let at = from + found;
@@ -107,7 +112,7 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
         let rest = rest.trim_start();
         let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
         let value = &rest[1..];
-        return Some(value[..value.find(quote)?].trim().to_string());
+        return Some(&value[..value.find(quote)?]);
     }
     None
 }
@@ -124,17 +129,15 @@ fn svg_size_allowed(lower: &str) -> bool {
     svg_size(lower).is_some()
 }
 
-// The drawing's size in pixels, as resvg sizes it. `exact` is false when
-// the root has no viewBox and not both sides: resvg then sizes the image
-// to its content, which this check cannot see.
+// The drawing's size in pixels.
 #[derive(Debug, PartialEq)]
 struct Drawing {
     width: f64,
     height: f64,
-    exact: bool,
 }
 
-// svg_size returns the drawing's size, or None when a side does not fit.
+// svg_size returns the drawing's size from the lowercased SVG, or None when
+// a side does not fit. It reads a missing or percentage side as resvg does.
 fn svg_size(lower: &str) -> Option<Drawing> {
     let start = lower.find("<svg")?;
     let root = &lower[start..];
@@ -150,8 +153,6 @@ fn svg_size(lower: &str) -> Option<Drawing> {
         (numbers.len() == 4 && fits(numbers[2]) && fits(numbers[3]))
             .then(|| (numbers[2], numbers[3]))
     });
-    // Sides given in px or em: two of them size the drawing without a viewBox.
-    let mut absolute = 0;
     let mut sides = [0.0; 2];
     for (index, name) in ["width", "height"].into_iter().enumerate() {
         // resvg takes a missing or percentage side from the viewBox's side
@@ -172,11 +173,9 @@ fn svg_size(lower: &str) -> Option<Drawing> {
                 if root.contains("font-size") {
                     return None;
                 }
-                absolute += 1;
                 v[..v.len() - 2].trim().parse::<f64>().ok()? * 16.0
             }
             Some(v) => {
-                absolute += 1;
                 let number = v.strip_suffix("px").unwrap_or(&v).trim();
                 number.parse::<f64>().ok()?
             }
@@ -189,15 +188,57 @@ fn svg_size(lower: &str) -> Option<Drawing> {
     Some(Drawing {
         width: sides[0],
         height: sides[1],
-        exact: matches!(view_box, Some(Some(_))) || absolute == 2,
+    })
+}
+
+// exact_size reads the SVG as resvg does: case-sensitive names, and only
+// plain, px or percentage lengths with no spaces. It returns the size when
+// resvg takes it from the root, and None when resvg sizes the image to its
+// content (no viewBox and not both sides) or the root is not that simple.
+fn exact_size(svg: &str) -> Option<Drawing> {
+    let start = svg.find("<svg")?;
+    let root = &svg[start..];
+    let root = &root[..root.find('>').unwrap_or(root.len())];
+    let number = |v: &str| {
+        v.parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite() && *n > 0.0 && !v.contains(char::is_whitespace))
+    };
+    let view_box = match raw_attribute(root, "viewBox") {
+        None => None,
+        Some(v) => {
+            let parts: Vec<&str> = v
+                .split(|c: char| c.is_ascii_whitespace() || c == ',')
+                .filter(|part| !part.is_empty())
+                .collect();
+            if parts.len() != 4 || parts[..2].iter().any(|p| p.parse::<f64>().is_err()) {
+                return None;
+            }
+            Some((number(parts[2])?, number(parts[3])?))
+        }
+    };
+    let mut sides = [0.0; 2];
+    for (index, name) in ["width", "height"].into_iter().enumerate() {
+        let view_side = view_box.map(|(w, h)| if index == 0 { w } else { h });
+        sides[index] = match raw_attribute(root, name) {
+            None => view_side?,
+            Some(v) => match v.strip_suffix('%') {
+                Some(percent) => view_side? * number(percent)? / 100.0,
+                None => number(v.strip_suffix("px").unwrap_or(v))?,
+            },
+        };
+    }
+    Some(Drawing {
+        width: sides[0],
+        height: sides[1],
     })
 }
 
 // raster_scale picks the PNG's scale: TARGET_WIDTH pixels wide, at least
 // SCALE and at most MAX_SCALE, with neither side over MAX_SIDE. A drawing
 // whose size is not exact keeps SCALE, the old rule.
-fn raster_scale(drawing: &Drawing) -> f64 {
-    let wanted = if drawing.exact {
+fn raster_scale(drawing: &Drawing, exact: bool) -> f64 {
+    let wanted = if exact {
         (TARGET_WIDTH / drawing.width).clamp(SCALE, MAX_SCALE)
     } else {
         SCALE
@@ -346,9 +387,12 @@ fn render(req: &mut Request, dir: &Path) -> Result<File, Failure> {
     File::open(&drawing)
         .and_then(|file| file.take(LIMIT as u64).read_to_end(&mut head))
         .map_err(|_| INTERNAL)?;
-    let drawing_size = svg_size(&String::from_utf8_lossy(&head).to_ascii_lowercase())
-        .ok_or((422, "PNG exceeds output bounds"))?;
-    let scale = format!("{:.3}", raster_scale(&drawing_size));
+    let head = String::from_utf8_lossy(&head);
+    let drawing_size =
+        svg_size(&head.to_ascii_lowercase()).ok_or((422, "PNG exceeds output bounds"))?;
+    // The target scale needs the size resvg will use; any doubt keeps SCALE.
+    let exact = exact_size(&head).as_ref() == Some(&drawing_size);
+    let scale = format!("{:.3}", raster_scale(&drawing_size, exact));
     let mut raster = deadline(raster_seconds);
     raster
         .args(["vl-convert", "svg2png", "--scale", &scale, "-i"])
@@ -494,63 +538,83 @@ mod tests {
         assert_eq!(mermaid["theme"], "modern");
     }
 
-    fn size(width: f64, height: f64, exact: bool) -> Option<Drawing> {
-        Some(Drawing {
-            width,
-            height,
-            exact,
-        })
+    fn size(width: f64, height: f64) -> Option<Drawing> {
+        Some(Drawing { width, height })
     }
 
     #[test]
     fn drawing_size_follows_resvg() {
         assert_eq!(
             svg_size(r#"<svg width="300" height="1500.5">"#),
-            size(300.0, 1500.5, true)
+            size(300.0, 1500.5)
         );
         assert_eq!(
             svg_size(r#"<svg viewbox="0 0 24 24" width="1em">"#),
-            size(16.0, 24.0, true)
+            size(16.0, 24.0)
         );
-        assert_eq!(svg_size("<svg>"), size(100.0, 100.0, false));
-        assert_eq!(svg_size(r#"<svg width="300">"#), size(300.0, 100.0, false));
+        assert_eq!(svg_size("<svg>"), size(100.0, 100.0));
         assert_eq!(svg_size(r#"<svg width="5000" height="10">"#), None);
         assert_eq!(
             svg_size(r#"<svg width="200%" height="200%" viewbox="0 0 2048 2048">"#),
-            size(4096.0, 4096.0, true)
+            size(4096.0, 4096.0)
         );
         assert_eq!(svg_size(r#"<svg width="300%" viewbox="0 0 2048 10">"#), None);
         // vl-convert 1.9.0 draws these at 100x40 and 200x200 pixels.
         assert_eq!(
             svg_size(r#"<svg width="100" viewbox="0 0 1 40">"#),
-            size(100.0, 40.0, true)
+            size(100.0, 40.0)
         );
         assert_eq!(
             svg_size(r#"<svg width="50%" viewbox="0 0 400 200">"#),
-            size(200.0, 200.0, true)
+            size(200.0, 200.0)
         );
         // Two absolute sides ignore the viewBox, as before.
         assert_eq!(
             svg_size(r#"<svg width="400" height="300" viewbox="0 0 20000 10">"#),
-            size(400.0, 300.0, true)
+            size(400.0, 300.0)
         );
         assert_eq!(
             svg_size(r#"<svg width="200em" viewbox="0 0 24 24">"#),
-            size(3200.0, 24.0, true)
+            size(3200.0, 24.0)
         );
         assert_eq!(svg_size(r#"<svg width="300em">"#), None);
         assert_eq!(svg_size(r#"<svg font-size="4096" width="4em">"#), None);
     }
 
     #[test]
+    fn exact_size_only_trusts_what_resvg_reads() {
+        // The converters' roots.
+        assert_eq!(
+            exact_size(r#"<svg xmlns="x" width="1793.3381" height="78" viewBox="0 0 1793.3381 78">"#),
+            size(1793.3381, 78.0)
+        );
+        assert_eq!(
+            exact_size(r#"<svg width="100%" viewBox="0,0,400,200">"#),
+            size(400.0, 200.0)
+        );
+        assert_eq!(exact_size(r#"<svg width="300px" height="200">"#), size(300.0, 200.0));
+        // resvg sizes these to their content, or reads them differently
+        // from the lowercased check.
+        for root in [
+            "<svg>",
+            r#"<svg width="300">"#,
+            r#"<svg WIDTH="100" HEIGHT="100">"#,
+            r#"<svg width="100PX" height="100">"#,
+            r#"<svg width="100 " height="100">"#,
+            r#"<svg width="1em" height="1em">"#,
+            r#"<svg viewbox="0 0 100 100">"#,
+            r#"<svg viewBox="x 0 0 100 100">"#,
+            r#"<svg viewBox="0 0 0x10 100 100">"#,
+            r#"<svg viewBox="0 0 inf 100">"#,
+            r#"<SVG width="10" height="10">"#,
+        ] {
+            assert_eq!(exact_size(root), None, "{root}");
+        }
+    }
+
+    #[test]
     fn raster_scale_targets_a_sharp_width_within_bounds() {
-        let scale = |width, height, exact| {
-            raster_scale(&Drawing {
-                width,
-                height,
-                exact,
-            })
-        };
+        let scale = |width, height, exact| raster_scale(&Drawing { width, height }, exact);
         // A small chart stops at MAX_SCALE.
         assert_eq!(scale(184.0, 270.0, true), MAX_SCALE);
         assert_eq!(scale(512.0, 300.0, true), 4.0);
@@ -561,7 +625,7 @@ mod tests {
         assert_eq!(scale(221.0, 830.0, true), 4.934);
         assert_eq!(scale(3000.0, 200.0, true), 1.365);
         assert_eq!(scale(4096.0, 4096.0, true), 1.0);
-        // A drawing sized by its content keeps the old 2x rule.
+        // A drawing whose size is not exact keeps the old 2x rule.
         assert_eq!(scale(100.0, 100.0, false), 2.0);
         assert_eq!(scale(24.0, 24.0, true), MAX_SCALE);
         for (width, height) in [
