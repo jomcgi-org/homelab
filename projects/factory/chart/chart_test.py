@@ -2125,13 +2125,18 @@ def test_discord_browser_is_a_signed_out_gvisor_playwright() -> None:
         "string:discord.bridge.policy.guilds.1501965852042330302.ingest=true",
         "discord.serverAgents.homelab.route=true",
     ]
-    off = _render(base)
+    off = _render(base + ["discord.browser.enabled=false"])
     assert not [
         d for d in off if d["metadata"]["name"] in ("browser-mcp", "playwright")
     ]
     agent = _in(off, "Agent", _HOMELAB_NS, "homelab")["spec"]["template"]["inline"]
     assert "playwright tools" not in agent["systemPrompt"]
 
+    # Off in the chart defaults; the deploy values turn it on (HOME-931).
+    defaults = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
+    assert defaults["discord"]["browser"]["enabled"] is False
+    deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    assert deploy["discord"]["browser"]["enabled"] is True
     docs = _render(base + ["discord.browser.enabled=true"])
     tools = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())["discord"][
         "browser"
