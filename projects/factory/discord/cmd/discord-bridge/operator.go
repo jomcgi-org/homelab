@@ -77,17 +77,21 @@ func wireServerAgents(log *slog.Logger, b *discord.Bridge, a2a *kagent.A2A, sess
 	for guild, agent := range b.Config.ServerAgents {
 		c, ok := clients[agent]
 		if !ok {
+			// The epoch follows the Agent's revision, so a runner or config
+			// change moves each channel to a new session on its next turn;
+			// sessionEpoch is a manual override on top (HOME-944).
+			epoch := &discord.RevisionEpoch{Revisions: sessions, Agent: agent, Manual: b.Config.SessionEpoch, Log: log}
 			c = &discord.KagentOperator{
-				A2A:       a2a,
-				Sessions:  sessions,
-				Agent:     agent,
-				RequestID: discord.EpochChannelRequestID(b.Config.SessionEpoch),
-				Log:       log,
+				A2A:      a2a,
+				Sessions: sessions,
+				Agent:    agent,
+				Epoch:    epoch.Epoch,
+				Log:      log,
 			}
 			clients[agent] = c
 		}
 		b.Servers[guild] = c
-		log.Info("server agent on", "guild", guild, "agent", agent.Namespace+"/"+agent.Name, "sessions", "per channel", "epoch", b.Config.SessionEpoch)
+		log.Info("server agent on", "guild", guild, "agent", agent.Namespace+"/"+agent.Name, "sessions", "per channel", "epoch", "agent revision", "sessionEpoch", b.Config.SessionEpoch)
 	}
 }
 

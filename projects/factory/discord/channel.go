@@ -17,6 +17,10 @@ const (
 	// maxFirstLines bounds the lines when no message of Bosun's is in the
 	// page read: a new channel, or a quiet bot.
 	maxFirstLines = 30
+	// maxSeedLines bounds the lines of a new session's first turn
+	// (HOME-944): the channel's last messages, Bosun's own included, past
+	// Bosun's last reply. maxSinceChars bounds them too.
+	maxSeedLines = 20
 	// maxLineChars bounds one line's text, and maxQuoteChars the text a
 	// line quotes from the message it replies to.
 	maxLineChars  = 1500
@@ -58,7 +62,11 @@ type HistorySticker struct {
 // comes from Discord, not from bridge state. Without a message of Bosun's
 // in the page, it keeps the newest maxFirstLines. ok is false when the
 // read failed.
-func (b *Bridge) sinceLastTurn(ctx context.Context, m Message) (lines []ChannelLine, ok bool) {
+//
+// With seed, for a new session's first turn (HOME-944), Bosun's messages
+// do not end the lines: it keeps the newest maxSeedLines, Bosun's own as
+// "Bosun (you)" lines, so the session gets the channel's recent thread.
+func (b *Bridge) sinceLastTurn(ctx context.Context, m Message, seed bool) (lines []ChannelLine, ok bool) {
 	msgs, err := b.History.MessagesBefore(ctx, m.ChannelID, m.ID)
 	if err != nil {
 		b.Log.WarnContext(ctx, "channel history unavailable", "channel", m.ChannelID, "error", err)
@@ -84,13 +92,16 @@ func (b *Bridge) sinceLastTurn(ctx context.Context, m Message) (lines []ChannelL
 		if unsafe[h.ID] || b.UnsafeMessage(h.ID) {
 			continue
 		}
-		if bot != "" && h.Author.ID == bot {
+		if !seed && bot != "" && h.Author.ID == bot {
 			found, last = true, h
 			break
 		}
 		keep = append(keep, h)
 	}
-	if !found {
+	switch {
+	case seed:
+		limit = maxSeedLines
+	case !found:
 		limit = maxFirstLines
 	}
 	chars, complete := 0, true
@@ -99,7 +110,12 @@ func (b *Bridge) sinceLastTurn(ctx context.Context, m Message) (lines []ChannelL
 			complete = false
 			break
 		}
-		l, ok := b.channelLine(m.GuildID, h)
+		var l ChannelLine
+		if bot != "" && h.Author.ID == bot {
+			l, ok = b.ownLine(m.GuildID, h)
+		} else {
+			l, ok = b.channelLine(m.GuildID, h)
+		}
 		if !ok {
 			continue
 		}

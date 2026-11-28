@@ -26,8 +26,9 @@ type policyFile struct {
 	Users string `json:"users"`
 	// Explore turns on research of public GitHub repositories (HOME-909).
 	Explore *exploreFile `json:"explore"`
-	// SessionEpoch, when set, is part of every server agent channel
-	// session's request ID; a new value starts new sessions (HOME-915).
+	// SessionEpoch is a manual override on the channel session epoch,
+	// which follows the server Agent's revision: a new value starts new
+	// sessions without a new revision (HOME-915, HOME-944).
 	SessionEpoch string `json:"sessionEpoch"`
 	// Unsafe turns on Joe's unsafe mode (HOME-938, unsafe.go).
 	Unsafe *unsafeFile `json:"unsafe"`

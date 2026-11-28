@@ -346,7 +346,10 @@ func ServerRequestID(guildID string, generation int) string {
 	return fmt.Sprintf("discord-server-%s-%d", guildID, generation)
 }
 
-func (k *KagentOperator) requestID(key string, generation int) string {
+func (k *KagentOperator) requestID(epoch, key string, generation int) string {
+	if k.Epoch != nil {
+		return EpochChannelRequestID(epoch)(key, generation)
+	}
 	if k.RequestID != nil {
 		return k.RequestID(key, generation)
 	}
@@ -365,30 +368,57 @@ type KagentOperator struct {
 	// (OperatorRequestID). A server agent uses ServerRequestID, so its
 	// sessions never meet a thread's.
 	RequestID func(key string, generation int) string
+	// Epoch, when set, names the current session epoch (RevisionEpoch). A
+	// key's session request ID is then EpochChannelRequestID(epoch), and
+	// a new epoch moves the key to a new session on its next lookup
+	// (HOME-944). It replaces RequestID.
+	Epoch func(ctx context.Context) (string, error)
 	// Log reports a blocked session that could not be deleted; nil logs
 	// nothing.
 	Log *slog.Logger
 
 	mu    sync.Mutex
-	known map[string]string // thread -> context ID
-	// first is the generation a key's session search starts at: past a
-	// session dropped after a blocked turn, before kagent deletes it.
-	first map[string]int
+	known map[string]knownSession
+	// first is the generation a key's session search starts at in an
+	// epoch: past a session dropped after a blocked turn, before kagent
+	// deletes it.
+	first map[string]firstGeneration
+}
+
+// knownSession is a key's cached session and the epoch it was found in.
+type knownSession struct {
+	contextID, epoch string
+	// stale makes the next lookup ask kagent again: the last turn failed.
+	stale bool
+}
+
+// firstGeneration is where a key's session search starts in one epoch.
+type firstGeneration struct {
+	epoch string
+	gen   int
 }
 
 // Session finds or creates the thread's session.
 func (k *KagentOperator) Session(ctx context.Context, threadID string) (OperatorSession, error) {
-	k.mu.Lock()
-	id, ok := k.known[threadID]
-	k.mu.Unlock()
-	if ok {
-		return OperatorSession{ContextID: id}, nil
+	epoch := ""
+	if k.Epoch != nil {
+		var err error
+		if epoch, err = k.Epoch(ctx); err != nil {
+			return OperatorSession{}, err
+		}
 	}
 	k.mu.Lock()
-	start := k.first[threadID]
+	cached, ok := k.known[threadID]
+	start := 0
+	if f, found := k.first[threadID]; found && f.epoch == epoch {
+		start = f.gen
+	}
 	k.mu.Unlock()
+	if ok && cached.epoch == epoch && !cached.stale {
+		return OperatorSession{ContextID: cached.contextID}, nil
+	}
 	for gen := start; gen < maxSessionGenerations; gen++ {
-		s, err := k.Sessions.CreateSession(ctx, k.Agent, k.requestID(threadID, gen))
+		s, err := k.Sessions.CreateSession(ctx, k.Agent, k.requestID(epoch, threadID, gen))
 		if errors.Is(err, kagent.ErrSessionNotFound) || errors.Is(err, kagent.ErrSessionUnrecoverable) {
 			continue
 		}
@@ -415,13 +445,18 @@ func (k *KagentOperator) Session(ctx context.Context, threadID string) (Operator
 		}
 		k.mu.Lock()
 		if k.known == nil {
-			k.known = map[string]string{}
+			k.known = map[string]knownSession{}
 		}
-		k.known[threadID] = s.ContextID
+		if ok && cached.epoch != epoch && cached.contextID != s.ContextID {
+			// The key moved to a new epoch: its old session gets no more
+			// turns (HOME-944).
+			k.retire(threadID, cached.contextID)
+		}
+		k.known[threadID] = knownSession{contextID: s.ContextID, epoch: epoch}
 		if k.first == nil {
-			k.first = map[string]int{}
+			k.first = map[string]firstGeneration{}
 		}
-		k.first[threadID] = gen
+		k.first[threadID] = firstGeneration{epoch: epoch, gen: gen}
 		k.mu.Unlock()
 		return OperatorSession{ContextID: s.ContextID, Fresh: page.TotalSize == 0 && len(page.Tasks) == 0}, nil
 	}
@@ -447,7 +482,12 @@ func (k *KagentOperator) Turn(ctx context.Context, threadID, messageID, prompt s
 	answer, err := k.turn(ctx, s.ContextID, messageID, prompt, images)
 	if err != nil {
 		k.mu.Lock()
-		delete(k.known, threadID)
+		if c, ok := k.known[threadID]; ok && c.contextID == s.ContextID {
+			// The next turn looks the session up again. The entry stays, so
+			// a new epoch can still retire the session.
+			c.stale = true
+			k.known[threadID] = c
+		}
 		k.mu.Unlock()
 	}
 	if ContentBlocked(err) {
@@ -465,17 +505,24 @@ func (k *KagentOperator) Turn(ctx context.Context, threadID, messageID, prompt s
 func (k *KagentOperator) dropBlocked(key, contextID string) {
 	k.mu.Lock()
 	if k.first == nil {
-		k.first = map[string]int{}
+		k.first = map[string]firstGeneration{}
 	}
-	k.first[key]++
+	f := k.first[key]
+	f.gen++
+	k.first[key] = f
+	k.retire(key, contextID)
 	k.mu.Unlock()
+}
+
+// retire deletes a key's old session off its worker in the background.
+func (k *KagentOperator) retire(key, contextID string) {
 	d, ok := k.Sessions.(SessionDeleter)
-	if !ok {
+	if !ok || contextID == "" {
 		return
 	}
 	go func() {
 		if err := deleteSession(d, contextID); err != nil && k.Log != nil {
-			k.Log.Warn("blocked session not deleted", "key", key, "session", contextID, "error", err)
+			k.Log.Warn("old session not deleted", "key", key, "session", contextID, "error", err)
 		}
 	}()
 }

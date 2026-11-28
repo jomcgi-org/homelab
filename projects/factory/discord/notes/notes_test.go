@@ -221,7 +221,7 @@ func TestToolsListNamesNoServerArgument(t *testing.T) {
 			}
 		}
 	}
-	want := "notes_list notes_read notes_search notes_write notes_append notes_delete memory_read memory_write"
+	want := "notes_list notes_read notes_search notes_write notes_append notes_delete memory_read memory_write handoff_read handoff_write"
 	if strings.Join(names, " ") != want {
 		t.Errorf("tools = %v", names)
 	}
@@ -513,5 +513,48 @@ func TestDeepNotesCanBeReadBackFromTrashAndHistory(t *testing.T) {
 	}
 	if !strings.HasPrefix(trashed, ".trash/") {
 		t.Errorf("trashed as %q", trashed)
+	}
+}
+
+// A channel's handoff note (HOME-944) is at _hermes/channels/<channel>.md:
+// the channel and server come from the bridge's record of the session, the
+// newest write replaces it, and members read it as a note.
+func TestHandoffNoteIsPerChannelAndOverwritten(t *testing.T) {
+	url, fake := setup(t)
+	if r := mustCall(t, url, "s1", "handoff_read", map[string]any{}); r["content"] != "" || r["channel_id"] != channel {
+		t.Fatalf("missing note = %v", r)
+	}
+	mustCall(t, url, "s1", "handoff_write", map[string]any{"content": "first summary"})
+	mustCall(t, url, "s1", "handoff_write", map[string]any{"content": "second summary"})
+	if r := mustCall(t, url, "s1", "handoff_read", map[string]any{}); r["content"] != "second summary" {
+		t.Fatalf("note = %v", r)
+	}
+	fake.mu.Lock()
+	got := fake.objects[guild+"/_hermes/channels/"+channel+".md"]
+	var kept int
+	for k := range fake.objects {
+		if strings.Contains(k, ".history/") {
+			kept++
+		}
+	}
+	fake.mu.Unlock()
+	if got != "second summary" || kept != 0 {
+		t.Errorf("stored %q, %d old versions", got, kept)
+	}
+	// Another server's session reads its own server's note, not this one.
+	if r := mustCall(t, url, "s2", "handoff_read", map[string]any{}); r["content"] != "" {
+		t.Errorf("other server read %v", r)
+	}
+	if r := mustCall(t, url, "s1", "notes_read", map[string]any{"path": "_hermes/channels/" + channel + ".md"}); r["content"] != "second summary" {
+		t.Errorf("notes_read handoff = %v", r)
+	}
+	for _, bad := range []map[string]any{
+		{"content": ""},
+		{"content": strings.Repeat("x", MaxHandoffBytes+1)},
+		{"content": "x", "channel_id": "1"},
+	} {
+		if _, _, ok := call(t, url, "s1", "handoff_write", bad); ok {
+			t.Errorf("accepted handoff_write %v", bad)
+		}
 	}
 }

@@ -157,6 +157,50 @@ flowchart LR
   S1 & S2 --> P["WorkerPool, 3 workers, shared Harness"]
 ```
 
+### Session handoff (HOME-944)
+
+A channel gets a new session when the Agent revision or `sessionEpoch`
+changes ("New sessions"), or after a blocked turn (#8809). The new session
+keeps the channel's working thread
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-944#comment-13154)):
+
+```mermaid
+sequenceDiagram
+  participant H as Hermes (old session)
+  participant R as runner
+  participant N as notes vault
+  participant B as bridge
+  participant R2 as runner (new session)
+  H->>R: compaction summary (post_llm_call plugin)
+  R->>N: handoff_write: <guild>/_hermes/channels/<channel>.md
+  B->>B: new epoch or blocked turn: new session
+  B->>R2: first turn: SeedNote + last 20 channel messages
+  R2->>N: handoff_read
+  R2->>R2: handoff note + bridge prompt as the first input
+```
+
+- **Note.** The runner's `kagent-handoff` plugin writes the latest Hermes
+  compaction summary of the session to `$HERMES_HOME`. After a turn that
+  changed it, the runner replaces the channel's note with `handoff_write`
+  (at most 16 KiB; no old versions). The notes server takes the server and
+  channel from the bridge's session record, never from the caller. Members
+  read the note like `MEMORY.md`. A session that never compacted leaves
+  the last note as it was. The bridge writes no note when it abandons a
+  session.
+- **Seed.** On a new session's first turn the runner reads the note with
+  `handoff_read` and puts it before the bridge's prompt. The bridge sends
+  the channel's last 20 messages, Bosun's own included, within 8,000
+  characters, instead of only those since Bosun's last reply, and says so
+  in a trusted line before the JSON.
+- **Exclusions.** A blocked message, and a reply's quote of it, never
+  reach the seed. The session never sees a blocked turn (the runner chains
+  past it) or a gloves-off turn (another Agent, and the bridge leaves those
+  messages out of the channel lines), so neither can reach a summary. The
+  gloves-off Agent has no notes binding, so it writes no note.
+- **Tools.** `handoff_read` and `handoff_write` are for the runner, like
+  `memory_read` and `memory_write`; the chart refuses a binding that lists
+  them for the model.
+
 ## 1. Gateway: keep the bridge
 
 **Recommendation.** The bridge stays the only Discord gateway and the only
@@ -332,14 +376,18 @@ flowchart LR
   plane and the MCP servers' origins. Anthropic runs the server tools, so
   they add no origin. The gateway's Cilium policy admits
   `scotland-mcp.jomcgi.dev`.
-- **New sessions.** kagent pins a session to the Agent revision that
-  created it, so an existing channel session keeps its old tools and
-  prompt. The bridge policy's `sessionEpoch` is part of each channel
-  session's request ID: a new value starts every channel on the current
-  revision. The old context goes; Hindsight memory stays. Argo CD syncs the
-  bridge (wave 0) before the Agent (wave 2), so set a new value in a later
-  change, after kagent shows the new revision as the latest successful
-  one; a turn in between would pin the new ID to the old revision.
+- **New sessions (HOME-944).** kagent pins a session to the Agent
+  revision that created it, so an existing channel session keeps its old
+  runner, tools and prompt. The bridge derives each channel session's
+  epoch from the Agent's `status.latestSuccessfulRevision` and the policy's
+  optional `sessionEpoch` override: `hex(sha256(sessionEpoch + "\n" +
+  revision))[:12]`, in the request ID `discord-channel-<epoch>-<channel>`.
+  The bridge reads the revision at most once a minute. A new revision, or
+  a new `sessionEpoch`, moves each channel to a new session on that
+  channel's next turn, and the bridge deletes the old session it knew. A
+  failed read keeps the last epoch. The bridge never names a revision that
+  kagent has not finished, so the Argo CD wave order does not matter. See
+  "Session handoff" for what the new session keeps.
 - **Scotland sources.** The prompt asks the agent to lead with the verdict
   and to credit each `meta.sources` entry, as the connector's instructions
   require.
@@ -386,12 +434,11 @@ Turning it on, in order:
 3. After Argo CD syncs it, check that kagent shows the homelab Agent's new
    revision as the latest successful one and that the actor's compiled
    tools include `mcp__github__*`.
-4. Only then a second change sets a new bridge `sessionEpoch`, so existing
-   channels start on that revision. The bridge syncs before the Agent, so
-   setting both in one change can pin a new session to the old revision.
+4. Existing channels move to that revision on their next turn ("New
+   sessions"), with no `sessionEpoch` change.
 
-The same order moves existing channels onto any prompt change, such as the
-check-current-facts rule.
+Any prompt change, such as the check-current-facts rule, reaches existing
+channels the same way.
 
 ### Browser
 
@@ -619,8 +666,8 @@ sequenceDiagram
     `$HERMES_HOME/memories/`. A new session puts both files in its prompt.
     A continuing session reuses the prompt it started with, for the prompt
     cache, so another channel's change reaches it only when Hermes
-    rebuilds the prompt (at compaction) or a new `sessionEpoch` starts new
-    sessions. Its memory tool still edits the newest copy.
+    rebuilds the prompt (at compaction) or the channel moves to a new
+    session. Its memory tool still edits the newest copy.
   - **Write-back and merge.** After a turn a changed file goes back from
     the version the runner read. On a conflict the runner applies this
     session's entry changes (Hermes entries split on `\n§\n`) to the newer
@@ -655,8 +702,8 @@ sequenceDiagram
 that entry the chart also renders `spec.hermes.memory` and the memory
 prompt (`discord.notes.memoryPrompt`); the controller must be the fork
 build with jomcgi-org/kagent#8, else it ignores the field and memory stays
-off. Then a new `sessionEpoch`, in a later change, moves existing channels
-onto it (see "New sessions").
+off. Existing channels move onto it on their next turn (see "New
+sessions").
 
 #### Notes viewer (HOME-920)
 
