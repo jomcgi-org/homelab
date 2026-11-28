@@ -2412,7 +2412,7 @@ def test_discord_artifacts_admit_only_routed_actors_through_the_gateway() -> Non
     deployment = _in(docs, "Deployment", "factory-discord", "bosun-artifacts")
     pod = deployment["spec"]["template"]["spec"]
     (container,) = pod["containers"]
-    env = {e["name"]: e["value"] for e in container["env"]}
+    env = {e["name"]: e.get("value") for e in container["env"]}
     assert env["ACTOR_JWT_AUDIENCE"] == "bosun-artifacts"
     assert env["ACTOR_JWT_ATESPACES"] == _HOMELAB_NS
     assert env["ACTOR_JWT_ISSUER"] == "https://idp.ate-system.svc"
@@ -2450,6 +2450,97 @@ def test_discord_artifacts_admit_only_routed_actors_through_the_gateway() -> Non
     assert not [d for d in unrouted if d["metadata"]["name"] == "bosun-artifacts"]
     deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
     assert deploy["discord"]["artifacts"]["enabled"] is True
+
+
+def test_discord_notes_take_the_server_from_the_bridge_and_their_own_key() -> None:
+    # HOME-918: bosun-artifacts serves the notes tools with the bosun-notes-s3
+    # key, asks the bridge which server a session serves, and only it may
+    # reach the bridge's session record.
+    base = _HOMELAB + [
+        f"kagent.rbac.namespaces={{kagent,factory-r-homelab,factory-discord-agent,{_HOMELAB_NS}}}",
+        "discord.agent.enabled=true",
+        "discord.bridge.enabled=true",
+        "string:discord.bridge.policy.guilds.1501965852042330302.ingest=true",
+        "discord.serverAgents.homelab.route=true",
+        "discord.artifacts.enabled=true",
+    ]
+    off = _render(base + ["discord.notes.enabled=false"])
+    assert "NOTES_" not in str(
+        _in(off, "Deployment", "factory-discord", "bosun-artifacts")
+    )
+    assert "bosun-notes-s3" not in str(off)
+    assert "/sessions/" not in str(off)
+
+    docs = _render(base)
+    (container,) = _in(docs, "Deployment", "factory-discord", "bosun-artifacts")[
+        "spec"
+    ]["template"]["spec"]["containers"]
+    env = {e["name"]: e for e in container["env"]}
+    for key in (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_ENDPOINT_URL",
+        "AWS_REGION",
+        "BUCKET",
+    ):
+        ref = env["NOTES_" + key]["valueFrom"]["secretKeyRef"]
+        assert ref == {"name": "bosun-notes-s3", "key": key}  # not optional
+    assert (
+        env["NOTES_BRIDGE_URL"]["value"]
+        == "http://discord-bridge.factory-discord.svc.cluster.local:8080"
+    )
+    # The artifact key stays the envFrom Secret; no other pod names the notes key.
+    assert container["envFrom"] == [{"secretRef": {"name": "bosun-artifacts-s3"}}]
+    for d in docs:
+        if (
+            d["kind"] in ("Deployment", "Job", "StatefulSet")
+            and d["metadata"]["name"] != "bosun-artifacts"
+        ):
+            assert "bosun-notes-s3" not in str(d)
+    sessions_rule = {"method": "GET", "path": "^/sessions/[0-9a-z-]+$"}
+    out = _in(docs, "CiliumNetworkPolicy", "factory-discord", "bosun-artifacts")[
+        "spec"
+    ]["egress"]
+    (to_bridge,) = [r for r in out if "factory-discord-bridge" in str(r)]
+    assert to_bridge["toPorts"][0]["rules"]["http"] == [sessions_rule]
+    bridge = _in(
+        docs, "CiliumNetworkPolicy", "factory-discord", "factory-discord-bridge"
+    )
+    (from_notes,) = [
+        r for r in bridge["spec"]["ingress"] if "bosun-artifacts" in str(r)
+    ]
+    assert from_notes["fromEndpoints"] == [
+        {"matchLabels": {"app.kubernetes.io/name": "bosun-artifacts"}}
+    ]
+    assert from_notes["toPorts"][0]["rules"]["http"] == [sessions_rule]
+
+
+def test_a_notes_binding_adds_the_notes_write_rule_to_the_prompt() -> None:
+    # HOME-918: the write rule is in the prompt only when notes is bound.
+    base = _HOMELAB + [
+        f"kagent.rbac.namespaces={{kagent,factory-r-homelab,factory-discord-agent,{_HOMELAB_NS}}}",
+        "discord.agent.enabled=true",
+        "discord.bridge.enabled=true",
+        "discord.serverAgents.homelab.route=true",
+        "discord.serverAgents.homelab.serverTools.codeExecution=true",
+    ]
+
+    def prompt(extra: list[str]) -> str:
+        docs = _render(base + extra)
+        agent = _in(docs, "Agent", _HOMELAB_NS, "homelab")
+        return agent["spec"]["template"]["inline"]["systemPrompt"]
+
+    rule = "only when the tagging message is Joe's and asks you to note"
+    assert rule not in prompt([])
+    bound = prompt(
+        [
+            "discord.serverAgents.homelab.mcpServers[0].name=notes",
+            "discord.serverAgents.homelab.mcpServers[0].url=http://bosun-artifacts.factory-discord.svc.cluster.local:8080/notes/mcp",
+            "discord.serverAgents.homelab.mcpServers[0].actorJwt.audiences={bosun-artifacts}",
+            "discord.serverAgents.homelab.mcpServers[0].tools={notes_list,notes_read}",
+        ]
+    )
+    assert rule in " ".join(bound.split())
 
 
 def test_discord_archive_reads_with_its_own_login_through_the_gateway() -> None:

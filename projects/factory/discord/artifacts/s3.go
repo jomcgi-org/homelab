@@ -69,6 +69,41 @@ func (c *S3) Put(ctx context.Context, key string, body []byte, contentType strin
 	return c.do(req, nil)
 }
 
+// ErrNotFound is a Get of a key that does not exist.
+var ErrNotFound = errors.New("s3: no such key")
+
+// maxGet bounds one object read.
+const maxGet = 8 << 20
+
+// Get reads key. A missing key is ErrNotFound.
+func (c *S3) Get(ctx context.Context, key string) ([]byte, error) {
+	req, err := c.request(ctx, http.MethodGet, key, nil, nil, emptySHA256)
+	if err != nil {
+		return nil, err
+	}
+	c.sign(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("s3 GET: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrNotFound
+	}
+	if resp.StatusCode/100 != 2 {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("s3 GET: %s: %s", resp.Status, strings.TrimSpace(string(snippet)))
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGet+1))
+	if err != nil {
+		return nil, fmt.Errorf("s3 GET: %w", err)
+	}
+	if len(body) > maxGet {
+		return nil, fmt.Errorf("s3 GET: object over %d bytes", maxGet)
+	}
+	return body, nil
+}
+
 // Delete removes key. S3 answers 204 for a key that does not exist.
 func (c *S3) Delete(ctx context.Context, key string) error {
 	req, err := c.request(ctx, http.MethodDelete, key, nil, nil, emptySHA256)

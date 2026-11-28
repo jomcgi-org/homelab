@@ -9,9 +9,15 @@ injects an actor JWT with audience bosun-artifacts; the service verifies it
 against the issuer's keys and admits only the atespaces of routed
 discord.serverAgents. The bucket key (bosun-artifacts-s3, filled by
 garage-init) is in this pod only; the actor holds none.
+
+With discord.notes.enabled it also serves the notes vault tools at /notes/mcp
+(HOME-918, projects/factory/discord/notes), with the separate bosun-notes-s3
+key. Each call's server comes from the bridge's record of the calling
+session (GET /sessions/<id> on the bridge), never from the model.
 */}}
 {{- $d := .Values.discord }}
 {{- $art := $d.artifacts }}
+{{- $notes := $d.notes | default dict }}
 {{- if and $art.enabled $d.bridge.enabled }}
 {{- $ns := $d.bridge.namespace }}
 {{- $name := "bosun-artifacts" }}
@@ -96,6 +102,19 @@ spec:
               value: /run/substrate-servicedns/trust-bundle.pem
             - name: ACTOR_JWT_ATESPACES
               value: {{ join "," $atespaces | quote }}
+            {{- if $notes.enabled }}
+            # The notes vault key. Not optional: a new pod waits for
+            # garage-init to fill the Secret, and the old pod keeps serving.
+            {{- range $k := list "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_ENDPOINT_URL" "AWS_REGION" "BUCKET" }}
+            - name: NOTES_{{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: bosun-notes-s3
+                  key: {{ $k }}
+            {{- end }}
+            - name: NOTES_BRIDGE_URL
+              value: {{ printf "http://discord-bridge.%s.svc.cluster.local:8080" $ns | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080
@@ -170,6 +189,21 @@ spec:
         - ports:
             - port: "8443"
               protocol: TCP
+    {{- if $notes.enabled }}
+    # The bridge's session record, for the notes tools' server.
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: factory-discord-bridge
+            app.kubernetes.io/component: gateway
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - method: GET
+                path: "^/sessions/[0-9a-z-]+$"
+    {{- end }}
 {{- end }}
 {{- end }}
 ---

@@ -555,7 +555,7 @@ spec:
 # Egress to the renderer, Discord, hindsight-discord, factory-db (the message
 # archive) and kagent's controller.
 # Nothing connects in, except the connector to /notify when connector.notify
-# is on. DNS is the cluster baseline's.
+# is on, and bosun-artifacts to GET /sessions/<id> when discord.notes is on. DNS is the cluster baseline's.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -567,8 +567,10 @@ spec:
   endpointSelector:
     matchLabels:
       app.kubernetes.io/name: factory-discord-bridge
-  {{- if .Values.connector.notify.enabled }}
+  {{- $notesIn := and ($d.notes | default dict).enabled $d.artifacts.enabled }}
+  {{- if or .Values.connector.notify.enabled $notesIn }}
   ingress:
+    {{- if .Values.connector.notify.enabled }}
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
@@ -577,6 +579,21 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
+    {{- end }}
+    {{- if $notesIn }}
+    # The notes tools read which server a session serves (HOME-918).
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: bosun-artifacts
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - method: GET
+                path: "^/sessions/[0-9a-z-]+$"
+    {{- end }}
   {{- end }}
   egress:
     - toEndpoints:

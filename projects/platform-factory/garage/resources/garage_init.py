@@ -56,6 +56,7 @@ BUCKETS = [
     "authentik-pg-backups",
     "bosun-artifacts",
     "bosun-libs",
+    "bosun-notes",
     "home-assistant-backups",
 ]
 # (bucket, namespace, Secret[, access]); access is readwrite unless named.
@@ -78,6 +79,9 @@ GRANTS = [
     # The pinned libraries artifact pages load from /_lib/: only the
     # bosun-libs Job holds a key, so the artifact tools cannot write them.
     ("bosun-libs", "factory-discord", "bosun-libs-s3"),
+    # Bosun's notes vault (projects/factory/discord/notes): only the
+    # bosun-artifacts MCP service holds this key, beside its artifact key.
+    ("bosun-notes", "factory-discord", "bosun-notes-s3"),
     # Nightly Home Assistant and Zigbee2MQTT volume archives.
     ("home-assistant-backups", "home-assistant", "home-assistant-backups-s3"),
 ]

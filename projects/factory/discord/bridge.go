@@ -145,6 +145,9 @@ type Bridge struct {
 	// Share signs artifact share links after Joe confirms (share.go); nil
 	// turns share blocks off.
 	Share *Sharing
+	// SessionPlaces records each server agent session's server and channel
+	// before its turn (HOME-918); nil records none.
+	SessionPlaces *SessionPlaces
 
 	mu    sync.Mutex
 	botID string
@@ -454,6 +457,13 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	var answer string
 	if a, ok := b.Servers[m.GuildID]; ok {
 		// Each channel, a thread included, is one session (Joe, 2026-11-27).
+		// The session's server is recorded before its turn, for the notes
+		// tools (HOME-918, sessions.go).
+		if f, ok := a.(SessionFinder); ok && b.SessionPlaces != nil {
+			if s, serr := f.Session(ctx, m.ChannelID); serr == nil {
+				b.SessionPlaces.Record(s.ContextID, m.GuildID, m.ChannelID)
+			}
+		}
 		answer, err = a.Turn(ctx, m.ChannelID, m.ID, prompt)
 	} else {
 		answer, err = b.Agent.Turn(ctx, m.ID, prompt)

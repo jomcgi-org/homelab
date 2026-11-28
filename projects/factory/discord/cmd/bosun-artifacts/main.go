@@ -1,5 +1,6 @@
-// Command bosun-artifacts serves Bosun's artifact tools over MCP
-// (projects/factory/discord/artifacts).
+// Command bosun-artifacts serves Bosun's artifact tools over MCP at /mcp
+// (projects/factory/discord/artifacts) and, with NOTES_BUCKET, the notes
+// vault tools at /notes/mcp (projects/factory/discord/notes).
 package main
 
 import (
@@ -14,6 +15,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
 	"github.com/jomcgi/homelab/projects/factory/discord/artifacts"
+	"github.com/jomcgi/homelab/projects/factory/discord/notes"
 )
 
 func main() {
@@ -70,6 +72,13 @@ func run(log *slog.Logger) error {
 		Verifier: verifier,
 		Log:      log,
 	})
+	if os.Getenv("NOTES_BUCKET") != "" {
+		h, err := notesHandler(servers, verifier, log)
+		if err != nil {
+			return err
+		}
+		mux.Handle("/notes/mcp", h)
+	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	addr := os.Getenv("ADDR")
 	if addr == "" {
@@ -87,6 +96,28 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// notesHandler serves the notes vault. Its bucket key (NOTES_AWS_*, from
+// the bosun-notes-s3 Secret) is separate from the artifact key, and the
+// bridge at NOTES_BRIDGE_URL names each calling session's server.
+func notesHandler(servers map[string]bool, verifier *actorjwt.Verifier, log *slog.Logger) (http.Handler, error) {
+	bridge := os.Getenv("NOTES_BRIDGE_URL")
+	if bridge == "" {
+		return nil, errorString("NOTES_BRIDGE_URL is required with NOTES_BUCKET")
+	}
+	s3, err := artifacts.NewS3(os.Getenv("NOTES_AWS_ENDPOINT_URL"), os.Getenv("NOTES_AWS_REGION"), os.Getenv("NOTES_BUCKET"),
+		os.Getenv("NOTES_AWS_ACCESS_KEY_ID"), os.Getenv("NOTES_AWS_SECRET_ACCESS_KEY"))
+	if err != nil {
+		return nil, err
+	}
+	log.Info("notes on", "bucket", os.Getenv("NOTES_BUCKET"))
+	return &notes.Handler{
+		Store:    &notes.Store{Bucket: s3, Servers: servers},
+		Places:   &notes.BridgePlaces{URL: bridge},
+		Verifier: verifier,
+		Log:      log.With("service", "notes"),
+	}, nil
 }
 
 type errorString string
