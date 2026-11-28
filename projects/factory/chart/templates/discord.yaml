@@ -427,6 +427,14 @@ spec:
             - name: DISCORD_OPERATOR_USER_FILE
               value: /var/run/secrets/discord-operator/user-id
             {{- end }}
+            {{- if $d.artifacts.enabled }}
+            # Artifact share links (HOME-917, discord/share.go): signed with
+            # the read-only bosun-artifacts-share-s3 key after Joe confirms.
+            - name: ARTIFACT_SHARE_KEY_DIR
+              value: /var/run/secrets/artifact-share
+            - name: ARTIFACT_BASE_URL
+              value: {{ $d.artifacts.baseURL | quote }}
+            {{- end }}
           ports:
             - name: health
               containerPort: 8080
@@ -468,6 +476,11 @@ spec:
             {{- if $operatorUser }}
             - name: operator
               mountPath: /var/run/secrets/discord-operator
+              readOnly: true
+            {{- end }}
+            {{- if $d.artifacts.enabled }}
+            - name: artifact-share
+              mountPath: /var/run/secrets/artifact-share
               readOnly: true
             {{- end }}
       volumes:
@@ -513,6 +526,19 @@ spec:
         - name: policy
           configMap:
             name: {{ $name }}-policy
+        {{- if $d.artifacts.enabled }}
+        # Optional: garage-init fills it after the Secret exists, and the
+        # kubelet updates the files; the bridge reads them at each link.
+        - name: artifact-share
+          secret:
+            secretName: bosun-artifacts-share-s3
+            optional: true
+            items:
+              - key: AWS_ACCESS_KEY_ID
+                path: AWS_ACCESS_KEY_ID
+              - key: AWS_SECRET_ACCESS_KEY
+                path: AWS_SECRET_ACCESS_KEY
+        {{- end }}
         {{- if $d.archive.enabled }}
         # Optional: the bridge starts before factory-db-setup fills it, and
         # the kubelet updates the file when it does.

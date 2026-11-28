@@ -58,7 +58,8 @@ BUCKETS = [
     "bosun-libs",
     "home-assistant-backups",
 ]
-# (bucket, namespace, Secret). ate-snapshots is Substrate's snapshot store
+# (bucket, namespace, Secret[, access]); access is readwrite unless named.
+# ate-snapshots is Substrate's snapshot store
 # (projects/platform-factory/substrate/resources/garage-snapshots.yaml).
 GRANTS = [
     ("factory-itsaplan", "factory", "factory-itsaplan-s3"),
@@ -70,6 +71,10 @@ GRANTS = [
     # Bosun's artifacts (projects/factory/discord/artifacts): only the MCP
     # service holds a key.
     ("bosun-artifacts", "factory-discord", "bosun-artifacts-s3"),
+    # Share links for artifacts (HOME-917): a read-only key that only the
+    # discord bridge holds, to sign presigned GETs after Joe confirms.
+    # Rotating it revokes every link (README).
+    ("bosun-artifacts", "factory-discord", "bosun-artifacts-share-s3", "read"),
     # The pinned libraries artifact pages load from /_lib/: only the
     # bosun-libs Job holds a key, so the artifact tools cannot write them.
     ("bosun-libs", "factory-discord", "bosun-libs-s3"),
@@ -414,7 +419,7 @@ def bootstrap():
         except (Exception, SystemExit) as e:
             print(f"ERROR: website {name}: {e}")
             failed.append(f"website {name}")
-    grants = [(*grant, "readwrite") for grant in GRANTS]
+    grants = [grant if len(grant) == 4 else (*grant, "readwrite") for grant in GRANTS]
     try:
         grants.extend(discover_grants())
     except (Exception, SystemExit) as e:

@@ -70,6 +70,9 @@ type Gateway struct {
 	Token     func() (string, error)
 	OnReady   func(User)
 	OnMessage func(Message)
+	// OnReaction gets each MESSAGE_REACTION_ADD (share confirmations); it
+	// must not block.
+	OnReaction func(Reaction)
 	// Places caches servers and channels from guild events; nil caches none.
 	Places *Places
 	// OnArchive, when set, gets each message create, edit and delete event
@@ -291,6 +294,15 @@ func (g *Gateway) dispatch(ctx context.Context, s *session, p payload) {
 		}
 		if g.OnMessage != nil {
 			g.OnMessage(m)
+		}
+	case "MESSAGE_REACTION_ADD":
+		var r Reaction
+		if err := json.Unmarshal(p.D, &r); err != nil {
+			g.Log.WarnContext(ctx, "bad MESSAGE_REACTION_ADD", "error", err)
+			return
+		}
+		if g.OnReaction != nil {
+			g.OnReaction(r)
 		}
 	default:
 		if g.Places != nil {

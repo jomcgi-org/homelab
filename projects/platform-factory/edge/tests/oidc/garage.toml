@@ -1,0 +1,15 @@
+# One Garage node for the share-link test (run.sh): the production image,
+# path-style S3 only, as in projects/platform-factory/garage/resources.
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "lmdb"
+replication_factor = 1
+rpc_bind_addr = "0.0.0.0:3901"
+rpc_public_addr = "127.0.0.1:3901"
+
+[s3_api]
+api_bind_addr = "0.0.0.0:3900"
+s3_region = "garage"
+
+[admin]
+api_bind_addr = "0.0.0.0:3903"

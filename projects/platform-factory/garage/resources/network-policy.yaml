@@ -107,7 +107,9 @@ spec:
         - ports:
             - port: "3900"
               protocol: TCP
-    # The website endpoint: the edge proxy only, for artifact.jomcgi.dev.
+    # The website endpoint: the edge proxy only, for artifact.jomcgi.dev;
+    # and the S3 API for its signed share links (artifact.jomcgi.dev/s/),
+    # which Garage checks.
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: edge
@@ -116,6 +118,8 @@ spec:
       toPorts:
         - ports:
             - port: "3902"
+              protocol: TCP
+            - port: "3900"
               protocol: TCP
   egress:
     # Kubernetes discovery: each node publishes and lists GarageNodes.

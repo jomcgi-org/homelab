@@ -120,6 +120,11 @@ artifacts:
   # bosun-libs Job.
   libsPath: /_lib/
   libsGarageHost: bosun-libs.web.garage.internal
+  # Signed, expiring share links (HOME-917, templates/artifact-route.yaml
+  # route artifact-share): sharePath/<key> goes to Garage's S3 API as
+  # /<shareBucket>/<key> with Host kept, so the presigned signature checks.
+  sharePath: /s
+  shareBucket: bosun-artifacts
 
 # kubectl at factory-kube.jomcgi.dev (templates/kube-api-route.yaml).
 kubeAPI:

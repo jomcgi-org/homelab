@@ -1,11 +1,15 @@
 """Exercise the browser redirects and carry OAuth2's encrypted cookies across them."""
 
+import datetime
+import hashlib
+import hmac
 from http.client import HTTPConnection
+import os
 from http.cookies import SimpleCookie
 import json
 import subprocess
 import time
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 
 def session(host, subject, expected=200, path="/"):
@@ -113,6 +117,98 @@ for role in ["factory-operator", "applicant"]:
     session("artifact.jomcgi.dev", role, expected=403, path=f"/{homelab}/page.html")
 # The member's groups admit them on no other host.
 session("factory.jomcgi.dev", "member", expected=403)
+
+
+# Signed share links (route artifact-share). The link is /s/<key>; it is
+# signed for what Garage sees after the edge: Host artifact.jomcgi.dev and
+# path /bosun-artifacts/<key> (projects/factory/discord/artifacts/share.go).
+def presign(key, secret_id, secret, ttl=3600, at=None):
+    at = at or datetime.datetime.now(datetime.timezone.utc)
+    amz = at.strftime("%Y%m%dT%H%M%SZ")
+    scope = f"{amz[:8]}/garage/s3/aws4_request"
+    params = {
+        "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+        "X-Amz-Credential": f"{secret_id}/{scope}",
+        "X-Amz-Date": amz,
+        "X-Amz-Expires": str(ttl),
+        "X-Amz-SignedHeaders": "host",
+    }
+    query = "&".join(
+        f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in sorted(params.items())
+    )
+    canonical = "\n".join(
+        [
+            "GET",
+            "/bosun-artifacts/" + key,
+            query,
+            "host:artifact.jomcgi.dev\n",
+            "host",
+            "UNSIGNED-PAYLOAD",
+        ]
+    )
+    to_sign = "\n".join(
+        ["AWS4-HMAC-SHA256", amz, scope, hashlib.sha256(canonical.encode()).hexdigest()]
+    )
+    k = ("AWS4" + secret).encode()
+    for part in (amz[:8], "garage", "s3", "aws4_request"):
+        k = hmac.new(k, part.encode(), hashlib.sha256).digest()
+    signature = hmac.new(k, to_sign.encode(), hashlib.sha256).hexdigest()
+    return f"/s/{key}?{query}&X-Amz-Signature={signature}"
+
+
+def anonymous(path, method="GET"):
+    conn = HTTPConnection("localhost", 18080, timeout=10)
+    conn.request(method, path, headers={"Host": "artifact.jomcgi.dev"})
+    response = conn.getresponse()
+    body = response.read()
+    conn.close()
+    return response.status, dict(response.getheaders()), body
+
+
+report = "1501965852042330302/1501965852042330999/report.html"
+ro_id, ro_secret = os.environ["SHARE_RO_ID"], os.environ["SHARE_RO_SECRET"]
+link = presign(report, ro_id, ro_secret)
+deadline = time.monotonic() + 60
+while True:
+    status, headers, body = anonymous(link)
+    if status == 200 or time.monotonic() >= deadline:
+        break
+    time.sleep(1)
+assert status == 200 and body == b"<h1>shared</h1>", (status, body[:200])
+lower = {k.lower(): v for k, v in headers.items()}
+assert lower["content-security-policy"].startswith(
+    "sandbox allow-scripts allow-popups;"
+), lower
+assert lower["x-content-type-options"] == "nosniff"
+assert lower["referrer-policy"] == "no-referrer"
+assert lower["cross-origin-resource-policy"] == "same-origin"
+assert lower["x-robots-tag"] == "noindex, nofollow"
+assert lower["cache-control"] == "private, no-store"
+assert "set-cookie" not in lower
+print("artifact.jomcgi.dev share link 200")
+assert anonymous(link, "HEAD")[0] == 200
+tampered = link[:-1] + ("0" if link[-1] != "0" else "1")
+past = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
+for name, path in {
+    "tampered": tampered,
+    "expired": presign(report, ro_id, ro_secret, ttl=60, at=past),
+    "other path, same signature": link.replace("report.html", "other.html", 1),
+    "unsigned": "/s/" + report,
+    "unsigned list": "/s/",
+    "wrong key": presign(report, ro_id, "0" * 64),
+    "known key ID, wrong secret": presign(report, os.environ["SHARE_RW_ID"], "x"),
+}.items():
+    status, _, _ = anonymous(path)
+    assert status == 403, (name, status)
+    print("artifact.jomcgi.dev share", name, status)
+# Only GET and HEAD skip sign-in; anything else meets the Authentik policy.
+status, _, _ = anonymous(link, "DELETE")
+assert status == 302, ("DELETE", status)
+# The normal paths still need sign-in.
+for path in ["/" + report, "/private/x.html", "/"]:
+    status, headers, _ = anonymous(path)
+    assert status == 302, (path, status)
+print("artifact.jomcgi.dev without a link: sign-in redirect")
 
 # The signed admin cookie used above must fail closed if the route policy is gone.
 subprocess.run(

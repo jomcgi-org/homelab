@@ -1,5 +1,6 @@
 # The edge's artifact.jomcgi.dev route (projects/platform-factory/edge/chart,
-# artifact-route.yaml) may use the website Service only.
+# artifact-route.yaml) may use the website Service, and the S3 API Service
+# for signed share links on /s/ (route artifact-share).
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
@@ -14,3 +15,6 @@ spec:
     - group: ""
       kind: Service
       name: garage-web
+    - group: ""
+      kind: Service
+      name: garage

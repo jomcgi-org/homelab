@@ -67,7 +67,10 @@ const instructions = "Publish files for Joe and give him the link. put writes on
 	"that server can open it; with server private, only Joe can. Use private when Joe asks for a private file or the file " +
 	"holds a direct message or text from a channel that some members cannot read. HTML pages run sandboxed " +
 	"with an opaque origin and no network: put CSS, scripts, images and data inline (data: URLs). A page cannot load " +
-	"a CDN library, another artifact or any URL, and cannot keep cookies or storage. list and delete work in the same server and channel."
+	"a CDN library, another artifact or any URL, and cannot keep cookies or storage. list and delete work in the same server and channel. " +
+	"Only when Joe asks for a share link for people outside the server, end your answer with a fenced share block, for example " +
+	"```share\n{\"path\": \"report.html\", \"ttl\": \"24h\"}\n``` (a file of this channel; ttl 1m to 7d, 24h by default). " +
+	"You cannot make the link: the bridge asks Joe to confirm with a reaction, then posts it."
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")

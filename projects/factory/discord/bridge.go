@@ -142,6 +142,9 @@ type Bridge struct {
 	// Config.Explore is zero.
 	Explorer *Explorer
 	Repos    RepoChecker
+	// Share signs artifact share links after Joe confirms (share.go); nil
+	// turns share blocks off.
+	Share *Sharing
 
 	mu    sync.Mutex
 	botID string
@@ -163,6 +166,8 @@ type Bridge struct {
 	// exploreSlots bounds the explorer turns that run at once.
 	results      map[string][]ExploreResult
 	exploreSlots chan struct{}
+	// shares holds share confirmations by message ID until Joe's ✅.
+	shares map[string]pendingShare
 }
 
 // SessionAgent runs turns in one persistent session per key.
@@ -618,6 +623,14 @@ func (b *Bridge) deliver(ctx context.Context, l *slog.Logger, actor Actor, m Mes
 			}
 			done.Explore = &r
 		}
+	}
+	if req := acts.Share; req != nil {
+		asked, replied := b.askShare(ctx, l, actor, m, channelID, *req)
+		if asked {
+			done.Share = req
+		}
+		// A refusal line is the turn's reply.
+		posted.textTried = posted.textTried || replied
 	}
 	return done, posted
 }

@@ -16,6 +16,7 @@ go_library(
         "artifacts.go",
         "mcp.go",
         "s3.go",
+        "share.go",
     ],
     embedsrcs = [
         "brief.md",
@@ -33,6 +34,7 @@ go_test(
     name = "artifacts_test",
     srcs = [
         "artifacts_test.go",
+        "share_test.go",
         "sigv4_test.go",
     ],
     embed = [":artifacts"],

@@ -202,6 +202,7 @@ def test_only_kagent_forwards_the_access_token(docs):
         "artifact-admins",
         *(f"artifact-server-{server}" for server in SERVERS),
         "artifact-lib-no-gateway-oidc",
+        "artifact-share-no-gateway-oidc",
         "kube-api-authentik-jwt",
         "explore-api-authentik-jwt",
     }
@@ -433,7 +434,14 @@ def test_artifacts_are_sandboxed_and_each_server_folder_admits_its_group(docs):
                     }
                 }
             ],
-            "toPorts": [{"ports": [{"port": "3902", "protocol": "TCP"}]}],
+            "toPorts": [
+                {
+                    "ports": [
+                        {"port": "3902", "protocol": "TCP"},
+                        {"port": "3900", "protocol": "TCP"},
+                    ]
+                }
+            ],
         }
     ]
 
@@ -501,6 +509,73 @@ def test_prefix_rewrites_have_exactly_one_path_prefix_match(docs):
                 matches = rule.get("matches", [])
                 assert len(matches) == 1, name
                 assert matches[0]["path"]["type"] == "PathPrefix", name
+
+
+def test_share_links_reach_only_the_artifact_bucket_with_host_kept(docs):
+    route = docs["HTTPRoute", "artifact-share"]["spec"]
+    assert route["hostnames"] == ["artifact.jomcgi.dev"]
+    # One rule per method: the API server admits replacePrefixMatch only
+    # with exactly one PathPrefix match in its rule.
+    get, head = route["rules"]
+    assert get["matches"] == [
+        {"path": {"type": "PathPrefix", "value": "/s"}, "method": "GET"}
+    ]
+    assert head["matches"] == [
+        {"path": {"type": "PathPrefix", "value": "/s"}, "method": "HEAD"}
+    ]
+    assert (
+        get["filters"] == head["filters"] and get["backendRefs"] == head["backendRefs"]
+    )
+    rule = get
+    filters = {f["type"]: f for f in rule["filters"]}
+    # Only the path prefix changes; Host stays artifact.jomcgi.dev, which
+    # the presigned signature covers (discord/artifacts/share.go).
+    assert filters["URLRewrite"]["urlRewrite"] == {
+        "path": {
+            "type": "ReplacePrefixMatch",
+            "replacePrefixMatch": "/bosun-artifacts",
+        }
+    }
+    assert filters["RequestHeaderModifier"]["requestHeaderModifier"] == {
+        "remove": ["Cookie", "Authorization"]
+    }
+    response = filters["ResponseHeaderModifier"]["responseHeaderModifier"]
+    headers = {h["name"]: h["value"] for h in response["set"]}
+    artifact = {
+        f["type"]: f
+        for f in docs["HTTPRoute", "artifact"]["spec"]["rules"][0]["filters"]
+    }
+    sandbox = {
+        h["name"]: h["value"]
+        for h in artifact["ResponseHeaderModifier"]["responseHeaderModifier"]["set"]
+    }
+    assert headers == {
+        **sandbox,
+        "X-Robots-Tag": "noindex, nofollow",
+        "Cache-Control": "private, no-store",
+    }
+    assert response["remove"] == ["Set-Cookie", "Access-Control-Allow-Origin"]
+    assert rule["backendRefs"] == [
+        {
+            "group": "",
+            "kind": "Service",
+            "name": "garage",
+            "namespace": "garage",
+            "port": 3900,
+            "weight": 1,
+        }
+    ]
+    # No sign-in: the signature is the credential, and Garage checks it.
+    assert docs["SecurityPolicy", "artifact-share-no-gateway-oidc"]["spec"] == {
+        "targetRefs": [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "artifact-share",
+            }
+        ],
+        "authorization": {"defaultAction": "Allow"},
+    }
 
 
 def test_t3_requires_admin_group_on_the_entire_host(docs):
