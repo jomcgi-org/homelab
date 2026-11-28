@@ -452,10 +452,12 @@ timeout stays 80 ms. The scanner and the gate do not wait for each other: until
 the gate is Ready, the scanner counts `error` outcomes of the tier and no reply
 changes.
 
-The scanner is called by the egress gateway for the Hindsight route only
-(`resources/atenet-egress-config.yaml`, `hindsight-api.hindsight.svc:8888`), not
-for all egress. So the gate sees the text of Hindsight requests, and the 7 days of
-observe data describe that traffic only.
+The egress gateway calls the scanner for two routes
+(`resources/egress-scan/gateway-policy.yaml`): Hindsight
+(`hindsight-api.hindsight.svc:8888`) and Bosun's browser
+(`browser-mcp.factory-discord.svc:8080`, HOME-932), not for all egress. So the
+gate sees the text of those requests. The 7 days of observe data came before the
+browser route and describe Hindsight traffic only.
 
 **Reading `would_fail`.** In observe mode `observe_total{result="would_fail"}`
 counts every call that gave no verdict, and that includes `shed`: each scanner
