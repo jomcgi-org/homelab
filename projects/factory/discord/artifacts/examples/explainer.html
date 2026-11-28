@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Follow a read request</title>
+    <link
+      rel="stylesheet"
+      href="/_lib/house-1.css"
+      integrity="sha384-nG4KPghHLl5iGFwO8uaAQPW1NB3VmXw8GNDHAS0SVSZmRDKM+PudlXW8yRZp7qFN"
+      crossorigin="anonymous"
+    />
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <span class="eyebrow"><i data-lucide="route"></i> Explainer</span>
+        <h1>Follow a read request</h1>
+        <p class="lede">
+          Every read goes through the same six stages. The query API decides who
+          may see which columns before a single row leaves storage.
+        </p>
+        <div class="meta">
+          <span class="chip"><i data-lucide="layers"></i> 6 stages</span>
+          <span class="chip"><i data-lucide="timer"></i> p50 38 ms</span>
+        </div>
+      </header>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>The path</h2>
+          <p>Left to right; each stage can stop the request.</p>
+        </div>
+        <ol class="steps">
+          <li>
+            <h3>Request</h3>
+            <p>The client sends SQL with its token.</p>
+          </li>
+          <li>
+            <h3>Access</h3>
+            <p>ACLs pick the tables and columns this caller may read.</p>
+          </li>
+          <li>
+            <h3>Read</h3>
+            <p>DataFusion scans only the allowed columns in Iceberg.</p>
+          </li>
+          <li>
+            <h3>Mask</h3>
+            <p>Sensitive values, such as email, are masked by policy.</p>
+          </li>
+          <li>
+            <h3>Log</h3>
+            <p>Lineage records who read what, and why.</p>
+          </li>
+          <li>
+            <h3>Return</h3>
+            <p>Arrow batches stream back to the caller.</p>
+          </li>
+        </ol>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Who sees what</h2>
+          <p>The same query returns different columns per role.</p>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <tr>
+              <th>Role</th>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Balance</th>
+            </tr>
+            <tr>
+              <td>Admin</td>
+              <td><span class="badge good">shown</span></td>
+              <td><span class="badge good">shown</span></td>
+              <td><span class="badge good">shown</span></td>
+            </tr>
+            <tr>
+              <td>Analyst</td>
+              <td><span class="badge good">shown</span></td>
+              <td><span class="badge warn">masked</span></td>
+              <td><span class="badge good">shown</span></td>
+            </tr>
+            <tr>
+              <td>Support</td>
+              <td><span class="badge good">shown</span></td>
+              <td><span class="badge good">shown</span></td>
+              <td><span class="badge bad">denied</span></td>
+            </tr>
+          </table>
+        </div>
+      </section>
+
+      <section class="section">
+        <figure class="figure">
+          <pre class="mermaid">
+sequenceDiagram
+  participant C as Client
+  participant Q as Query API
+  participant A as ACL
+  participant D as DataFusion
+  C->>Q: SELECT name, email
+  Q->>A: may analyst read?
+  A-->>Q: name yes, email masked
+  Q->>D: scan name, email
+  D-->>Q: rows
+  Q-->>C: name, masked email
+          </pre>
+          <figcaption>An analyst reads two columns.</figcaption>
+        </figure>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Try it</h2>
+          <p>The same request from a terminal.</p>
+        </div>
+        <pre class="code"><code>curl -H "Authorization: Bearer $TOKEN" \
+  -d "SELECT name, email FROM customers LIMIT 3" \
+  https://query.example/v1/sql</code></pre>
+      </section>
+
+      <section class="section grid two">
+        <div class="callout">
+          <i data-lucide="info"></i>
+          <p>
+            <strong>One chokepoint</strong>Nothing reads Iceberg directly; only
+            the query API holds storage credentials.
+          </p>
+        </div>
+        <div class="callout warn">
+          <i data-lucide="triangle-alert"></i>
+          <p>
+            <strong>Masking is not deletion</strong>Admins still see raw values;
+            audit the Admin role.
+          </p>
+        </div>
+      </section>
+
+      <footer class="page-foot">
+        An example page for Bosun; the numbers are made up.
+      </footer>
+    </main>
+    <script
+      src="/_lib/lucide-1.72.0.min.js"
+      integrity="sha384-LJKEYnLhvei+XTxKjLahwKnS/kWFWfkb3n+v8n7YKWAAS3oamYHQyT4Bwch3XplL"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/mermaid-12.3.0.min.js"
+      integrity="sha384-HHW54r639fK42Ip0coGF3mz8oSiGn0eEoWNTLs75X7H63pLSDBa0Tqs0RwGmLlXE"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/vega-6.4.0.min.js"
+      integrity="sha384-VKdcJr3ZaBIJMbVcopTAI/JEuUkSY6qnwVu9iLuw0DnQ9gQ1JjsfZJhXFQAgNi43"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/vega-lite-6.5.0.min.js"
+      integrity="sha384-pV2l7nzmyxZh02knvUH7N8zvtyCYsYiGt+SsE/emG/dFiBI6G0YJZFZ2FzEX72P3"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/vega-embed-7.3.0.min.js"
+      integrity="sha384-Muy1QRxYFeNrA1zShc1KtN4OfipkR/61gt+HWqN57c1Zxu3Oe16TsilsruVVjfKL"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/house-1.js"
+      integrity="sha384-a2a1SZhsfmtkmUWueb1IUKbSNTuskmJXxn5x1qwNQfXFfPeV/HU9+W/Qgn+P8wx8"
+      crossorigin="anonymous"
+    ></script>
+  </body>
+</html>

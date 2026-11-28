@@ -169,28 +169,46 @@ func TestInitializeAndToolsList(t *testing.T) {
 	}
 }
 
-// The template is a whole page that loads only the pinned libraries, so it
-// works under the artifact CSP.
-func TestTemplateIsSelfContained(t *testing.T) {
+// Every page the template tool returns loads only the house design system
+// and the pinned libraries from /_lib/, so it works under the artifact CSP.
+func TestTemplatePagesLoadOnlyFromLib(t *testing.T) {
 	srv, _ := setup(t)
 	res := call(t, srv.URL, "template", map[string]any{})
-	html := res["structuredContent"].(map[string]any)["html"].(string)
-	if !strings.HasPrefix(html, "<!doctype html>") || !strings.Contains(html, "prefers-color-scheme: dark") {
-		t.Fatalf("template %.80q", html)
+	got := res["structuredContent"].(map[string]any)
+	if !strings.Contains(got["brief"].(string), "Never use emoji as icons") {
+		t.Fatalf("brief %.80q", got["brief"])
 	}
-	for _, external := range []string{"http:", "https:", "<link", "<img", "@import", "url("} {
-		if strings.Contains(html, external) {
-			t.Fatalf("template loads %q", external)
+	pages := map[string]string{"template": got["html"].(string)}
+	for _, name := range got["examples"].([]any) {
+		res := call(t, srv.URL, "template", map[string]any{"example": name})
+		pages[name.(string)] = res["structuredContent"].(map[string]any)["html"].(string)
+	}
+	if len(pages) != 4 {
+		t.Fatalf("pages %v", len(pages))
+	}
+	ref := regexp.MustCompile(`(?:src|href)\s*=\s*"([^"]*)"`)
+	for name, html := range pages {
+		if !strings.HasPrefix(html, "<!doctype html>") {
+			t.Errorf("%s: not a whole page", name)
+		}
+		for _, m := range ref.FindAllStringSubmatch(html, -1) {
+			if !strings.HasPrefix(m[1], "/_lib/") && !strings.HasPrefix(m[1], "#") {
+				t.Errorf("%s loads %q", name, m[1])
+			}
+		}
+		for _, external := range []string{"@import", "url("} {
+			if strings.Contains(html, external) {
+				t.Errorf("%s uses %q", name, external)
+			}
+		}
+		if n := len(regexp.MustCompile(`<script\s+src="/_lib/`).FindAllString(html, -1)); n != 6 {
+			t.Errorf("%s loads %d library scripts, want 6", name, n)
 		}
 	}
-	// Scripts load only from the pinned libraries at /_lib/.
-	all := regexp.MustCompile(`<script\s+src=`).FindAllString(html, -1)
-	lib := regexp.MustCompile(`<script\s+src="/_lib/`).FindAllString(html, -1)
-	if len(all) != 4 || len(lib) != len(all) {
-		t.Fatalf("template loads %d scripts, %d from /_lib/", len(all), len(lib))
-	}
-	if res := call(t, srv.URL, "template", map[string]any{"name": "x"}); res["isError"] != true {
-		t.Fatalf("template took an unknown argument: %v", res)
+	for _, args := range []map[string]any{{"name": "x"}, {"example": "poster"}} {
+		if res := call(t, srv.URL, "template", args); res["isError"] != true {
+			t.Errorf("template took %v: %v", args, res)
+		}
 	}
 }
 

@@ -353,13 +353,12 @@ def test_artifacts_are_sandboxed_and_each_server_folder_admits_its_group(docs):
     assert csp["connect-src"] == ["'none'"]
     assert csp["form-action"] == ["'none'"]
     assert csp["base-uri"] == ["'none'"]
-    # Only script-src names a network source: the libraries path on this
-    # host, nothing else.
-    assert csp.pop("script-src") == [
-        "'unsafe-inline'",
-        "'unsafe-eval'",
-        "https://artifact.jomcgi.dev/_lib/",
-    ]
+    # Only script-src, style-src and font-src name a network source: the
+    # libraries path on this host, nothing else.
+    lib = "https://artifact.jomcgi.dev/_lib/"
+    assert csp.pop("script-src") == ["'unsafe-inline'", "'unsafe-eval'", lib]
+    assert csp.pop("style-src") == ["'unsafe-inline'", lib]
+    assert csp.pop("font-src") == ["data:", lib]
     for values in csp.values():
         for v in values:
             assert v in {

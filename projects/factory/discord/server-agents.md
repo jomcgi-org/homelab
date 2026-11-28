@@ -528,13 +528,18 @@ load scripts only from `/_lib/`; a CDN library does not load. The tools'
 descriptions tell the model this. Residual: a page can still navigate
 itself to another URL.
 
-**Libraries at `/_lib/`.** The read-only `template` tool returns the house
-page (`artifacts/template.html`): colour tokens, light and dark themes
-through `prefers-color-scheme`, a system font stack, and Mermaid and
-Vega-Lite blocks that render in the browser. Mermaid uses the ELK layout:
-on Joe's architecture diagram it kept every edge out of the group and off
-the nodes, where dagre crossed a label and a node. The page loads four
-pinned libraries with `integrity` hashes:
+**Libraries at `/_lib/`.** The read-only `template` tool returns a design
+brief (`artifacts/brief.md`), the base page (`artifacts/template.html`) and,
+on request, one of three example pages (`artifacts/examples/`: explainer,
+report, comparison). Every page loads the house design system
+(`libs/house/house-1.css` and `house-1.js`: Space Grotesk headings, Inter
+text, one violet accent, light and dark, hero, stat tiles, cards with Lucide
+icons, steps, timeline, callouts, comparison, code, figures) and the pinned
+libraries, each with an `integrity` hash. Mermaid uses the ELK layout: on
+Joe's architecture diagram it kept every edge out of the group and off the
+nodes, where dagre crossed a label and a node. A library file's name carries
+its version, and old versions stay, so a page keeps the look it was
+published with.
 
 ```mermaid
 flowchart LR
@@ -545,13 +550,13 @@ flowchart LR
 
 | Control | Where |
 | --- | --- |
-| Mermaid 12.3.0, Vega 6.4.0, Vega-Lite 6.5.0, Vega-Embed 7.3.0 from the npm tarballs, each pinned by sha256; the pages' sha384 `integrity` values are tested against the shipped files | `MODULE.bazel`, `libs/sri_test.py` |
+| Mermaid 12.3.0, Vega 6.4.0, Vega-Lite 6.5.0, Vega-Embed 7.3.0, Lucide 1.72.0 and the Inter and Space Grotesk fonts (OFL) from the npm tarballs, each pinned by sha256; the house files from the repository; the pages' sha384 `integrity` values are tested against the shipped files | `MODULE.bazel`, `libs/libs.bzl`, `libs/sri_test.py` |
 | Only the `bosun-libs` Job holds the `bosun-libs` key; the artifact tools have none and still refuse `.js` and any server outside `bridge.policy.guilds` | `garage_init.py` `GRANTS`, `artifacts/artifacts.go` |
 | `/_lib/` is public, GET only, rewritten to the `bosun-libs` bucket, with CORS and `CORP: cross-origin` so a sandboxed page can check the integrity hash, and the artifact CSP | edge `artifact-route.yaml` |
-| `script-src` names exactly `https://artifact.jomcgi.dev/_lib/`; `'unsafe-eval'` is for Vega's expression compiler, and adds no reach because inline scripts already run | edge `values.yaml` |
+| `script-src`, `style-src` and `font-src` name exactly `https://artifact.jomcgi.dev/_lib/`; `'unsafe-eval'` is for Vega's expression compiler, and adds no reach because inline scripts already run | edge `values.yaml` |
 
 `/_lib/selftest/architecture.html` is a reviewed self-test page: the
-template with Joe's architecture diagram and a chart.
+design system with Joe's architecture diagram and a chart.
 
 **Deferred: screenshot service.** A headless Chromium pod that turns an
 artifact into a PNG for Discord is deferred (HOME-909). Bosun posts

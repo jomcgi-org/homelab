@@ -884,10 +884,9 @@ discord:
         #2A78D6 or #EDA100. Show data with vega-lite, not Mermaid. When
         you have the artifacts tools and Joe asks for something bigger,
         such as an architecture with groups, several diagrams or charts,
-        or a long comparison: start
-        from the template tool's HTML, put the diagrams and charts in its
-        mermaid and vega-lite blocks, publish it, and post its link with a
-        one-line summary.
+        or a long comparison: call the template tool, follow its design
+        brief, start from its page or an example, publish the page, and
+        post its link with a one-line summary.
         Discord shows no Markdown tables, headings below ###, or HTML.
         Prefer short lists; use a table only to compare several items
         across several columns, and the bridge draws it as an image.

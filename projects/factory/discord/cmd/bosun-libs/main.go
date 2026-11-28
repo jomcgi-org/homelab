@@ -33,11 +33,27 @@ func contentType(name string) string {
 		return "text/javascript; charset=utf-8"
 	case ".html":
 		return "text/html; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".woff2":
+		return "font/woff2"
+	case ".txt":
+		return "text/plain; charset=utf-8"
 	}
 	if t := mime.TypeByExtension(filepath.Ext(name)); t != "" {
 		return t
 	}
 	return "application/octet-stream"
+}
+
+// versioned reports whether key is a library file (script, style or font)
+// rather than a page or a license text.
+func versioned(key string) bool {
+	switch filepath.Ext(key) {
+	case ".html", ".txt":
+		return false
+	}
+	return true
 }
 
 func run(log *slog.Logger) error {
@@ -71,9 +87,9 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		// A library's name carries its version, so the same name and size
-		// is the same file. Pages are small and always rewritten.
-		if size, ok := stored[key]; ok && size == int64(len(body)) && strings.HasSuffix(key, ".js") {
+		// A library file's name carries its version, so the same name and
+		// size is the same file. Pages are small and always rewritten.
+		if size, ok := stored[key]; ok && size == int64(len(body)) && versioned(key) {
 			log.Info("unchanged", "key", key)
 			return nil
 		}
@@ -87,10 +103,10 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	// Pages published earlier still load the library versions they were
-	// written with, so a library stays after the image stops shipping it.
-	// Only a page the image no longer ships is deleted.
+	// written with, so a library file stays after the image stops shipping
+	// it. Only a page or license text the image no longer ships is deleted.
 	for key := range stored {
-		if !shipped[key] && !strings.HasSuffix(key, ".js") {
+		if !shipped[key] && !versioned(key) {
 			if err := s3.Delete(ctx, key); err != nil {
 				return fmt.Errorf("%s: %w", key, err)
 			}
