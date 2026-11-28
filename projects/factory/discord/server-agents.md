@@ -314,6 +314,7 @@ flowchart LR
 | `code_execution` (`code_execution_20260521`) | Anthropic sandbox, no network | none | Tokens, and container time after the organization's free monthly hours ($0.05 an hour) |
 | Scotland `plan`, `check`, `aurora`, `light` | scotland-connector, public, read-only | Hermes MCP timeout | None |
 | GitHub `search_repositories`, `search_code`, `get_file_contents`, branches, tags, commits, releases, pull requests, issues (16 read tools) | github-mcp in factory-discord, read-only, public-repositories token | GitHub's API rate limit for the token | None |
+| Playwright MCP (see "Browser" below for the allowlist) | Headless Chromium under gVisor in factory-discord | Signed out, isolated per session, public HTTP(S) only | None |
 | Artifacts `put`, `template`, `list` (no `delete`) | bosun-artifacts in factory-discord, actor JWT | 2 MiB a file; bucket quota (see "Artifacts") | None |
 | Notes `notes_list`, `notes_read`, `notes_search`, `notes_write`, `notes_append`, `notes_delete` (to `.trash/`) | bosun-artifacts `/notes/mcp`, actor JWT, server from the bridge | 256 KiB a note (see "Notes vault") | None |
 

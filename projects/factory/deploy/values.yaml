@@ -400,6 +400,8 @@ reviewer:
           statusCreator: buildbuddy-io[bot]
 # The Discord bot (HOME-162). The bridge is on (HOME-221).
 discord:
+  browser:
+    enabled: true
   agent:
     enabled: true
   bridge:
