@@ -29,6 +29,7 @@ failure and on SIGTERM, and before the run in case an earlier one died.
 
 from __future__ import annotations
 
+import ast
 import http.client
 import json
 import math
@@ -200,14 +201,38 @@ def stats(mode: str, metric: str, values: list[float]) -> None:
         )
 
 
+# The API refuses a container argument over 4096 characters.
+ARG_LIMIT = 4096
+
+
+def compact(source: str) -> str:
+    """probe.py as code only: its docstrings and comments dropped, so it fits
+    in one container argument. The reviewed text is still probe.py."""
+    tree = ast.parse(source)
+    for node in [tree, *ast.walk(tree)]:
+        body = getattr(node, "body", None)
+        if (
+            isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef))
+            and body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            node.body = body[1:] or [ast.Pass()]
+    return ast.unparse(tree)
+
+
 def template_text(source: str, template: str) -> str:
-    """The template with probe.py's text as its command's last argument."""
+    """The template with probe.py's code as its command's last argument."""
     if template.count("PROBE_SOURCE") != 2:  # the comment and the argument
         raise Failed(
             "template.yaml: PROBE_SOURCE must appear in one comment and one argument"
         )
+    code = compact(source)
+    if len(code) > ARG_LIMIT:
+        raise Failed(f"probe.py is {len(code)} characters as code, over {ARG_LIMIT}")
     head, _, tail = template.rpartition("PROBE_SOURCE")
-    return head + json.dumps(source) + tail
+    return head + json.dumps(code) + tail
 
 
 class Router:

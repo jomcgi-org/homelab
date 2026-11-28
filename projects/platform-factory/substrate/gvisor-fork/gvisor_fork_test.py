@@ -1680,7 +1680,7 @@ def test_x5_template_forks_with_gateway_egress_and_a_pinned_image() -> None:
     assert fork["egress"] == "FORK_EGRESS_GATEWAY"
     assert fork["singleUse"] is True and fork["mode"] == "FORK_MODE_SEED_AND_FORK"
     (container,) = template["containers"]
-    assert container["command"] == ["python3", "-I", "-c", "print(1)\n"]
+    assert container["command"] == ["python3", "-I", "-c", "print(1)"]
     assert "@sha256:" in container["image"]
     assert not container.get("env"), "template env is public: every child inherits it"
     assert _fork_template_errors(template) == []
@@ -1726,7 +1726,7 @@ def test_x5_verdict() -> None:
 def test_x5_job_runs_once_as_ate_client_with_the_fork_cli() -> None:
     docs = list(yaml.safe_load_all((_X5 / "job.yaml").read_text()))
     (job,) = [d for d in docs if d["kind"] == "Job"]
-    assert job["metadata"]["name"] == "gvisor-fork-x5-1"
+    assert job["metadata"]["name"] == "gvisor-fork-x5-2"
     assert job["spec"]["suspend"] is False and job["spec"]["backoffLimit"] == 0
     pod = job["spec"]["template"]["spec"]
     assert pod["serviceAccountName"] == "ate-client"
@@ -1740,3 +1740,13 @@ def test_x5_job_runs_once_as_ate_client_with_the_fork_cli() -> None:
             ].index("cli")
         ]["image"]["reference"]
     )
+
+
+def test_x5_probe_fits_one_container_argument() -> None:
+    # The API refuses a container argument over 4096 characters (run -1 failed
+    # on it), so the template carries probe.py as code only.
+    module = _x5_module()
+    code = module.compact((_X5 / "probe.py").read_text())
+    assert len(code) <= module.ARG_LIMIT == 4096
+    assert code.index("checkpoint()\n") < code.index("HTTPServer(")
+    compile(code, "probe.py", "exec")
