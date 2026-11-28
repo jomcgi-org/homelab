@@ -396,3 +396,42 @@ func TestAWorkerShowsTypingWhileATurnRuns(t *testing.T) {
 	b.Replies = &fakeReplies{}
 	b.typing(context.Background(), "c1")()
 }
+
+// Joe's tags skip the user and server caps; the global cap still binds.
+func TestOperatorSkipsUserAndServerLimits(t *testing.T) {
+	agent := &fakeAgent{answer: "ok"}
+	b, _, rep := newBridge(agent)
+	b.Config.Operator.UserID = "u1"
+	b.Config.UserLimit = Limit{Count: 1, Window: time.Hour}
+	b.Config.GuildLimit = Limit{Count: 1, Window: time.Hour}
+	b.Config.GlobalLimit = Limit{Count: 3, Window: 24 * time.Hour}
+	ctx, cancel := context.WithCancel(context.Background())
+	for _, id := range []string{"1", "2", "3", "4"} {
+		b.Handle(ctx, tagged(id, "hi"))
+	}
+	waitTurns(agent, 3)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rep.mu.Lock()
+		n := len(rep.sent)
+		rep.mu.Unlock()
+		if n >= 4 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	b.Wait()
+	if len(agent.prompts) != 3 {
+		t.Fatalf("turns = %d, want 3: the operator passes the user and server caps up to the global cap", len(agent.prompts))
+	}
+	limited := 0
+	for _, r := range rep.sent {
+		if r.Components[0].Content == ReplyLimited {
+			limited++
+		}
+	}
+	if limited != 1 {
+		t.Fatalf("limit replies = %d, want 1 at the global cap", limited)
+	}
+}
