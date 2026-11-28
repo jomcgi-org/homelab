@@ -287,11 +287,11 @@ Joe chose the homelab agent's tools on 2026-11-27
 search, web fetch, code execution, the Scotland outdoors planner, Hindsight
 recall and factory MCP. Code execution and the Scotland planner are in
 deploy values (`discord.serverAgents.homelab.serverTools`, `mcpServers`).
-Web search and fetch are built and tested but off: each turn holds the
-server's recalled memories, so a query could carry private Discord text
-off Joe's servers, and Joe decides that (Open decisions). Turning them on
-is `serverTools.webSearch` and `webFetch` in deploy values; the chart then
-adds `webToolsPrompt`. Factory MCP
+Web search and fetch are on with the prompt rule only (Joe, 2026-11-28):
+each turn holds the server's recalled memories, so a query may carry
+private Discord text off Joe's servers. `serverTools.webSearch` and
+`webFetch` in deploy values turn them on; the chart then adds
+`webToolsPrompt`. Factory MCP
 waits for factory-mcp.jomcgi.dev, which is not built yet (HOME-900; binding
 in HOME-916). Recall as a tool waits for a bank bound to the turn's server
 (see "Recall as a tool" below); the bridge still puts the turn's own
@@ -308,8 +308,8 @@ flowchart LR
 
 | Tool | Runs at | Limit | Cost (Joe's Anthropic key) |
 | --- | --- | --- | --- |
-| `web_search` (`web_search_20250305`), off until decided | Anthropic | 5 per Messages request | $0.01 a search, plus result tokens at the model's input price |
-| `web_fetch` (`web_fetch_20250910`), off until decided | Anthropic | 3 per request; only URLs already in the chat | Result tokens only |
+| `web_search` (`web_search_20250305`) | Anthropic | 5 per Messages request | $0.01 a search, plus result tokens at the model's input price |
+| `web_fetch` (`web_fetch_20250910`) | Anthropic | 3 per request; only URLs already in the chat | Result tokens only |
 | `code_execution` (`code_execution_20260521`) | Anthropic sandbox, no network | none | Tokens, and container time after the organization's free monthly hours ($0.05 an hour) |
 | Scotland `plan`, `check`, `aurora`, `light` | scotland-connector, public, read-only | Hermes MCP timeout | None |
 | GitHub `search_repositories`, `search_code`, `get_file_contents`, branches, tags, commits, releases, pull requests, issues (16 read tools) | github-mcp in factory-discord, read-only, public-repositories token | GitHub's API rate limit for the token | None |
@@ -440,8 +440,7 @@ cause a write.
   A planted URL in channel text can still be fetched. Each turn holds the
   server's recalled memories in the same session that searches, so the
   prompt is the only control on what a query carries: memory text could
-  reach a search engine. Joe decides whether to keep this or to run
-  searches without the session's memories (Open decisions).
+  reach a search engine. Joe accepted this on 2026-11-28.
 - **Untrusted results.** The prompt tells the agent never to follow
   instructions in tool results, pages or memories.
 
@@ -1286,7 +1285,6 @@ Each decision names the rule that needs Joe.
 | HOME-162 rule changes | HOME-162 is Joe's contract | Accept the table in section 6; accept it without rule 3 (no agent tools yet); keep Bosun |
 | Homelab agent's factory access | factory-mcp is Joe-only (HOME-900) | Read-only service identity for the agent; no factory tools |
 | Model key per server | HOME-162 rule 2 | One OpenRouter key and limit per server; one shared key with bridge limits only |
-| Web search beside server memories (off until decided) | HOME-915 tool security | Turn web search and fetch on with the prompt rule only (a query may carry memory text); build searches that run without the session's memories first; keep them off |
 | Recall as a tool | HOME-915, "Recall as a tool" | Bind the bank to the session at the gateway; one Agent per server; bind now with the prompt rule only |
 | Private channels in recall (follow-up) | HOME-904 | Tag non-public channels at ingest and leave them out of server-wide recall; keep server-wide recall as decided |
 | Session scope | HOME-162 rule 4 | One session per server; one session per channel (one actor each) |
