@@ -137,8 +137,8 @@ func turnTargets(m Message, since []ChannelLine) Targets {
 // channelLine is one history message as a prompt line. Other bots, webhooks
 // and system messages are left out, as the ingestor leaves them out.
 func (b *Bridge) channelLine(guildID string, h HistoryMessage) (ChannelLine, bool) {
-	if h.Author.Bot || h.WebhookID != "" || h.Author.ID == "" || !conversationTypes[h.Type] {
-		return ChannelLine{}, false
+	if h.Author.Bot || h.WebhookID != "" || h.Author.ID == "" || !conversationTypes[h.Type] || b.blockedID(h.ID) {
+		return ChannelLine{}, false // A blocked message never reaches a prompt.
 	}
 	b.Places.Learn(guildID, h.Message.Users()...)
 	text := b.lineText(guildID, h, maxLineChars)
@@ -146,7 +146,7 @@ func (b *Bridge) channelLine(guildID string, h HistoryMessage) (ChannelLine, boo
 		return ChannelLine{}, false
 	}
 	l := ChannelLine{MessageID: h.ID, Author: h.Author.Username, SentAt: SentAt(h.Message).UTC().Format(time.RFC3339), Text: text}
-	if r := h.Referenced; h.Type == 19 && r != nil {
+	if r := h.Referenced; h.Type == 19 && r != nil && !b.blockedID(r.ID) {
 		l.ReplyTo = &LineReply{Author: b.authorName(r.Author), Text: clipRunes(b.Places.Resolve(guildID, r.Text(), r.Mentions), maxQuoteChars)}
 		if r.Author.Username == "" {
 			l.ReplyTo.Author = "unknown"

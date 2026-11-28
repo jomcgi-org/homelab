@@ -231,7 +231,7 @@ func TestLimitsAndRepeatsStartNoTurn(t *testing.T) {
 	}
 	limited := 0
 	for _, r := range rep.sent {
-		if r.Components[0].Content == ReplyLimited {
+		if limitReply(r.Components[0].Content) {
 			limited++
 		}
 	}
@@ -365,7 +365,7 @@ func TestNoticesDoNotBlockTheGateway(t *testing.T) {
 	defer rep.mu.Unlock()
 	limited := 0
 	for _, s := range rep.sent {
-		if s == ReplyLimited {
+		if limitReply(s) {
 			limited++
 		}
 	}
@@ -427,11 +427,16 @@ func TestOperatorSkipsUserAndServerLimits(t *testing.T) {
 	}
 	limited := 0
 	for _, r := range rep.sent {
-		if r.Components[0].Content == ReplyLimited {
+		if limitReply(r.Components[0].Content) {
 			limited++
 		}
 	}
 	if limited != 1 {
 		t.Fatalf("limit replies = %d, want 1 at the global cap", limited)
 	}
+}
+
+// limitReply reports whether text is the reply at a limit.
+func limitReply(text string) bool {
+	return strings.HasPrefix(text, "I've reached my limit for now; try again <t:")
 }

@@ -58,6 +58,7 @@ func wireOperator(log *slog.Logger, b *discord.Bridge, rest *discord.REST, a2a *
 		A2A:      a2a,
 		Sessions: sessions,
 		Agent:    kagent.AgentRef{Namespace: ns, Name: name},
+		Log:      log,
 	}
 	log.Info("operator session on", "agent", agent, "channels", len(b.Config.Operator.Channels))
 	return nil
@@ -81,6 +82,7 @@ func wireServerAgents(log *slog.Logger, b *discord.Bridge, a2a *kagent.A2A, sess
 				Sessions:  sessions,
 				Agent:     agent,
 				RequestID: discord.EpochChannelRequestID(b.Config.SessionEpoch),
+				Log:       log,
 			}
 			clients[agent] = c
 		}

@@ -37,6 +37,34 @@ type Kagent struct {
 // ErrTurnFailed is a turn that ended in a state other than completed.
 var ErrTurnFailed = errors.New("discord: agent turn did not complete")
 
+// ReasonContentPolicy is the failure reason of a turn that the model
+// provider's safety filter refused. The Hermes adapter puts it in the failed
+// task's status message (kagent fork, HOME-909).
+const ReasonContentPolicy = "content_policy_blocked"
+
+// TurnFailure is a turn that ended in a state other than completed. Message
+// is the task's status message: the harness wrote it, not the model.
+type TurnFailure struct {
+	State   string
+	Message string
+}
+
+func (e *TurnFailure) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("%s: %s: %.300s", ErrTurnFailed, e.State, e.Message)
+	}
+	return fmt.Sprintf("%s: %s", ErrTurnFailed, e.State)
+}
+
+func (e *TurnFailure) Unwrap() error { return ErrTurnFailed }
+
+// ContentBlocked reports whether err is a turn that the model provider's
+// safety filter refused.
+func ContentBlocked(err error) bool {
+	var f *TurnFailure
+	return errors.As(err, &f) && f.State == kagent.StateFailed && strings.Contains(f.Message, ReasonContentPolicy)
+}
+
 // Turn sends prompt and waits for the answer. The Discord message ID makes
 // the A2A message ID, so a resend after an ambiguous outcome is the same
 // message to kagent.
@@ -82,26 +110,35 @@ func awaitAnswer(ctx context.Context, a *kagent.A2A, agent kagent.AgentRef, task
 		task = next
 	}
 	if task.Status.State != kagent.StateCompleted {
-		return "", fmt.Errorf("%w: %s", ErrTurnFailed, task.Status.State)
+		f := &TurnFailure{State: task.Status.State}
+		if task.Status.Message != nil {
+			f.Message = partsText(task.Status.Message.Parts)
+		}
+		return "", f
 	}
 	return AnswerText(task), nil
 }
 
 // deleteSession runs after the turn on its own deadline, so a cancelled
-// turn still cleans up. kagent refuses while the turn settles, so it retries.
+// turn still cleans up.
 func (k *Kagent) deleteSession(id string) {
+	if err := deleteSession(k.Sessions, id); err != nil && k.Log != nil {
+		k.Log.Warn("kagent session not deleted", "session", id, "error", err)
+	}
+}
+
+// deleteSession deletes a kagent session on its own deadline. kagent
+// refuses while a turn settles, so it retries.
+func deleteSession(d SessionDeleter, id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	for {
-		_, err := k.Sessions.DeleteSession(ctx, id)
+		_, err := d.DeleteSession(ctx, id)
 		if err == nil || errors.Is(err, kagent.ErrSessionNotFound) {
-			return
+			return nil
 		}
 		if sleep(ctx, 5*time.Second) != nil {
-			if k.Log != nil {
-				k.Log.Warn("kagent session not deleted", "session", id, "error", err)
-			}
-			return
+			return err
 		}
 	}
 }
