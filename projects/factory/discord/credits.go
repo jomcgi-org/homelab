@@ -41,7 +41,8 @@ func CreditsExhausted(err error) bool {
 const (
 	retryEmoji = "🔄"
 	retryTTL   = 24 * time.Hour
-	// maxRetries bounds the waiting retries; past it a notice gets no 🔄.
+	// maxRetries bounds the waiting retries; past it a notice asks Joe to
+	// send the message again.
 	maxRetries = 16
 )
 
@@ -51,6 +52,10 @@ const glovesTopUpURL = "https://abliteration.ai/console/billing"
 
 // ReplyNoCredits answers a gloves-off turn with no credits left.
 const ReplyNoCredits = "Out of gloves-off credits. Top up: <" + glovesTopUpURL + ">, then tap " + retryEmoji + " to retry."
+
+// ReplyNoCreditsResend answers when no retry can wait: too many wait, or
+// the Replier cannot react.
+const ReplyNoCreditsResend = "Out of gloves-off credits. Top up: <" + glovesTopUpURL + ">, then send it again."
 
 // pendingRetry is a gloves-off turn waiting for Joe's 🔄.
 type pendingRetry struct {
@@ -64,17 +69,7 @@ type pendingRetry struct {
 // footer, so history readers drop it and m, then reacts 🔄 and keeps the
 // retry. Without an Actor it posts the notice with no retry.
 func (b *Bridge) noCredits(ctx context.Context, l *slog.Logger, m Message, w unsafeWindow, attempt int, until time.Time) {
-	text := withUnsafeFooter(ReplyNoCredits, w.end)
 	actor, ok := b.Replies.(Actor)
-	if !ok {
-		b.reply(ctx, m, text)
-		return
-	}
-	id, err := actor.Post(ctx, m.ChannelID, NewReply(text, m.ID))
-	if err != nil || id == "" {
-		l.WarnContext(ctx, "no-credits notice failed", "error", err)
-		return
-	}
 	b.mu.Lock()
 	for k, r := range b.retries {
 		if !b.now().Before(r.until) {
@@ -82,16 +77,23 @@ func (b *Bridge) noCredits(ctx context.Context, l *slog.Logger, m Message, w uns
 		}
 	}
 	full := len(b.retries) >= maxRetries
-	if !full {
-		if b.retries == nil {
-			b.retries = map[string]pendingRetry{}
-		}
-		b.retries[id] = pendingRetry{m: m, window: w, attempt: attempt, until: until}
-	}
 	b.mu.Unlock()
-	if full {
+	if !ok || full {
+		// No retry to offer: the notice asks Joe to send it again.
+		b.reply(ctx, m, withUnsafeFooter(ReplyNoCreditsResend, w.end))
 		return
 	}
+	id, err := actor.Post(ctx, m.ChannelID, NewReply(withUnsafeFooter(ReplyNoCredits, w.end), m.ID))
+	if err != nil || id == "" {
+		l.WarnContext(ctx, "no-credits notice failed", "error", err)
+		return
+	}
+	b.mu.Lock()
+	if b.retries == nil {
+		b.retries = map[string]pendingRetry{}
+	}
+	b.retries[id] = pendingRetry{m: m, window: w, attempt: attempt, until: until}
+	b.mu.Unlock()
 	if err := actor.React(ctx, m.ChannelID, id, retryEmoji); err != nil {
 		actionFailed(ctx, l, "retry react", err) // Joe can still add 🔄 himself.
 	}

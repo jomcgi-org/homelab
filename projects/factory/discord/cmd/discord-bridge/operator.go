@@ -111,7 +111,7 @@ func wireUnsafe(log *slog.Logger, b *discord.Bridge, a2a *kagent.A2A, sessions *
 		RequestID: discord.UnsafeRequestID,
 	}
 	// A fresh session per offer line, deleted after it (discord/offer.go).
-	b.OfferWriter = &discord.Kagent{A2A: a2a, Sessions: sessions, Agent: u.Agent, Timeout: 5 * time.Second, Log: log}
+	b.OfferWriter = &discord.Kagent{A2A: a2a, Sessions: sessions, Agent: u.Agent, Timeout: time.Minute, Log: log}
 	log.Info("gloves off available", "agent", u.Agent.Namespace+"/"+u.Agent.Name, "duration", u.Duration.String(), "max", u.MaxDuration.String())
 }
 
