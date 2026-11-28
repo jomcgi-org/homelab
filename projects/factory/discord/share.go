@@ -164,8 +164,8 @@ func (b *Bridge) askShare(ctx context.Context, l *slog.Logger, actor Actor, m Me
 	return true, true
 }
 
-// Reaction is a MESSAGE_REACTION_ADD event.
-type Reaction struct {
+// ReactionAdd is a MESSAGE_REACTION_ADD gateway event.
+type ReactionAdd struct {
 	UserID    string `json:"user_id"`
 	ChannelID string `json:"channel_id"`
 	MessageID string `json:"message_id"`
@@ -178,7 +178,7 @@ type Reaction struct {
 
 // HandleReaction makes the share link when Joe reacts ✅ on a waiting
 // confirmation. Every other reaction is ignored. A confirmation is used once.
-func (b *Bridge) HandleReaction(ctx context.Context, r Reaction) {
+func (b *Bridge) HandleReaction(ctx context.Context, r ReactionAdd) {
 	uid := b.Config.Operator.UserID
 	if b.Share == nil || uid == "" || r.UserID != uid || r.UserID == b.bot() ||
 		r.Emoji.ID != "" || r.Emoji.Name != shareConfirm {

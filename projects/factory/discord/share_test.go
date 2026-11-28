@@ -44,8 +44,8 @@ func shareTurn(id string) Message {
 	return m
 }
 
-func reaction(user, message, emoji string) Reaction {
-	r := Reaction{UserID: user, ChannelID: shareChannel, MessageID: message, GuildID: shareGuild}
+func reaction(user, message, emoji string) ReactionAdd {
+	r := ReactionAdd{UserID: user, ChannelID: shareChannel, MessageID: message, GuildID: shareGuild}
 	r.Emoji.Name = emoji
 	return r
 }
@@ -72,13 +72,13 @@ func TestAShareBlockAsksJoeAndOnlyJoesTickMakesTheLink(t *testing.T) {
 		t.Fatalf("actions %s", got)
 	}
 
-	for name, r := range map[string]Reaction{
+	for name, r := range map[string]ReactionAdd{
 		"someone else":  reaction("777", "r2", "✅"),
 		"the bot":       reaction(bot, "r2", "✅"),
 		"other emoji":   reaction(shareJoe, "r2", "👍"),
 		"other message": reaction(shareJoe, "r1", "✅"),
-		"custom emoji":  func() Reaction { r := reaction(shareJoe, "r2", "✅"); r.Emoji.ID = "99"; return r }(),
-		"other channel": func() Reaction { r := reaction(shareJoe, "r2", "✅"); r.ChannelID = "555"; return r }(),
+		"custom emoji":  func() ReactionAdd { r := reaction(shareJoe, "r2", "✅"); r.Emoji.ID = "99"; return r }(),
+		"other channel": func() ReactionAdd { r := reaction(shareJoe, "r2", "✅"); r.ChannelID = "555"; return r }(),
 	} {
 		b.HandleReaction(ctx, r)
 		if len(signer.keys) != 0 {
