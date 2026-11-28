@@ -53,7 +53,9 @@ POOL = os.environ.get("POOL", "gvisor-fork")
 SAMPLES = int(os.environ.get("SAMPLES", "10"))
 POOL_BATCH = int(os.environ.get("POOL_BATCH", "4"))
 ROUTER_URL = os.environ.get("ROUTER_URL", "https://atenet-router.ate-system.svc:443")
-ROUTER_CERT = os.environ.get("ROUTER_CERT_FILE", "/var/run/router/credential-bundle.pem")
+ROUTER_CERT = os.environ.get(
+    "ROUTER_CERT_FILE", "/var/run/router/credential-bundle.pem"
+)
 ROUTER_CA = os.environ.get("ROUTER_CA_FILE", "/var/run/router-ca/trust-bundle.pem")
 WORKER_WAIT = float(os.environ.get("WORKER_WAIT_SECONDS", "900"))
 SEED_WAIT = float(os.environ.get("SEED_WAIT_SECONDS", "600"))
@@ -65,7 +67,10 @@ POLL = float(os.environ.get("POLL_SECONDS", "0.25"))
 
 def log(**fields: object) -> None:
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    print("X5 " + " ".join([f"ts={stamp}"] + [f"{k}={v}" for k, v in fields.items()]), flush=True)
+    print(
+        "X5 " + " ".join([f"ts={stamp}"] + [f"{k}={v}" for k, v in fields.items()]),
+        flush=True,
+    )
 
 
 class Failed(Exception):
@@ -78,9 +83,19 @@ def ms(start: float) -> float:
 
 def ate(*args: str) -> subprocess.CompletedProcess:
     # --preview: the API refuses an Actor of a fork template without it.
-    cmd = [str(ATE_BIN), "--endpoint", ENDPOINT, "--token-file", TOKEN_FILE, "--preview", *args]
+    cmd = [
+        str(ATE_BIN),
+        "--endpoint",
+        ENDPOINT,
+        "--token-file",
+        TOKEN_FILE,
+        "--preview",
+        *args,
+    ]
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=CALL_TIMEOUT, check=False)
+        return subprocess.run(
+            cmd, capture_output=True, text=True, timeout=CALL_TIMEOUT, check=False
+        )
     except subprocess.TimeoutExpired as err:
         raise Failed(f"{' '.join(args)}: no answer in {CALL_TIMEOUT}s") from err
     except OSError as err:
@@ -130,7 +145,9 @@ def get_json(*args: str) -> object:
 
 def pool_workers() -> list[dict]:
     data = get_json("get", "workers", "--sandbox-class", "gvisor")
-    return [w for w in walk(data) if POOL in (w.get("workerPool"), w.get("worker_pool"))]
+    return [
+        w for w in walk(data) if POOL in (w.get("workerPool"), w.get("worker_pool"))
+    ]
 
 
 def seeded(uid: str) -> bool:
@@ -173,14 +190,22 @@ def percentile(values: list[float], q: float) -> float:
 
 def stats(mode: str, metric: str, values: list[float]) -> None:
     if values:
-        log(event="stats", mode=mode, metric=metric, n=len(values),
-            p50=f"{percentile(values, 0.5):.1f}", p95=f"{percentile(values, 0.95):.1f}")
+        log(
+            event="stats",
+            mode=mode,
+            metric=metric,
+            n=len(values),
+            p50=f"{percentile(values, 0.5):.1f}",
+            p95=f"{percentile(values, 0.95):.1f}",
+        )
 
 
 def template_text(source: str, template: str) -> str:
     """The template with probe.py's text as its command's last argument."""
     if template.count("PROBE_SOURCE") != 2:  # the comment and the argument
-        raise Failed("template.yaml: PROBE_SOURCE must appear in one comment and one argument")
+        raise Failed(
+            "template.yaml: PROBE_SOURCE must appear in one comment and one argument"
+        )
     head, _, tail = template.rpartition("PROBE_SOURCE")
     return head + json.dumps(source) + tail
 
@@ -193,12 +218,21 @@ class Router:
         self.context.load_cert_chain(ROUTER_CERT)
 
     def run(self, name: str) -> tuple[float, dict]:
-        conn = http.client.HTTPSConnection(self.host, self.port, timeout=REQUEST_TIMEOUT, context=self.context)
+        conn = http.client.HTTPSConnection(
+            self.host, self.port, timeout=REQUEST_TIMEOUT, context=self.context
+        )
         try:
             conn.connect()
             start = time.monotonic()
-            conn.request("POST", "/run", body=b"{}", headers={
-                "ate-target-actor": f"{ATESPACE}/{name}", "Content-Type": "application/json"})
+            conn.request(
+                "POST",
+                "/run",
+                body=b"{}",
+                headers={
+                    "ate-target-actor": f"{ATESPACE}/{name}",
+                    "Content-Type": "application/json",
+                },
+            )
             response = conn.getresponse()
             payload = response.read()
             elapsed = ms(start)
@@ -219,7 +253,11 @@ def verdict(checks: dict) -> dict[str, bool]:
     403, or drops the connection; mcp-grafana answers the unauthenticated MCP
     call itself (401). A 502 or 503 is the gateway failing to reach the origin,
     so it passes neither check. The sample lines keep the raw answers."""
-    allowed, denied, dns = checks.get("allowed", {}), checks.get("denied", {}), checks.get("dns", {})
+    allowed, denied, dns = (
+        checks.get("allowed", {}),
+        checks.get("denied", {}),
+        checks.get("dns", {}),
+    )
     return {
         "allowed": "status" in allowed and allowed["status"] not in (403, 502, 503),
         "denied": "error" in denied or denied.get("status") == 403,
@@ -239,7 +277,15 @@ def child(router: Router, name: str, prepared: bool = False) -> dict:
 
 def prepare(name: str) -> dict:
     created = timed("create", "actor", name, "-a", ATESPACE, "--template", TEMPLATE)
-    policy = timed("create", "egress-policy", name, "-a", ATESPACE, "-f", str(CONFIG / "policy.yaml"))
+    policy = timed(
+        "create",
+        "egress-policy",
+        name,
+        "-a",
+        ATESPACE,
+        "-f",
+        str(CONFIG / "policy.yaml"),
+    )
     resumed = timed("resume", "actor", name, "-a", ATESPACE)
     return {"create_ms": created, "policy_ms": policy, "resume_ms": resumed}
 
@@ -248,16 +294,28 @@ def record(mode: str, rows: list[dict]) -> bool:
     ok = True
     for row in rows:
         checks, passed = row["checks"], row["pass"]
-        log(event="sample", mode=mode, name=row["name"],
+        log(
+            event="sample",
+            mode=mode,
+            name=row["name"],
             send_to_result_ms=f"{row['send_to_result_ms']:.1f}",
             mcp_ms=checks.get("allowed", {}).get("ms"),
             allowed=json.dumps(checks.get("allowed"), sort_keys=True).replace(" ", ""),
             denied=json.dumps(checks.get("denied"), sort_keys=True).replace(" ", ""),
             dns=json.dumps(checks.get("dns"), sort_keys=True).replace(" ", ""),
-            **{f"pass_{k}": v for k, v in passed.items()})
+            **{f"pass_{k}": v for k, v in passed.items()},
+        )
         ok = ok and all(passed.values())
     stats(mode, "send_to_result_ms", [r["send_to_result_ms"] for r in rows])
-    stats(mode, "mcp_ms", [float(r["checks"]["allowed"]["ms"]) for r in rows if "ms" in r["checks"].get("allowed", {})])
+    stats(
+        mode,
+        "mcp_ms",
+        [
+            float(r["checks"]["allowed"]["ms"])
+            for r in rows
+            if "ms" in r["checks"].get("allowed", {})
+        ],
+    )
     if mode == "ondemand":
         for key in ("create_ms", "policy_ms", "resume_ms"):
             stats(mode, key, [r[key] for r in rows])
@@ -273,7 +331,11 @@ def cleanup() -> None:
         for actor in [a for a in actors() if not is_seed(a)]:
             ate("delete", "actor", str(actor["metadata"]["name"]), "-a", ATESPACE)
         ate("delete", "actor-template", TEMPLATE, "-a", ATESPACE)
-        wait_for("the seed removed", STATE_WAIT, lambda: not [a for a in actors() if is_seed(a)])
+        wait_for(
+            "the seed removed",
+            STATE_WAIT,
+            lambda: not [a for a in actors() if is_seed(a)],
+        )
     except Failed as err:
         log(event="cleanup_wait", message=repr(str(err)))
     done = ate("delete", "atespace", ATESPACE)
@@ -282,24 +344,42 @@ def cleanup() -> None:
 
 def run() -> bool:
     cleanup()
-    waited = wait_for(f"an ACTIVE {POOL} worker", WORKER_WAIT,
-                      lambda: any(str(first(w, "state")) == "WORKER_STATE_ACTIVE" for w in pool_workers()))
+    waited = wait_for(
+        f"an ACTIVE {POOL} worker",
+        WORKER_WAIT,
+        lambda: any(
+            str(first(w, "state")) == "WORKER_STATE_ACTIVE" for w in pool_workers()
+        ),
+    )
     log(event="worker", seconds=f"{waited:.2f}")
-    text = template_text((CONFIG / "probe.py").read_text(), (CONFIG / "template.yaml").read_text())
+    text = template_text(
+        (CONFIG / "probe.py").read_text(), (CONFIG / "template.yaml").read_text()
+    )
     rendered = WORK / "template.yaml"
     rendered.write_text(text)
     ate_ok("create", "atespace", ATESPACE)
     ate_ok("create", "actor-template", "-f", str(rendered))
-    uid = first(first(get_json("get", "actor-template", TEMPLATE, "-a", ATESPACE), "metadata") or {}, "uid")
+    uid = first(
+        first(get_json("get", "actor-template", TEMPLATE, "-a", ATESPACE), "metadata")
+        or {},
+        "uid",
+    )
     if not uid:
         raise Failed(f"actor-template {TEMPLATE}: no metadata.uid")
-    log(event="seed", seed_ready_seconds=f"{wait_for('a ready seed', SEED_WAIT, lambda: seeded(str(uid))):.2f}")
+    log(
+        event="seed",
+        seed_ready_seconds=f"{wait_for('a ready seed', SEED_WAIT, lambda: seeded(
+                str(uid)
+            )):.2f}",
+    )
 
     router = Router()
     ok = record("ondemand", [child(router, f"od-{i}") for i in range(1, SAMPLES + 1)])
     rows: list[dict] = []
     for batch in range(0, SAMPLES, POOL_BATCH):
-        names = [f"pool-{i}" for i in range(batch + 1, min(batch + POOL_BATCH, SAMPLES) + 1)]
+        names = [
+            f"pool-{i}" for i in range(batch + 1, min(batch + POOL_BATCH, SAMPLES) + 1)
+        ]
         for name in names:
             prepare(name)
         rows += [child(router, name, prepared=True) for name in names]
