@@ -206,7 +206,8 @@ spec:
         createrole: false
         replication: false
         bypassrls: false
-        connectionLimit: 2
+        # bosun-history opens at most 2; one more for a cancelled query.
+        connectionLimit: 3
         inRoles: [factory_discord_sql]
         passwordSecret:
           name: factory-db-discord-sql-185442367703220224-login
@@ -219,7 +220,8 @@ spec:
         createrole: false
         replication: false
         bypassrls: false
-        connectionLimit: 2
+        # bosun-history opens at most 2; one more for a cancelled query.
+        connectionLimit: 3
         inRoles: [factory_discord_sql]
         passwordSecret:
           name: factory-db-discord-sql-1290668195249917964-login
@@ -232,7 +234,8 @@ spec:
         createrole: false
         replication: false
         bypassrls: false
-        connectionLimit: 2
+        # bosun-history opens at most 2; one more for a cancelled query.
+        connectionLimit: 3
         inRoles: [factory_discord_sql]
         passwordSecret:
           name: factory-db-discord-sql-1501965852042330302-login
@@ -245,7 +248,8 @@ spec:
         createrole: false
         replication: false
         bypassrls: false
-        connectionLimit: 2
+        # bosun-history opens at most 2; one more for a cancelled query.
+        connectionLimit: 3
         inRoles: [factory_discord_sql]
         passwordSecret:
           name: factory-db-discord-sql-1512814732392927463-login
