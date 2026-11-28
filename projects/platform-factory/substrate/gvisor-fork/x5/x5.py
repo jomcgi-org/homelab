@@ -393,9 +393,8 @@ def run() -> bool:
         raise Failed(f"actor-template {TEMPLATE}: no metadata.uid")
     log(
         event="seed",
-        seed_ready_seconds=f"{wait_for('a ready seed', SEED_WAIT, lambda: seeded(
-                str(uid)
-            )):.2f}",
+        seed_ready_seconds=f"{
+            wait_for('a ready seed', SEED_WAIT, lambda: seeded(str(uid))):.2f}",
     )
 
     router = Router()
