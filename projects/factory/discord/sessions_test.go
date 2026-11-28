@@ -19,7 +19,7 @@ func (f *findingSessionAgent) Session(_ context.Context, key string) (OperatorSe
 	return OperatorSession{ContextID: "0193AB-" + key}, nil
 }
 
-func (f *findingSessionAgent) Turn(ctx context.Context, key, id, prompt string) (string, error) {
+func (f *findingSessionAgent) Turn(ctx context.Context, key, id, prompt string, images ...TurnImage) (string, error) {
 	_, ok := f.recorded.Lookup("0193ab-" + key)
 	f.mu.Lock()
 	if f.seen == nil {
@@ -27,7 +27,7 @@ func (f *findingSessionAgent) Turn(ctx context.Context, key, id, prompt string) 
 	}
 	f.seen[key] = ok
 	f.mu.Unlock()
-	return f.fakeSessionAgent.Turn(ctx, key, id, prompt)
+	return f.fakeSessionAgent.Turn(ctx, key, id, prompt, images...)
 }
 
 // The bridge records a server agent session's server and channel before its

@@ -17,6 +17,7 @@ type fakeSessionAgent struct {
 	mu        sync.Mutex
 	keys      []string
 	prompts   []string
+	images    [][]TurnImage
 	active    map[string]int
 	running   int
 	maxAll    int
@@ -24,13 +25,14 @@ type fakeSessionAgent struct {
 	release   chan struct{}
 }
 
-func (f *fakeSessionAgent) Turn(ctx context.Context, key, _, prompt string) (string, error) {
+func (f *fakeSessionAgent) Turn(ctx context.Context, key, _, prompt string, images ...TurnImage) (string, error) {
 	f.mu.Lock()
 	if f.active == nil {
 		f.active = map[string]int{}
 	}
 	f.keys = append(f.keys, key)
 	f.prompts = append(f.prompts, prompt)
+	f.images = append(f.images, images)
 	f.active[key]++
 	f.running++
 	f.maxAll = max(f.maxAll, f.running)

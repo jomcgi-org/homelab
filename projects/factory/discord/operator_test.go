@@ -79,7 +79,7 @@ func (f *fakeOperator) Session(_ context.Context, thread string) (OperatorSessio
 	return OperatorSession{ContextID: id, Fresh: f.turns[id] == 0}, nil
 }
 
-func (f *fakeOperator) Turn(_ context.Context, thread, _, prompt string) (string, error) {
+func (f *fakeOperator) Turn(_ context.Context, thread, _, prompt string, _ ...TurnImage) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id := f.sessions[thread]

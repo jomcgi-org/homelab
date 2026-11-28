@@ -614,6 +614,9 @@ spec:
         - matchName: discord.com
         # gateway.discord.gg and its resume hosts.
         - matchPattern: "*.discord.gg"
+        # Attachment downloads: the images a turn sends (HOME-939).
+        - matchName: cdn.discordapp.com
+        - matchName: media.discordapp.net
         {{- if $e.enabled }}
         # The explorer's public-repository check, without credentials.
         - matchName: api.github.com

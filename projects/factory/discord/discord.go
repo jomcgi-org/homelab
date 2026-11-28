@@ -80,6 +80,9 @@ type Message struct {
 	Referenced *Referenced `json:"referenced_message,omitempty"`
 	// Member is the author's server member; it holds the author's nick.
 	Member *Member `json:"member,omitempty"`
+	// Attachments are the message's files; a turn sends their images to
+	// a session agent (HOME-939).
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 // Users is the message's author, with its nick, and its mentions: the users

@@ -129,6 +129,8 @@ func run(log *slog.Logger) error {
 		// Which server each server agent session serves, for the notes
 		// tools (HOME-918, GET /sessions/{id}).
 		SessionPlaces: &discord.SessionPlaces{},
+		// Server agent turns see the images Joe sends (HOME-939).
+		Images: &discord.ImageFetcher{HTTP: &http.Client{Timeout: 30 * time.Second}},
 	}
 	if u := os.Getenv("DISCORD_RENDER_URL"); u != "" {
 		bridge.Render = &discord.HTTPRenderer{BaseURL: u}
