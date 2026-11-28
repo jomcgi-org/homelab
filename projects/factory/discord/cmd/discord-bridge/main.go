@@ -270,7 +270,7 @@ func run(log *slog.Logger) error {
 		OnReady:   onReady,
 		OnMessage: func(m discord.Message) { bridge.Handle(work, m) },
 		// Off the gateway's reader: a confirmed share signs and posts.
-		OnReaction: func(r discord.ReactionAdd) { go bridge.HandleReaction(ctx, r) },
+		OnReaction: func(r discord.ReactionAdd) { go bridge.HandleReaction(work, r) },
 		Places:     bridge.Places,
 		Log:        log,
 		Intents:    intents,

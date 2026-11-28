@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -216,4 +217,24 @@ func TestNoCreditsForTheOfferLineIsSilentButTheReplayShowsIt(t *testing.T) {
 	})
 	cancel()
 	b.Wait()
+}
+
+// With the retry store full, the notice asks Joe to send the message again
+// and offers no 🔄 that would do nothing.
+func TestAFullRetryStoreAsksJoeToResend(t *testing.T) {
+	b, _, rep, _, ctx, cancel := creditsBridge(t, noCreditsErr)
+	defer cancel()
+	b.mu.Lock()
+	b.retries = map[string]pendingRetry{}
+	for i := range maxRetries {
+		b.retries[strconv.Itoa(i)] = pendingRetry{until: b.now().Add(time.Hour)}
+	}
+	b.mu.Unlock()
+	b.Handle(ctx, byJoe(tagged("2", "a joke")))
+	waitFor(t, func() bool { return len(rep.texts()) == 2 })
+	cancel()
+	b.Wait()
+	if got := rep.texts()[1]; !strings.HasPrefix(got, ReplyNoCreditsResend) || len(rep.reacts) != 0 {
+		t.Errorf("notice = %q, reactions %v", got, rep.reacts)
+	}
 }

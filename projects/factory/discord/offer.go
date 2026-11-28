@@ -47,6 +47,10 @@ const (
 // offerLineTimeout bounds the wait for a written line; a var for tests.
 var offerLineTimeout = 5 * time.Second
 
+// offerCallTimeout bounds the call itself. It is longer than the wait, so a
+// call to a cold actor still learns its session and deletes it.
+const offerCallTimeout = time.Minute
+
 // offerLines are the canned lines; offerLine picks one per message.
 var offerLines = []string{
 	"Dario doesn't think that's 🔥.",
@@ -103,7 +107,7 @@ func (b *Bridge) writeOfferLine(ctx context.Context, l *slog.Logger, m Message, 
 		err  error
 	}
 	done := make(chan result, 1)
-	callCtx, cancel := context.WithTimeout(ctx, offerLineTimeout)
+	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), offerCallTimeout)
 	go func() {
 		defer cancel()
 		// Its own message ID: the replay later sends m.ID to the same Agent.
