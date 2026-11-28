@@ -86,7 +86,7 @@
   font-weight: 700;
 }
 .lb-page small {
-  font-size: 0.7em;
+  font-size: 0.75rem;
   margin-left: 0.4em;
 }
 .lb-page a {
@@ -220,7 +220,7 @@
 }
 .lb-page :is(.tick, .axis-title) {
   fill: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: 12px;
 }
 .lb-page .zone {
   fill: var(--color-background-muted);
@@ -238,7 +238,7 @@
 }
 .lb-page .lbl {
   fill: var(--color-text-primary);
-  font-size: 10.5px;
+  font-size: 12px;
   paint-order: stroke;
   stroke: var(--color-background-surface);
   stroke-width: 3px;
@@ -331,8 +331,16 @@
     grid-column: 3;
     grid-row: 1;
   }
+  /* A phone has no room for a name column. The full name sits on its own
+   * row above the bar, so similar names stay apart. */
   .lb-page .bars li {
-    grid-template-columns: minmax(0, 8em) minmax(0, 1fr) 6em;
+    grid-template-columns: minmax(0, 1fr) 6em;
+    row-gap: 0.1em;
+  }
+  .lb-page .bars .name {
+    grid-column: 1 / -1;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
   .lb-page .bars small {
     display: block;
