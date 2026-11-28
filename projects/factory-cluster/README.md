@@ -226,8 +226,12 @@ The check is exact: with `--go-days 3`, a file 2.9 days old stays. The Go fuzz
 corpus (`fuzz/`) always stays. `GOCACHE`, `BAZEL_DISK_CACHE`, `GC_TMP_DIR` and
 `GC_SCRATCH_DIR` (default `<GC_TMP_DIR>/claude-<uid>`) set the paths. A session
 root that is missing, not owned by the caller, or holds the home directory is
-skipped. Session directories get the same in-use and mount checks as test
-directories. The script uses real paths: it resolves `GC_TMP_DIR` first, and it
+skipped. Only `<project>/<session>` directories match, with a project name that
+starts with `-` and a UUID session name, so other trees in the root (such as
+`bundled-skills/` or a virtualenv) stay. Session directories get the same
+in-use and mount checks as test directories. A Claude Code session does not
+keep its scratchpad open, so a session idle for more than `--scratch-days`
+loses its scratch files. The timer runs with the default `GOCACHE`. The script uses real paths: it resolves `GC_TMP_DIR` first, and it
 skips a Go cache or Bazel disk cache that is the home directory or holds it
 (the Bazel path must also be named `disk_cache` after symlinks). `HOME` must be an
 absolute path.
