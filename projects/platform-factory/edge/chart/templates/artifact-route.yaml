@@ -92,7 +92,8 @@ spec:
 The pinned libraries artifact pages load (projects/factory/discord/libs),
 from bucket bosun-libs. Its SecurityPolicy turns off the gateway's sign-in:
 a sandboxed page has an opaque origin and sends no cookie, so its script
-requests cannot sign in. GET and HEAD only. The files are public packages and a reviewed self-test page. CORS
+requests cannot sign in. GET only: a rule with replacePrefixMatch takes
+exactly one PathPrefix match. The files are public packages and a reviewed self-test page. CORS
 and a cross-origin CORP let the page check each script's integrity hash.
 The longer path prefix wins over the artifact route.
 */}}
@@ -116,10 +117,6 @@ spec:
             type: PathPrefix
             value: {{ .Values.artifacts.libsPath }}
           method: GET
-        - path:
-            type: PathPrefix
-            value: {{ .Values.artifacts.libsPath }}
-          method: HEAD
       filters:
         - type: URLRewrite
           urlRewrite:

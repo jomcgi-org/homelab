@@ -444,8 +444,7 @@ def test_artifact_libraries_are_public_read_only_and_from_their_own_bucket(docs)
     assert route["hostnames"] == ["artifact.jomcgi.dev"]
     (rule,) = route["rules"]
     assert rule["matches"] == [
-        {"path": {"type": "PathPrefix", "value": "/_lib/"}, "method": "GET"},
-        {"path": {"type": "PathPrefix", "value": "/_lib/"}, "method": "HEAD"},
+        {"path": {"type": "PathPrefix", "value": "/_lib/"}, "method": "GET"}
     ]
     filters = {f["type"]: f for f in rule["filters"]}
     # The libraries bucket, never the artifacts bucket.
@@ -484,6 +483,25 @@ def test_artifact_libraries_are_public_read_only_and_from_their_own_bucket(docs)
         ],
         "authorization": {"defaultAction": "Allow"},
     }
+
+
+def test_prefix_rewrites_have_exactly_one_path_prefix_match(docs):
+    # Gateway API CEL rule: a rule whose URLRewrite uses replacePrefixMatch
+    # must have exactly one match, and it must be a PathPrefix. The API
+    # server refuses the whole route otherwise, and Argo stops syncing edge.
+    for (kind, name), doc in docs.items():
+        if kind != "HTTPRoute":
+            continue
+        for rule in doc["spec"].get("rules", []):
+            rewrites = [
+                f["urlRewrite"].get("path", {})
+                for f in rule.get("filters", [])
+                if f["type"] == "URLRewrite"
+            ]
+            if any(p.get("type") == "ReplacePrefixMatch" for p in rewrites):
+                matches = rule.get("matches", [])
+                assert len(matches) == 1, name
+                assert matches[0]["path"]["type"] == "PathPrefix", name
 
 
 def test_t3_requires_admin_group_on_the_entire_host(docs):
