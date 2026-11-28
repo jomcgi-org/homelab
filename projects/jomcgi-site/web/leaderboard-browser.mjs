@@ -84,6 +84,16 @@ try {
       });
       assert.equal(requests, 0, "report JS must wait for intent");
       assert.equal(await bars.count(), 4);
+      if (width === 390) {
+        const names = bars.locator("li .name");
+        assert.ok(await names.count(), "the phone report displays model names");
+        const clipped = await names.evaluateAll((labels) =>
+          labels
+            .filter((label) => label.scrollWidth > label.clientWidth)
+            .map((label) => label.textContent),
+        );
+        assert.deepEqual(clipped, [], "phone model names must fit in full");
+      }
       await page.evaluate(() => {
         window.reportNode = document.querySelector(".lb-page");
       });
