@@ -281,6 +281,32 @@ func TestUnsafeModeNotSetUpSaysSo(t *testing.T) {
 
 // A normal turn's channel context leaves out each unsafe reply and the
 // message it answers, and so does a reply to an unsafe reply.
+// After gloves on, a normal reply to Joe's own gloves-off message does not
+// quote it.
+func TestAReplyToJoesGlovesOffMessageQuotesNothing(t *testing.T) {
+	b, normal, unsafe, _, rep, _ := unsafeBridge(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.Handle(ctx, byJoe(tagged("1", "gloves off")))
+	waitFor(t, func() bool { return len(rep.texts()) == 1 })
+	b.Handle(ctx, byJoe(tagged("2", "the spicy joke")))
+	waitFor(t, func() bool { return unsafe.count() == 1 })
+	b.Handle(ctx, byJoe(tagged("3", "gloves on")))
+	waitFor(t, func() bool { return len(rep.texts()) == 3 })
+	m := byJoe(tagged("4", "explain that"))
+	m.Type = 19
+	m.Referenced = &Referenced{ID: "2", Author: User{ID: joe}, Content: "the spicy joke"}
+	b.Handle(ctx, m)
+	waitFor(t, func() bool { return normal.count() == 1 })
+	cancel()
+	b.Wait()
+	normal.mu.Lock()
+	defer normal.mu.Unlock()
+	if strings.Contains(normal.prompts[0], "spicy") {
+		t.Errorf("the normal agent saw Joe's gloves-off message: %s", normal.prompts[0])
+	}
+}
+
 func TestTheNormalContextDropsUnsafeTurns(t *testing.T) {
 	b, normal, _, _, _, _ := unsafeBridge(t)
 	unsafeReply := bosunSaid("12", 3)
