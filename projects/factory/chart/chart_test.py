@@ -244,6 +244,24 @@ def test_controller_identity_is_kept() -> None:
     )
 
 
+def test_workers_ai_injects_the_namespaced_token() -> None:
+    docs = _render()
+    ns = "factory-r-homelab"
+    item = _in(docs, "OnePasswordItem", ns, "factory-workers-ai")
+    assert item["metadata"]["labels"]["substrate.ate.dev/injectable"] == "true"
+    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-workers-ai"
+    assert _in(docs, "EgressPolicy", ns, "workers-ai")["spec"]["destinations"] == [
+        {
+            "origin": "https://api.cloudflare.com",
+            "authentication": {
+                "header": "Authorization",
+                "prefix": "Bearer ",
+                "secretKeyRef": {"name": "factory-workers-ai", "key": "token"},
+            },
+        }
+    ]
+
+
 def test_credential_provider_reads_only_granted_namespaces() -> None:
     docs = _render()
     bindings = [
@@ -272,7 +290,11 @@ def test_credential_provider_reads_only_granted_namespaces() -> None:
                     "apiGroups": [""],
                     "resources": ["secrets"],
                     "verbs": ["get"],
-                    "resourceNames": ["github-git", "hindsight-recall"],
+                    "resourceNames": [
+                        "factory-workers-ai",
+                        "github-git",
+                        "hindsight-recall",
+                    ],
                 }
             ]
         else:
@@ -289,7 +311,7 @@ def test_credential_provider_reads_only_granted_namespaces() -> None:
             }
         ]
     # The only Secret the chart ships is the broker's empty grant, outside
-    # every granted namespace; nothing it renders is injectable.
+    # every granted namespace. The operator supplies the Workers AI Secret.
     # itsaplan's Secrets (itsaplan_test.py) are in factory too, also empty.
     secrets = [
         d
@@ -301,11 +323,11 @@ def test_credential_provider_reads_only_granted_namespaces() -> None:
         ("factory", "factory-broker-grant-codex-primary")
     ]
     assert "data" not in secrets[0] and "stringData" not in secrets[0]
-    assert not [
-        d
+    assert [
+        (d["kind"], d["metadata"]["namespace"], d["metadata"]["name"])
         for d in docs
         if d.get("metadata", {}).get("labels", {}).get("substrate.ate.dev/injectable")
-    ]
+    ] == [("OnePasswordItem", "factory-r-homelab", "factory-workers-ai")]
 
 
 def test_rbac_is_namespaced() -> None:

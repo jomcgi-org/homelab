@@ -301,9 +301,37 @@ def test_the_receiver_route_keeps_substrate_authorization_and_scoped_mtls() -> N
             },
         }
     ]
+    workers = routes.pop(0)
+    assert workers["hostnames"] == ["api.cloudflare.com"]
+    assert workers["backends"][0]["host"] == "api.cloudflare.com:443"
+    assert (
+        workers["policies"]["substrateEgress"] == route["policies"]["substrateEgress"]
+    )
     assert route["policies"] == routes[0]["policies"]
     assert "substrateEgress" in route["policies"]
     assert current == original
+
+
+def test_workers_ai_model_path_guard() -> None:
+    config = yaml.safe_load((_HERE / "atenet-egress-config.yaml").read_text())
+    workers = next(
+        r
+        for r in _internal_listener(config, "HTTPS")["routes"]
+        if r.get("name") == "workers-ai"
+    )
+    (deny,) = workers["policies"]["directResponse"]["conditional"]
+    assert deny["status"] == 403
+    expression = re.fullmatch(
+        r"request.method != 'POST' \|\| !request.path.matches\('(.*)'\)",
+        deny["condition"],
+    )
+    assert expression
+    pattern = re.compile(expression[1])
+    base = "/client/v4/accounts/7c56b458cd657d96b095c63d181c051f/ai/run/@cf/cloudflare/"
+    for model in ("clef", "clef-flash", "clef-omni", "clairic"):
+        assert pattern.search(base + model)
+    for model in ("other", "clef/../other", "clairic-other"):
+        assert not pattern.search(base + model)
 
 
 def _microvm_job(docs: list[dict]) -> dict:
