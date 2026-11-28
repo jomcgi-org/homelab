@@ -455,11 +455,14 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	// A server agent's channel session is found before the prompt: a new
 	// one gets the channel's recent thread (HOME-944), and its server is
 	// recorded before its turn, for the notes tools (HOME-918, sessions.go).
-	fresh := false
+	// The turn's message and author hold only while the turn runs, so a
+	// later tool call cannot act on an earlier turn's author (HOME-941).
+	fresh, session := false, ""
 	if a, ok := b.Servers[m.GuildID]; ok {
 		if f, ok := a.(SessionFinder); ok {
 			if s, serr := f.Session(ctx, m.ChannelID); serr == nil {
-				b.SessionPlaces.Record(s.ContextID, SessionPlace{Server: m.GuildID, Channel: m.ChannelID, Message: m.ID, Author: m.Author.ID})
+				session = s.ContextID
+				b.SessionPlaces.Record(session, SessionPlace{Server: m.GuildID, Channel: m.ChannelID, Message: m.ID, Author: m.Author.ID})
 				fresh = s.Fresh
 			}
 		}
@@ -537,6 +540,9 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	if a, ok := b.Servers[m.GuildID]; ok {
 		// Each channel, a thread included, is one session (Joe, 2026-11-27).
 		answer, err = a.Turn(ctx, m.ChannelID, m.ID, prompt, images...)
+		if session != "" {
+			b.SessionPlaces.Record(session, SessionPlace{Server: m.GuildID, Channel: m.ChannelID})
+		}
 	} else {
 		answer, err = b.Agent.Turn(ctx, m.ID, prompt)
 	}

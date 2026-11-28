@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -78,7 +79,9 @@ func (q *RequestReplies) Poll(ctx context.Context) error {
 		skip := ""
 		if q.Allowed == nil || !q.Allowed(r.Guild) {
 			skip = "server not allowlisted"
-		} else if guild, err := q.REST.ChannelGuild(ctx, r.Channel); err != nil {
+		} else if guild, err := q.REST.ChannelGuild(ctx, r.Channel); permanent(err) {
+			skip = "channel unreadable: " + err.Error()
+		} else if err != nil {
 			return err
 		} else if guild != r.Guild {
 			skip = "channel is in another server"
@@ -109,8 +112,11 @@ func (q *RequestReplies) Poll(ctx context.Context) error {
 			reply := NewReply(RequestReplyText(r), r.Message)
 			reply.Components = append(reply.Components, ReplyComponent{Type: componentText, Content: ref})
 			reply.Nonce, reply.EnforceNonce = nonce, true
-			// Discord posts it unreferenced if the message is gone.
-			if err := q.REST.Send(ctx, r.Channel, reply); err != nil {
+			// Discord posts it unreferenced if the message is gone. A
+			// refusal for this channel must not hold the later replies.
+			if err := q.REST.Send(ctx, r.Channel, reply); permanent(err) {
+				l.WarnContext(ctx, "request reply refused", "error", err)
+			} else if err != nil {
 				return err
 			}
 		}
@@ -142,6 +148,13 @@ func RequestReplyText(r RequestReply) string {
 		b.WriteString("\nPR (" + state + "): " + pr.URL)
 	}
 	return b.String()
+}
+
+// permanent reports a Discord refusal that a retry does not change: a 4xx
+// other than 429.
+func permanent(err error) bool {
+	var he *HTTPError
+	return errors.As(err, &he) && he.Status >= 400 && he.Status < 500 && he.Status != 429
 }
 
 func (q *RequestReplies) ack(ctx context.Context, id int64) error {
