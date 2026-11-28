@@ -11,6 +11,7 @@ model credential.
 
 from __future__ import annotations
 
+import fcntl
 import glob
 import gzip
 import hashlib
@@ -18,20 +19,28 @@ import json
 import os
 import secrets
 import shutil
+import signal
 import socket
 import stat
+import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import grpc
 import pytest
 import yaml
+from google.protobuf.empty_pb2 import Empty
+from google.protobuf.unknown_fields import UnknownFieldSet
 
 RUNNER = "usr/local/bin/kagent-hermes"
 GATEWAY = "/opt/hermes/.venv/bin/hermes"
@@ -144,6 +153,21 @@ def rootfs():
                         continue
                     member.uid = member.gid = os.getuid()
                     layer.extract(member, root, filter="fully_trusted")
+        # Go's os/exec opens /dev/null for the gateway's unconnected stdin.
+        # The OCI runtime normally provides it. This chroot skips device
+        # nodes, so provide the same EOF for readers without creating a device.
+        dev = root / "dev"
+        dev.mkdir(exist_ok=True)
+        (dev / "null").touch(mode=0o444)
+        # Substrate projects these files into the actor before startup.
+        identity = root / "run/kagent/identity"
+        identity.mkdir(parents=True, exist_ok=True)
+        for name, value in {
+            "name": f"session-{uuid.uuid4()}",
+            "uid": str(uuid.uuid4()),
+            "atespace": "homelab",
+        }.items():
+            (identity / name).write_text(value)
         # UID 65532 cannot write the image's own tree. Outside the image the
         # test user owns every file, so make the tree read-only to match;
         # /data (the runner's durable directory) and /tmp stay writable.
@@ -651,7 +675,7 @@ def _write_bundle(data: Path, config: dict) -> str:
     return json.dumps(
         {
             "format_version": 1,
-            "control_plane_url": "http://127.0.0.1:1",
+            "control_plane_url": config["control_plane_url"],
             "revision": revision,
             "sha256": sha,
         }
@@ -797,3 +821,153 @@ def test_a_refused_turn_leaves_the_chain(gateway) -> None:
     refused = _respond(gateway, legacy, f"A {BLOCKED} joke")
     assert _forget(gateway, refused["id"]) == 200
     assert _answer(_respond(gateway, legacy, "Can't or won't?")) == "Hermes answer 1"
+
+
+class _TaskStore:
+    """The kagent.runtime.v1.TaskStoreService calls used by a single A2A task."""
+
+    def __init__(self):
+        self.task = b""
+        self.version = 0
+
+    def save(self, request, context):
+        # CreateTask and UpdateTask both carry the serialized A2A Task in
+        # field 2. Preserve it verbatim, including fields added by the SDK.
+        fields = UnknownFieldSet(Empty.FromString(request))
+        self.task = next(field.data for field in fields if field.field_number == 2)
+        self.version += 1
+        return b"\x08" + _varint(self.version)
+
+    def get(self, request, context):
+        if not self.task:
+            context.abort(grpc.StatusCode.NOT_FOUND, "unknown task")
+        # GetTaskResponse.stored contains StoredTask {task, version}.
+        stored = b"\x0a" + _varint(len(self.task)) + self.task
+        stored += b"\x10" + _varint(self.version)
+        return b"\x0a" + _varint(len(stored)) + stored
+
+    def handler(self):
+        return grpc.method_handlers_generic_handler(
+            "kagent.runtime.v1.TaskStoreService",
+            {
+                "CreateTask": grpc.unary_unary_rpc_method_handler(self.save),
+                "UpdateTask": grpc.unary_unary_rpc_method_handler(self.save),
+                "GetTask": grpc.unary_unary_rpc_method_handler(self.get),
+                "SettleTask": grpc.unary_unary_rpc_method_handler(lambda req, ctx: b""),
+            },
+        )
+
+
+def test_a2a_turn_through_packaged_runner(rootfs):
+    _need_userns()
+    # The runner always binds 80 and 8081. Give the runner and both peers
+    # their own loopback, including the low-port setting an actor gets.
+    subprocess.run(
+        [
+            "unshare",
+            "--map-root-user",
+            "--net",
+            "--pid",
+            "--fork",
+            "--kill-child",
+            "--mount-proc",
+            sys.executable,
+            "-c",
+            "import runpy, sys; from pathlib import Path; "
+            "runpy.run_path(sys.argv[1])['_run_isolated_turn'](Path(sys.argv[2]))",
+            __file__,
+            str(rootfs),
+        ],
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+        timeout=330,
+        check=True,
+    )
+
+
+def _run_isolated_turn(rootfs: Path):
+    # Enable loopback in the new network namespace (SIOCGIFFLAGS,
+    # SIOCSIFFLAGS and IFF_UP), without depending on host iproute2.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        request = struct.pack("16sH22x", b"lo", 0)
+        current = fcntl.ioctl(sock, 0x8913, request)
+        flags = struct.unpack_from("H", current, 16)[0]
+        fcntl.ioctl(sock, 0x8914, struct.pack("16sH22x", b"lo", flags | 1))
+    low_port = Path("/proc/sys/net/ipv4/ip_unprivileged_port_start")
+    if int(low_port.read_text()) > 80:
+        low_port.write_text("80")
+    store = _TaskStore()
+    _FakeModel.calls.clear()
+    with (
+        ThreadingHTTPServer(("127.0.0.1", 0), _FakeModel) as model,
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        controller = grpc.server(pool)
+        controller.add_generic_rpc_handlers((store.handler(),))
+        port = controller.add_insecure_port("127.0.0.1:0")
+        config = _runner_config([GATEWAY, "gateway"])
+        config.update(
+            control_plane_url=f"http://127.0.0.1:{port}",
+            model=MODEL,
+            base_url=f"http://127.0.0.1:{model.server_port}/v1",
+            api_server_port=_free_port(),
+        )
+        data = rootfs / "data"
+        env = {
+            **_image_env(),
+            "KAGENT_BOOTSTRAP_JSON": _write_bundle(data, config),
+            "DISCORD_BOT_TOKEN": "fixture-must-stay-out-of-gateway",
+        }
+        runner = subprocess.Popen(
+            _in_image(rootfs, ["/" + RUNNER], env), start_new_session=True
+        )
+        controller.start()
+        threading.Thread(target=model.serve_forever, daemon=True).start()
+        try:
+            deadline = time.monotonic() + 30
+            while _get("http://127.0.0.1:80/health") != 200:
+                assert runner.poll() is None, "kagent-hermes exited before serving A2A"
+                assert time.monotonic() < deadline, "A2A startup timed out"
+                time.sleep(0.2)
+            message = {
+                "messageId": str(uuid.uuid4()),
+                "role": "ROLE_USER",
+                "parts": [{"text": "Who runs the factory?"}],
+            }
+            request = urllib.request.Request(
+                "http://127.0.0.1:80/",
+                data=json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "SendMessage",
+                        "params": {"message": message},
+                    }
+                ).encode(),
+                headers={"Content-Type": "application/json", "A2A-Version": "1.0"},
+            )
+            with urllib.request.urlopen(request, timeout=240) as response:
+                reply = json.load(response)
+            assert "result" in reply, reply
+            task = reply["result"]["task"]
+            assert task["status"]["state"] == "TASK_STATE_COMPLETED", task
+            assert task["artifacts"][0]["parts"][0]["text"] == "Hermes answer 1"
+            assert store.version > 0
+            assert _FakeModel.calls
+            assert all(not call["body"].get("tools") for call in _FakeModel.calls)
+            home = data / "hermes"
+            platforms = json.loads((home / "gateway_state.json").read_text())[
+                "platforms"
+            ]
+            assert set(platforms) == {"api_server"}
+            cfg = yaml.safe_load((home / "config.yaml").read_text())
+            assert cfg["approvals"]["unattended_mode"] == "deny"
+            assert (
+                json.loads((home / "hindsight/config.json").read_text())["memory_mode"]
+                == "context"
+            )
+        finally:
+            if runner.poll() is None:
+                os.killpg(runner.pid, signal.SIGTERM)
+            runner.wait(timeout=30)
+            controller.stop(0).wait()
+            model.shutdown()
