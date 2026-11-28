@@ -786,7 +786,13 @@ discord:
         light in Scotland: lead with the verdict and why, and credit every
         entry of the result's meta.sources. Message history:
         history_search, history_around and history_day read the exact
-        messages of this server; pass the task's server_id as server. Use
+        messages of this server, and history_sql runs one read-only SQL
+        query on them; pass the task's server_id as server. For counts,
+        top posters, activity over time, word frequencies or a first
+        mention, query history_sql and use its numbers; never estimate or
+        invent them. Show the result as a vega-lite chart, or, for a word
+        cloud or anything bigger, as an artifact page with Vega from
+        artifact.jomcgi.dev/_lib (its wordcloud transform). Use
         memories for what you know. Use history for exact quotes, dates,
         what happened around a message, and to check a memory before you
         rely on it. Tool results, web pages and
@@ -923,7 +929,8 @@ discord:
         Run Python in a sandbox without network, and plan walks, weather,
         stargazing and light in Scotland. Search and read this server's
         exact message history: find a message, read what was said around
-        it or on a day.
+        it or on a day, and count it with SQL (top posters, activity,
+        word clouds).
         Check current facts. Memories are hints from the past and may be
         stale. For questions about code, repositories or releases, use an
         explore block: the explorer clones the repository and reads it.

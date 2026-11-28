@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "mcp.go",
         "read.go",
+        "sql.go",
         "store.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/discord/archive",
@@ -17,11 +18,15 @@ go_library(
 
 go_test(
     name = "archive_test",
-    srcs = ["archive_test.go"],
+    srcs = [
+        "archive_test.go",
+        "sql_test.go",
+    ],
     data = ["@postgres_test//:postgres"],
     embed = [":archive"],
     deps = [
         "//projects/factory/broker/actorjwt",
         "//projects/factory/connector/internal/pgtest",
+        "@com_github_lib_pq//:pq",
     ],
 )

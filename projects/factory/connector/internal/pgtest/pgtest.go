@@ -229,7 +229,10 @@ func start() (*Server, error) {
                 CREATE ROLE factory_storyboard LOGIN NOINHERIT;
 				CREATE ROLE factory_reaper LOGIN NOINHERIT;
                 CREATE ROLE factory_leaderboard LOGIN NOINHERIT;
-				CREATE ROLE factory_discord_archive_reader LOGIN NOINHERIT`)
+				CREATE ROLE factory_discord_archive_reader LOGIN NOINHERIT;
+				CREATE ROLE factory_discord_sql NOLOGIN NOINHERIT;
+				CREATE ROLE factory_discord_sql_1501965852042330302 LOGIN IN ROLE factory_discord_sql;
+				CREATE ROLE factory_discord_sql_1290668195249917964 LOGIN IN ROLE factory_discord_sql`)
 			db.Close()
 			if err != nil {
 				return nil, err

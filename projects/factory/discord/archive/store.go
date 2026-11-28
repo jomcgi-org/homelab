@@ -49,19 +49,47 @@ CREATE INDEX IF NOT EXISTS discord_message_channel_time ON discord_message (guil
 CREATE INDEX IF NOT EXISTS discord_message_guild_time ON discord_message (guild_id, sent_at);
 `
 
-// Migrate applies Schema and lets reader (a login role; empty for none)
-// read the table and nothing else.
-func Migrate(ctx context.Context, db *sql.DB, reader string) error {
+// Migrate applies Schema and turns on row-level security on the table.
+// reader (a login role; empty for none) may read every row, for the fixed
+// history tools. sqlGroup (a NOLOGIN role; empty for none) is the group of
+// the per-server history_sql logins, each named sqlGroup + "_" + guild ID:
+// a member reads only the rows of the guild in its own login name. The
+// policy keys on current_user, which a SELECT cannot change; the owner (the
+// bridge) is not subject to row security.
+func Migrate(ctx context.Context, db *sql.DB, reader, sqlGroup string) error {
 	if _, err := db.ExecContext(ctx, Schema); err != nil {
 		return fmt.Errorf("archive schema: %w", err)
 	}
-	if reader == "" {
-		return nil
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	if _, err := db.ExecContext(ctx, "GRANT SELECT ON discord_message TO "+pq.QuoteIdentifier(reader)); err != nil {
-		return fmt.Errorf("archive grant: %w", err)
+	defer func() { _ = tx.Rollback() }()
+	stmts := []string{
+		"ALTER TABLE discord_message ENABLE ROW LEVEL SECURITY",
+		"DROP POLICY IF EXISTS reader_all ON discord_message",
+		"DROP POLICY IF EXISTS sql_own_server ON discord_message",
 	}
-	return nil
+	if reader != "" {
+		r := pq.QuoteIdentifier(reader)
+		stmts = append(stmts,
+			"GRANT SELECT ON discord_message TO "+r,
+			"CREATE POLICY reader_all ON discord_message FOR SELECT TO "+r+" USING (true)")
+	}
+	if sqlGroup != "" {
+		g := pq.QuoteIdentifier(sqlGroup)
+		pattern := "^" + sqlGroup + "_([0-9]{15,20})$"
+		stmts = append(stmts,
+			"GRANT SELECT ON discord_message TO "+g,
+			"CREATE POLICY sql_own_server ON discord_message FOR SELECT TO "+g+
+				" USING (guild_id = substring(current_user::text from "+pq.QuoteLiteral(pattern)+")::bigint)")
+	}
+	for _, q := range stmts {
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			return fmt.Errorf("archive grants: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // Row is one archived message. IDs are Discord snowflakes as decimal text;
