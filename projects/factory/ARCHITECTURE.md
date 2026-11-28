@@ -608,7 +608,9 @@ The connector uses separate identities to claim coding work and coordinate issue
   creates team `factory`, project `HOME` and the external agents
   `task-agent` (claims runs, assignment and mention triggers; the delegate
   for coder work, whatever the provider), `homelab-codex` (retired:
-  both triggers off, kept for run history, HOME-898) and
+  both triggers off, kept for run history, HOME-898; a `drain` connector
+  agent, so it claims nothing but its held runs can still heartbeat, report
+  and close) and
   `factory-coordinator` (coordinates issue updates). The `readOnly` agents
   `factory-reviewer` and `factory-storyboard` get no triggers and only
   `work_items read` in HOME. The bootstrap proves that access with each

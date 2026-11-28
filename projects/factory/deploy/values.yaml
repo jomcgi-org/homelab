@@ -273,10 +273,14 @@ connector:
   enabled: true
   # task-agent claims up to 10 runs at once, two fewer than the
   # agents.codex.concurrency workers that hold them (see there). It is the
-  # only delegate; homelab-codex is retired (HOME-898).
+  # only delegate. homelab-codex is retired (HOME-898) and drains: it claims
+  # nothing, but its key stays mounted so the runs it held can heartbeat,
+  # report and close. Without the key those runs failed every poll.
   agents:
     - username: task-agent
       concurrency: 10
+    - username: homelab-codex
+      drain: true
   # 120 s between polls of one open PR, up from 60 s. On 2026-11-22 about 45
   # open PRs at 60 s used about 5,400 GraphQL points an hour against the
   # installation's 5,000, so delivery stopped for part of every hour

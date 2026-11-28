@@ -82,10 +82,12 @@ type Sessions interface {
 	ForceDeleteSession(ctx context.Context, id string) (*kagent.Session, error)
 }
 
-// Agent is an itsaplan agent key the connector claims runs for.
+// Agent is an itsaplan agent key the connector claims runs for. A drain
+// agent claims nothing; its held runs still heartbeat, report and close.
 type Agent struct {
 	Key         string
 	Concurrency int
+	Drain       bool
 }
 
 // Binding is a repository binding, the agent keys that may deliver it and
@@ -2677,6 +2679,9 @@ func (e *Engine) confirmQuotaStall(ctx context.Context, tx *sql.Tx, r *store.Run
 func (e *Engine) claim(ctx context.Context) error {
 	var errs []error
 	for _, ag := range e.cfg.Agents {
+		if ag.Drain {
+			continue
+		}
 		limit := ag.Concurrency
 		if limit <= 0 {
 			limit = 1

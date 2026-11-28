@@ -229,7 +229,7 @@ func run(log *slog.Logger) error {
 
 	var agents []dispatch.Agent
 	for _, a := range cfg.File.Agents {
-		agents = append(agents, dispatch.Agent{Key: a.Key, Concurrency: a.Concurrency})
+		agents = append(agents, dispatch.Agent{Key: a.Key, Concurrency: a.Concurrency, Drain: a.Drain})
 	}
 	var bindings []dispatch.Binding
 	for _, b := range cfg.File.Bindings {
