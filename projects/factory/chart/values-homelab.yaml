@@ -426,9 +426,9 @@ discord:
       # every channel a new session on the current tools and prompt; the
       # old context goes, Hindsight memory stays. Set a new value only after
       # kagent has prepared the new Agent revision: the bridge syncs first.
-      # tools1 (2026-11-28): revision 4e6fd9bb (code execution, Scotland,
-      # artifacts, Capabilities) was latest successful before this change.
-      sessionEpoch: tools1
+      # notes1 (2026-11-28): revision 8b126c3a (notes vault tools and
+      # Hermes memory, HOME-918) was latest successful before this change.
+      sessionEpoch: notes1
   # The bridge backfills each server's history (HOME-164), in place of the
   # import Job (Joe, 2026-11-26, HOME-836).
   backfill:
