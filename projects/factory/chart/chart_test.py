@@ -1844,6 +1844,8 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
         # Code execution (HOME-915); web search and fetch wait for Joe's
         # decision (server-agents.md, Open decisions).
         "serverTools": {"codeExecution": True},
+        # The deploy values bind notes, so the runner syncs memory there.
+        "memory": {"remoteMCPServer": "notes"},
     }
     # Joe chose to keep the agent awake during active chats.
     assert harness["idleSuspendDelay"] == "10m"
@@ -2648,7 +2650,9 @@ def test_a_notes_binding_adds_the_notes_write_rule_to_the_prompt() -> None:
     )
 
 
+# Replaces the deploy values' bindings, which include notes, with one.
 _NOTES_BINDING = [
+    "discord.serverAgents.homelab.mcpServers={}",
     "discord.serverAgents.homelab.mcpServers[0].name=notes",
     "discord.serverAgents.homelab.mcpServers[0].url=http://bosun-artifacts.factory-discord.svc.cluster.local:8080/notes/mcp",
     "discord.serverAgents.homelab.mcpServers[0].actorJwt.audiences={bosun-artifacts}",
@@ -2675,7 +2679,8 @@ def test_a_notes_binding_keeps_hermes_memory_in_the_vault() -> None:
         agent = _in(docs, "Agent", _HOMELAB_NS, "homelab")["spec"]["template"]
         return harness, " ".join(agent["inline"]["systemPrompt"].split())
 
-    harness, prompt = render([])
+    # The deploy values bind notes; with no bindings memory stays off.
+    harness, prompt = render(["discord.serverAgents.homelab.mcpServers=null"])
     assert "memory" not in harness
     assert rule not in prompt
 
@@ -2704,7 +2709,7 @@ def test_server_agent_bindings_never_give_the_model_the_memory_sync_tools() -> N
         with pytest.raises(RuntimeError, match="memory_read or memory_write"):
             _render(
                 _HOMELAB
-                + _NOTES_BINDING[:3]
+                + _NOTES_BINDING[:4]
                 + [
                     f"discord.serverAgents.homelab.mcpServers[0].tools={{notes_read,{tool}}}"
                 ]
