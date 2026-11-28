@@ -139,6 +139,9 @@ func TestLintNamesColourLiterals(t *testing.T) {
 		`<style>#add { color: var(--accent); } .g { fill: url(#fade); }</style><a href="#add">&#123;</a>`,
 		// Data labels in a chart and a Mermaid node label.
 		`<script type="application/json" class="vega-lite">{"data":{"values":[{"pr":"#8805"}]},"mark":"bar"}</script>`,
+		// Issue numbers outside colour keys: a sort order, a domain and a filter.
+		`<script type="application/json" class="vega-lite">{"mark":"bar","transform":[{"filter":{"field":"pr","equal":"#8805"}}],
+"encoding":{"x":{"field":"pr","sort":["#8805","#8807"],"scale":{"domain":["#101","#202"]}}}}</script>`,
 		"<pre class=\"mermaid\">flowchart TD\n  A[PR #8805] --> B\n</pre>",
 		`<svg><path fill="none" stroke="currentColor"/></svg>`,
 	} {

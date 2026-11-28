@@ -225,9 +225,20 @@ func colourLiterals(page string) []string {
 	return found
 }
 
-// specColours calls add for each string in a chart spec that is a colour
-// literal. It skips inline data, where a value such as "#123" is a label.
+// colourKeys are the chart spec keys whose strings set a colour. Other
+// strings, such as a sort order or a filter value of "#8805", are labels.
+var colourKeys = map[string]bool{
+	"color": true, "fill": true, "stroke": true, "background": true,
+	"range": true, "scheme": true, "colors": true,
+}
+
+// specColours calls add for each colour literal under a colour key in a
+// chart spec. It skips inline data, where a value such as "#123" is a label.
 func specColours(v any, add func(string)) {
+	walkSpec(v, false, add)
+}
+
+func walkSpec(v any, inColour bool, add func(string)) {
 	switch v := v.(type) {
 	case map[string]any:
 		keys := make([]string, 0, len(v))
@@ -238,14 +249,14 @@ func specColours(v any, add func(string)) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			specColours(v[k], add)
+			walkSpec(v[k], inColour || colourKeys[k], add)
 		}
 	case []any:
 		for _, child := range v {
-			specColours(child, add)
+			walkSpec(child, inColour, add)
 		}
 	case string:
-		if wholeColour.MatchString(v) {
+		if inColour && wholeColour.MatchString(v) {
 			add(v)
 		}
 	}
