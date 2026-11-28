@@ -65,7 +65,8 @@ type HistorySticker struct {
 //
 // With seed, for a new session's first turn (HOME-944), Bosun's messages
 // do not end the lines: it keeps the newest maxSeedLines, Bosun's own as
-// "Bosun (you)" lines, so the session gets the channel's recent thread.
+// "Bosun (you)" lines, so the session gets the channel's recent thread. It
+// stops at Bosun's newest ReplyBlocked message.
 func (b *Bridge) sinceLastTurn(ctx context.Context, m Message, seed bool) (lines []ChannelLine, ok bool) {
 	msgs, err := b.History.MessagesBefore(ctx, m.ChannelID, m.ID)
 	if err != nil {
@@ -92,7 +93,13 @@ func (b *Bridge) sinceLastTurn(ctx context.Context, m Message, seed bool) (lines
 		if unsafe[h.ID] || b.UnsafeMessage(h.ID) {
 			continue
 		}
-		if !seed && bot != "" && h.Author.ID == bot {
+		if bot != "" && h.Author.ID == bot && (!seed || h.Text() == ReplyBlocked) {
+			if seed {
+				// A seed reads no further back than a blocked turn: what
+				// came before it may hold what the filter refused, and the
+				// in-memory blocked set is gone after a restart (HOME-944).
+				break
+			}
 			found, last = true, h
 			break
 		}

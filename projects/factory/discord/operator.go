@@ -475,9 +475,18 @@ func (k *KagentOperator) Forget(key string) {
 // ambiguous outcome is the same message. A failed turn makes the next turn
 // look the session up again.
 func (k *KagentOperator) Turn(ctx context.Context, threadID, messageID, prompt string, images ...TurnImage) (string, error) {
-	s, err := k.Session(ctx, threadID)
-	if err != nil {
-		return "", err
+	// The bridge looked the session up for this turn's prompt; a new epoch
+	// waits for the next lookup, so the turn runs in the session its
+	// prompt was built for.
+	k.mu.Lock()
+	cached, ok := k.known[threadID]
+	k.mu.Unlock()
+	s := OperatorSession{ContextID: cached.contextID}
+	if !ok || cached.stale {
+		var err error
+		if s, err = k.Session(ctx, threadID); err != nil {
+			return "", err
+		}
 	}
 	answer, err := k.turn(ctx, s.ContextID, messageID, prompt, images)
 	if err != nil {
