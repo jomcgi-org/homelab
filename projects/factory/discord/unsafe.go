@@ -323,6 +323,30 @@ func (b *Bridge) noticeFor(m Message, text string) string {
 	return text
 }
 
+// glovesAvailable reports whether gloves off is set up.
+func (b *Bridge) glovesAvailable() bool { return b.Config.Unsafe.enabled() && b.Unsafe != nil }
+
+func glovesOffText(w unsafeWindow) string {
+	return fmt.Sprintf("🥊 Gloves off until <t:%d:R>: plain chat, no tools and no memory. "+
+		"Say \"Bosun gloves on\" to end it.", w.end.Unix())
+}
+
+// openWindow starts or extends a channel's gloves off for asked (0 for the
+// default) and arms its timer. b.mu is held.
+func (b *Bridge) openWindow(ctx context.Context, channelID string, now time.Time, asked time.Duration) unsafeWindow {
+	w, on := b.windows[channelID]
+	if !on || !now.Before(w.end) {
+		w.start = now
+	}
+	w.end = now.Add(b.Config.Unsafe.windowFor(asked))
+	if b.windows == nil {
+		b.windows = map[string]unsafeWindow{}
+	}
+	b.windows[channelID] = w
+	b.expireAt(ctx, channelID, w.end)
+	return w
+}
+
 // windowFor is the window Joe asked for: the default, or his time capped
 // at MaxDuration and at least a minute.
 func (u UnsafeConfig) windowFor(asked time.Duration) time.Duration {
@@ -345,21 +369,11 @@ func (b *Bridge) setMode(ctx context.Context, notices chan notice, m Message, cm
 	var text string
 	var gif []File
 	switch {
-	case cmd.Kind == cmdOff && (!b.Config.Unsafe.enabled() || b.Unsafe == nil):
+	case cmd.Kind == cmdOff && !b.glovesAvailable():
 		text = ReplyGlovesNotSetUp
 	case cmd.Kind == cmdOff:
-		if !on {
-			w.start = now
-		}
-		w.end = now.Add(b.Config.Unsafe.windowFor(cmd.For))
-		if b.windows == nil {
-			b.windows = map[string]unsafeWindow{}
-		}
-		b.windows[m.ChannelID] = w
-		text = fmt.Sprintf("🥊 Gloves off until <t:%d:R>: plain chat, no tools and no memory. "+
-			"Say \"Bosun gloves on\" to end it.", w.end.Unix())
-		gif = []File{{Name: "gloves-off.gif", Data: glovesOffGIF}}
-		b.expireAt(ctx, m.ChannelID, w.end)
+		w = b.openWindow(ctx, m.ChannelID, now, cmd.For)
+		text, gif = glovesOffText(w), []File{{Name: "gloves-off.gif", Data: glovesOffGIF}}
 	case on:
 		delete(b.windows, m.ChannelID)
 		text, gif = ReplyGlovesOn, []File{{Name: "gloves-on.gif", Data: glovesOnGIF}}

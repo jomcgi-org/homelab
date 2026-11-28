@@ -169,8 +169,9 @@ func run(log *slog.Logger) error {
 	// A server with `ingest` stores every human message (HOME-833). The
 	// ingestor outlives the gateway so the last turns' lines are stored.
 	intents := discord.IntentsFor(policy)
-	if bridge.Share != nil {
-		// Joe's ✅ confirms a share link (discord/share.go).
+	if bridge.Share != nil || bridge.Unsafe != nil {
+		// Joe's ✅ confirms a share link (discord/share.go); his 🥊 takes a
+		// gloves-off offer (discord/offer.go).
 		intents |= discord.IntentGuildMessageReactions
 	}
 	ingestDone := make(chan struct{})
