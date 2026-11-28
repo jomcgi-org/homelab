@@ -46,13 +46,13 @@ declare -A CHART_DIGEST=(
 )
 
 FORK_REPO="https://github.com/jomcgi-org/substrate.git"
-FORK_COMMIT="8cf248b96e08fcf2402199804fb04deadab5348b"
+FORK_COMMIT="7edec5939cbaf9b21811230dafa0fdb8b5127d2d"
 FORK_IMAGES="ghcr.io/jomcgi-org/homelab/substrate-fork"
 FORK_TAG="fork-${FORK_COMMIT:0:12}"
 declare -A FORK_DIGEST=(
-	["ateapi"]="sha256:b4feb50d685dbaedaa5433ba77ae9b6c9181c30b81bd3e0522cca102b9865835"
-	["atecontroller"]="sha256:d8386836296bb7554a0dc12ba9415c154e17f933ecee37f70cb1fe715efcb55a"
-	["atelet"]="sha256:f72e25955d72f2475ac15342b6073857c603eabd5486c7ddd77344999f40a1e0"
+	["ateapi"]="sha256:6798bf9af31eb1f3134eb5f1eef6f07edc8120b9784de3bb1488aec98216a931"
+	["atecontroller"]="sha256:a6cb2d6b48f26e832b414d8f46ba2974cd0503ecb1c015f4ce089359b1d146c9"
+	["atelet"]="sha256:25e89f5ac3a6f42fc6cedd4adbfb90ebd3be2cea54c9c75c847d3d0ef06cfc2e"
 )
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

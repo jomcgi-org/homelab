@@ -1,6 +1,6 @@
 # Rendered by render-upstream.sh from oci://ghcr.io/kagent-dev/substrate/helm/substrate-atelet:1.0.1
 # (sha256:233e1ed8f74a202abca851c43adee88849482d8ce37760b8be65f4d96fbc8ca3) templates/atelet.yaml. Do not edit.
-# Overlaid by render-upstream.sh from https://github.com/jomcgi-org/substrate 8cf248b96e08fcf2402199804fb04deadab5348b (fork overlay).
+# Overlaid by render-upstream.sh from https://github.com/jomcgi-org/substrate 7edec5939cbaf9b21811230dafa0fdb8b5127d2d (fork overlay).
 # The atelet image is the fork build.
 ---
 # Admit critical atelet pods on clusters that restrict system priority classes.
@@ -209,7 +209,7 @@ spec:
           readOnly: true
       containers:
       - name: atelet
-        image: ghcr.io/jomcgi-org/homelab/substrate-fork/atelet:fork-8cf248b96e08@sha256:f72e25955d72f2475ac15342b6073857c603eabd5486c7ddd77344999f40a1e0
+        image: ghcr.io/jomcgi-org/homelab/substrate-fork/atelet:fork-7edec5939cba@sha256:25e89f5ac3a6f42fc6cedd4adbfb90ebd3be2cea54c9c75c847d3d0ef06cfc2e
         args:
         - "--preview=PerTemplateSnapshotLocation,GoldenEgressPolicy,ForkSeed"
         - --objectstore-plugin-socket=/run/objectstore-plugin/node.sock
