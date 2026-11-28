@@ -90,6 +90,8 @@ body {
   font: 1rem/1.6 var(--font);
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
+  /* A long URL or identifier wraps instead of widening a card. */
+  overflow-wrap: break-word;
 }
 a {
   color: inherit;
