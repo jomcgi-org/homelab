@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -61,15 +62,24 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		delete(f.objects, key)
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodGet && r.URL.Path == "/bosun-notes" && r.URL.Query().Get("list-type") == "2":
-		prefix := r.URL.Query().Get("prefix")
+		// Pages of max-keys; the continuation token is the last key sent.
+		prefix, after := r.URL.Query().Get("prefix"), r.URL.Query().Get("continuation-token")
+		limit, _ := strconv.Atoi(r.URL.Query().Get("max-keys"))
 		var keys []string
 		for k := range f.objects {
-			if strings.HasPrefix(k, prefix) {
+			if strings.HasPrefix(k, prefix) && k > after {
 				keys = append(keys, k)
 			}
 		}
 		sort.Strings(keys)
-		fmt.Fprint(w, `<ListBucketResult><IsTruncated>false</IsTruncated>`)
+		truncated := len(keys) > limit
+		if truncated {
+			keys = keys[:limit]
+		}
+		fmt.Fprintf(w, `<ListBucketResult><IsTruncated>%v</IsTruncated>`, truncated)
+		if truncated {
+			fmt.Fprintf(w, `<NextContinuationToken>%s</NextContinuationToken>`, keys[len(keys)-1])
+		}
 		for _, k := range keys {
 			fmt.Fprintf(w, `<Contents><Key>%s</Key><Size>%d</Size></Contents>`, k, len(f.objects[k]))
 		}
@@ -443,5 +453,39 @@ func TestCleanPath(t *testing.T) {
 		if _, err := CleanPath(in, false); !errors.As(err, &pe) {
 			t.Errorf("CleanPath(%q) err = %v, want a ParamError", in, err)
 		}
+	}
+}
+
+// Many trash and history objects sort before the notes; a listing pages
+// past them.
+func TestListPagesPastHiddenFolders(t *testing.T) {
+	url, fake := setup(t)
+	fake.mu.Lock()
+	for i := range 2500 {
+		fake.objects[fmt.Sprintf("%s/.history/Log/%05d.md", guild, i)] = "old"
+	}
+	fake.mu.Unlock()
+	mustCall(t, url, "s1", "notes_write", map[string]any{"path": "Groceries", "content": "milk"})
+	list := mustCall(t, url, "s1", "notes_list", map[string]any{})
+	if n := list["notes"].([]any); len(n) != 1 || list["truncated"] == true {
+		t.Fatalf("list = %v", list)
+	}
+	if h := mustCall(t, url, "s1", "notes_search", map[string]any{"query": "milk"})["hits"].([]any); len(h) != 1 {
+		t.Errorf("search = %v", h)
+	}
+}
+
+// A bridge that fails is a storage error, not a missing vault.
+func TestABridgeFailureIsAStorageError(t *testing.T) {
+	store, _ := newStore(t)
+	bridge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(bridge.Close)
+	h := &Handler{Store: store, Places: &BridgePlaces{URL: bridge.URL}, Verifier: fakeVerifier{}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	if _, msg, ok := call(t, srv.URL, "s1", "notes_list", map[string]any{}); ok || msg != "Storage error; try again." {
+		t.Errorf("bridge down: ok=%v %q", ok, msg)
 	}
 }

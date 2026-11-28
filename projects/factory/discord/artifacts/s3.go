@@ -116,27 +116,45 @@ func (c *S3) Delete(ctx context.Context, key string) error {
 
 // List returns at most limit objects under prefix, in key order.
 func (c *S3) List(ctx context.Context, prefix string, limit int) ([]Object, bool, error) {
+	objects, next, err := c.ListPage(ctx, prefix, "", limit)
+	return objects, next != "", err
+}
+
+// ListPage returns one page of at most limit objects under prefix, from the
+// continuation token from ("" for the start), and the next page's token,
+// "" after the last page.
+func (c *S3) ListPage(ctx context.Context, prefix, from string, limit int) ([]Object, string, error) {
 	q := url.Values{"list-type": {"2"}, "prefix": {prefix}, "max-keys": {fmt.Sprint(limit)}}
+	if from != "" {
+		q.Set("continuation-token", from)
+	}
 	req, err := c.request(ctx, http.MethodGet, "", q, nil, emptySHA256)
 	if err != nil {
-		return nil, false, err
+		return nil, "", err
 	}
 	c.sign(req)
 	var out struct {
-		IsTruncated bool `xml:"IsTruncated"`
+		IsTruncated bool   `xml:"IsTruncated"`
+		Next        string `xml:"NextContinuationToken"`
 		Contents    []struct {
 			Key  string `xml:"Key"`
 			Size int64  `xml:"Size"`
 		} `xml:"Contents"`
 	}
 	if err := c.do(req, &out); err != nil {
-		return nil, false, err
+		return nil, "", err
 	}
 	objects := make([]Object, 0, len(out.Contents))
 	for _, o := range out.Contents {
 		objects = append(objects, Object{Key: o.Key, Size: o.Size})
 	}
-	return objects, out.IsTruncated, nil
+	if !out.IsTruncated {
+		return objects, "", nil
+	}
+	if out.Next == "" {
+		return nil, "", errors.New("s3 list: truncated with no continuation token")
+	}
+	return objects, out.Next, nil
 }
 
 func (c *S3) request(ctx context.Context, method, key string, q url.Values, body io.Reader, digest string) (*http.Request, error) {

@@ -210,7 +210,11 @@ func (h *Handler) call(ctx context.Context, id actorjwt.Identity, raw json.RawMe
 	session := id.SessionID()
 	place, err := h.Places.Place(ctx, session)
 	if err == nil && !h.Store.Servers[place.Server] {
-		err = errors.New("server not allowlisted: " + place.Server)
+		err = fmt.Errorf("%w: server %s is not allowlisted", ErrNoPlace, place.Server)
+	}
+	if err != nil && !errors.Is(err, ErrNoPlace) {
+		h.Log.Error("bridge lookup failed", "tool", p.Name, "actor", id.Subject, "err", err)
+		return toolError("Storage error; try again.")
 	}
 	if err != nil {
 		// No allowlisted server is known for this caller: every tool refuses.

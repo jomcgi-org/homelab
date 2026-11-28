@@ -1499,7 +1499,11 @@ def test_discord_bridge_reaches_only_its_expected_peers() -> None:
     item = _in(docs, "OnePasswordItem", ns, "discord-bot")
     assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-discord"
     egress = _in(docs, "CiliumNetworkPolicy", ns, "discord-bridge")["spec"]
-    assert "ingress" not in egress
+    # Only the notes tools' session lookup connects in (HOME-918).
+    assert [r["fromEndpoints"] for r in egress.get("ingress", [])] in (
+        [],
+        [[{"matchLabels": {"app.kubernetes.io/name": "bosun-artifacts"}}]],
+    )
     fqdns = [f for rule in egress["egress"] for f in rule.get("toFQDNs", [])]
     assert fqdns == [{"matchName": "discord.com"}, {"matchPattern": "*.discord.gg"}]
     peers = [
@@ -2489,6 +2493,11 @@ def test_discord_notes_take_the_server_from_the_bridge_and_their_own_key() -> No
         env["NOTES_BRIDGE_URL"]["value"]
         == "http://discord-bridge.factory-discord.svc.cluster.local:8080"
     )
+    # The URL's Service exists even with connector.notify off (the deploy values).
+    service = _in(docs, "Service", "factory-discord", "discord-bridge")
+    assert service["spec"]["selector"]["app.kubernetes.io/component"] == "gateway"
+    deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    assert not deploy["connector"].get("notify", {}).get("enabled")
     # The artifact key stays the envFrom Secret; no other pod names the notes key.
     assert container["envFrom"] == [{"secretRef": {"name": "bosun-artifacts-s3"}}]
     for d in docs:
@@ -2503,9 +2512,7 @@ def test_discord_notes_take_the_server_from_the_bridge_and_their_own_key() -> No
     ]["egress"]
     (to_bridge,) = [r for r in out if "factory-discord-bridge" in str(r)]
     assert to_bridge["toPorts"][0]["rules"]["http"] == [sessions_rule]
-    bridge = _in(
-        docs, "CiliumNetworkPolicy", "factory-discord", "factory-discord-bridge"
-    )
+    bridge = _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")
     (from_notes,) = [
         r for r in bridge["spec"]["ingress"] if "bosun-artifacts" in str(r)
     ]
