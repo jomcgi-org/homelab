@@ -802,21 +802,36 @@ def test_the_go_cache_under_the_cap_keeps_new_files(node):
     assert files(node["go"]) == {"README", "trim.txt", "ab/new-a"}
 
 
+OLD = "00000000-0000-4000-8000-00000000000a"
+FRESH = "00000000-0000-4000-8000-00000000000b"
+RECENT = "00000000-0000-4000-8000-00000000000c"
+HELD = "00000000-0000-4000-8000-00000000000d"
+LINK = "00000000-0000-4000-8000-00000000000e"
+
+
 def scratch_node(node):
     root = node["tmp"] / f"claude-{os.geteuid()}"
     project = root / "-home-op-repo"
-    old = old_tree(project / "aaaa-old", hours=5 * 24)
-    fresh = old_tree(project / "bbbb-fresh", hours=5 * 24)
+    old = old_tree(project / OLD, hours=5 * 24)
+    fresh = old_tree(project / FRESH, hours=5 * 24)
     write(fresh / "scratchpad" / "new")
-    recent = old_tree(project / "cccc-recent", hours=2 * 24)
+    recent = old_tree(project / RECENT, hours=2 * 24)
     return root, project, old, fresh, recent
 
 
 def test_idle_session_directories_go(node):
     root, project, old, fresh, recent = scratch_node(node)
-    held = old_tree(project / "dddd-held", hours=5 * 24)
-    (project / "eeee-link").symlink_to(held)
+    held = old_tree(project / HELD, hours=5 * 24)
+    (project / LINK).symlink_to(held)
     top = write(root / "loose-file", old=10 * DAY)
+    # Not session directories: other trees in the root, a project name
+    # without the leading -, and a session name that is not a UUID.
+    others = [
+        old_tree(root / "bundled-skills" / "2.1.329", hours=10 * 24),
+        old_tree(root / "venv" / "lib", hours=10 * 24),
+        old_tree(root / "plain" / OLD, hours=10 * 24),
+        old_tree(project / "scratch", hours=10 * 24),
+    ]
     holder = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"], cwd=held
     )
@@ -830,13 +845,11 @@ def test_idle_session_directories_go(node):
     assert dry.returncode == 0, dry.stderr
     assert "Session directories" in dry.stdout and ": 1, " in dry.stdout
     assert result.returncode == 0, result.stderr
-    assert sorted(p.name for p in project.iterdir()) == [
-        "bbbb-fresh",
-        "cccc-recent",
-        "dddd-held",
-        "eeee-link",
-    ]
+    assert sorted(p.name for p in project.iterdir()) == sorted(
+        [FRESH, RECENT, HELD, LINK, "scratch"]
+    )
     assert top.exists()
+    assert all(other.exists() for other in others)
     assert "keep (in use)" in result.stdout
 
 
@@ -844,7 +857,7 @@ def test_scratch_days_option(node):
     _, project, old, fresh, recent = scratch_node(node)
     result = run(node, "--apply", "--scratch-days", "1")
     assert result.returncode == 0, result.stderr
-    assert sorted(p.name for p in project.iterdir()) == ["bbbb-fresh"]
+    assert sorted(p.name for p in project.iterdir()) == [FRESH]
 
 
 @pytest.mark.parametrize("value", ["{home}", "{parent}", "missing"])
@@ -854,9 +867,9 @@ def test_unsafe_session_roots_are_skipped(node, base, value):
         "{parent}": str(node["home"].parent),
         "missing": str(base / "missing"),
     }[value]
-    old_tree(node["home"] / "proj" / "sess", hours=10 * 24)
+    old_tree(node["home"] / "-proj" / OLD, hours=10 * 24)
     env = dict(node["env"], GC_SCRATCH_DIR=root)
     result = run(node, "--apply", env=env)
     assert result.returncode == 0, result.stderr
     assert "Session directories" in result.stdout and "skipped" in result.stdout
-    assert (node["home"] / "proj" / "sess").exists()
+    assert (node["home"] / "-proj" / OLD).exists()

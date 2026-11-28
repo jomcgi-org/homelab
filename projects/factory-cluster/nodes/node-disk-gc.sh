@@ -41,10 +41,13 @@
 #   4. Claude Code session directories GC_SCRATCH_DIR/<project>/<session>
 #      (default GC_SCRATCH_DIR: <GC_TMP_DIR>/claude-<uid>) that hold no file
 #      modified in --scratch-days (default 3). They hold each session's
-#      scratchpad. The same in-use, mount and ownership checks as for the
+#      scratchpad. Only this shape matches: a project name that starts with
+#      - (Claude Code's escaped working directory) and a session name that is
+#      a UUID. Other trees in the root, such as bundled-skills/<version> or a
+#      virtualenv, stay. The same in-use, mount and ownership checks as for the
 #      test directories apply.
 #
-# It touches nothing else. node-disk-gc.timer runs it with --apply every 6 h.
+# It touches nothing else. node-disk-gc@<user>.timer runs it with --apply every 6 h.
 # Dry run is the default.
 # It refuses to run as root, with no exception, and it needs HOME to be an
 # absolute path.
@@ -526,7 +529,9 @@ if [[ "$scratch_root" == /* && -n "$scratch_real" ]] && ! holds_home "$scratch_r
 		[[ "$(dirname "$(dirname "$dir")")" == "$scratch_real" ]] || continue
 		[[ ! -L "$dir" && ! -L "$(dirname "$dir")" ]] || continue
 		sweep_dir "$dir"
-	done < <(find "$scratch_real" -mindepth 2 -maxdepth 2 -type d -uid "$proc_euid" -print0 2>/dev/null)
+	done < <(find "$scratch_real" -mindepth 2 -maxdepth 2 -type d -uid "$proc_euid" \
+		-path "$scratch_real/-*/*" -regextype posix-extended \
+		-regex '.*/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' -print0 2>/dev/null)
 	echo "Session directories in $scratch_real (no change in $scratch_days days): $sweep_count, $(human "$sweep_total")"
 	total_bytes=$((total_bytes + sweep_total))
 else
