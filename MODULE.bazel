@@ -633,12 +633,13 @@ use_repo(oci, "hermes_agent", "hermes_agent_linux_amd64")
 # (kagent.controller.image in projects/factory/deploy/values.yaml): a scratch
 # image whose one layer holds only /usr/local/bin/kagent-hermes. The Hermes
 # harness image reuses that layer. Move it with the controller. It is at
-# fork commit 0f2bccdc49ef (jomcgi-org/kagent#9 on #10): runner-only changes
-# after the controller's ce4e068bc4a0 (image parts, HOME-939; a refused turn
-# leaves the chain, HOME-909), so the controller stays.
+# fork commit c899fdf785cf (jomcgi-org/kagent#11 on #9 and #10): runner-only
+# changes after the controller's ce4e068bc4a0 (image parts, HOME-939; a
+# refused turn leaves the chain, HOME-909; a 402 turn reports
+# insufficient_credits, HOME-938), so the controller stays.
 oci.pull(
     name = "hermes_runner",
-    digest = "sha256:340073dcfbcc1a30314a3917a9f4d83b36794974b62730c5370d5597776e70b2",
+    digest = "sha256:599b949ebc1d2477e3f59a23e94b694df9e19e8c385ec73fd51c771da87d8773",
     image = "ghcr.io/jomcgi-org/kagent/hermes-runner",
     platforms = ["linux/amd64"],
 )
