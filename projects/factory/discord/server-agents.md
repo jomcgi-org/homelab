@@ -1176,6 +1176,12 @@ stateDiagram-v2
   normal turn's channel context, the archive backfill, the Hindsight
   backfill) drop a Bosun message with that footer and the message it
   answers.
+- **Restart.** A restart ends gloves off with no message. The catch-up
+  after it leaves unanswered a tag of Joe's that Bosun's notices place in
+  gloves off; it reads one page before its window to find the notice.
+- **Kept where.** "No memory" means no Hindsight, archive or ingest. The
+  agent's own sessions stay in kagent's session store and in its
+  snapshots (`s3://ate-snapshots/discord-unsafe/`), apart from Bosun's.
 - **Egress.** Workers may reach `api.abliteration.ai`; the egress gateway
   scans each request body (`gateway-policy-tls.yaml`) before it injects
   the key.
