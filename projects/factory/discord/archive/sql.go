@@ -81,12 +81,16 @@ func (r *Reader) SQL(ctx context.Context, a SQLArgs) (SQLResult, error) {
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL statement_timeout = %d", sqlTimeout.Milliseconds())); err != nil {
 		return SQLResult{}, err
 	}
-	stmt, err := tx.PrepareContext(ctx, q)
+	// Cancelling qctx when an answer is cut stops the query, so closing the
+	// rows does not wait for the rest of a large result.
+	qctx, stop := context.WithCancel(ctx)
+	defer stop()
+	stmt, err := tx.PrepareContext(qctx, q)
 	if err != nil {
 		return SQLResult{}, queryError(err)
 	}
 	defer stmt.Close()
-	rows, err := stmt.QueryContext(ctx)
+	rows, err := stmt.QueryContext(qctx)
 	if err != nil {
 		return SQLResult{}, queryError(err)
 	}
@@ -121,10 +125,12 @@ func (r *Reader) SQL(ctx context.Context, a SQLArgs) (SQLResult, error) {
 		}
 		res.Rows = append(res.Rows, vals)
 	}
-	if !res.Truncated {
-		if err := rows.Err(); err != nil {
-			return SQLResult{}, queryError(err)
-		}
+	if res.Truncated {
+		stop()
+		return res, nil
+	}
+	if err := rows.Err(); err != nil {
+		return SQLResult{}, queryError(err)
 	}
 	return res, nil
 }
