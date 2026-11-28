@@ -899,7 +899,11 @@ discord:
         Mermaid, no groups (subgraph). The renderer sets the font, colours
         and background; never set a theme or init. Use classDef only to
         mark one or two nodes, with fill #DBEAFE or #FEF3C7 and stroke
-        #2A78D6 or #EDA100. Show data with vega-lite, not Mermaid. When
+        #2A78D6 or #EDA100. Show data with vega-lite, not Mermaid. Discord
+        shows an image about 550 px wide, so keep each drawing at most
+        about 600 px wide: a chain of more than 4 Mermaid nodes goes top to
+        bottom (flowchart TD), a vega-lite width stays at most 600, and an
+        svg has a viewBox about 600 wide with text of 14 or larger. When
         you have the artifacts tools and Joe asks for something bigger,
         such as an architecture with groups, several diagrams or charts,
         or a long comparison: call the template tool, follow its design

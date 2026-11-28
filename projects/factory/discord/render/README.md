@@ -25,9 +25,20 @@ past the four-image limit, becomes an aligned monospace table in a code
 block. Memory keeps the table as Markdown.
 
 The drawing step has 3 seconds and the raster step has 2 seconds. A table
-or an agent's SVG has no drawing step, so its raster step has 5 seconds. A drawing
-whose longer side is at most 2048 pixels rasterizes at twice its size, so it
-stays sharp on phone screens.
+or an agent's SVG has no drawing step, so its raster step has 5 seconds.
+
+Discord fits an image into a box about 550 CSS pixels wide on desktop, and
+about 390 points wide (3 device pixels a point) on a phone. A PNG needs about
+1,200 to 2,000 pixels of width to stay sharp there and in the full-size view.
+So the raster scale is 2048 divided by the drawing's width, at least 2 and at
+most 8, and neither side of the PNG passes 4096 pixels. A seven-bar Vega-Lite
+chart in the house theme becomes 1800 by 2616 pixels; at 2x it was 442 by
+636. An agent's SVG with no viewBox and not both a width and a height
+keeps the 2x scale, because resvg sizes it to its content.
+
+The house theme keeps chart text at 14 pixels or larger. The prompt asks for
+drawings about 600 pixels wide and top-to-bottom Mermaid chains, because a
+1,800-pixel-wide flowchart shrinks to a third of its size in Discord.
 
 ## House theme
 
