@@ -343,3 +343,36 @@ func TestTheSeedLeavesGlovesOffTurnsOut(t *testing.T) {
 		t.Errorf("seeded=%v, lines %q; want %q", seeded, got, want)
 	}
 }
+
+// A refused message and its gloves-off offer stay out of a seed, with the
+// blocked set and after a restart: the seed stops at the offer, as at
+// ReplyBlocked (HOME-945).
+func TestTheSeedLeavesARefusalAndItsOfferOut(t *testing.T) {
+	for _, restarted := range []bool{false, true} {
+		b, _, _ := ingestBridge(&fakeAgent{})
+		server := &freshSessionAgent{}
+		b.Servers = map[string]SessionAgent{guild: server}
+		if !restarted {
+			b.block("102")
+		}
+		offer := bosunSaid("103", 3)
+		offer.Components = []Component{{Type: componentText, Content: offerText("Dario fainted at that spicy one.", time.Unix(1, 0))}}
+		offer.Reference = &Reference{MessageID: "102"}
+		b.History = &channelHistory{msgs: []HistoryMessage{
+			said("105", "ann", "after", 5),
+			offer,
+			said("102", "joe", "the refused joke", 2),
+			said("101", "ann", "hello", 1),
+		}}
+		b.Turn(context.Background(), tagged("200", "hi"))
+		prompt := server.lastPrompt()
+		if strings.Contains(prompt, "refused joke") || strings.Contains(prompt, "spicy") ||
+			strings.Contains(prompt, offerAsk) || strings.Contains(prompt, "hello") {
+			t.Errorf("restarted=%v: the refusal or its offer reached the seed: %s", restarted, prompt)
+		}
+		got, seeded := seedLines(t, prompt)
+		if !seeded || strings.Join(got, "|") != "ann: after" {
+			t.Errorf("restarted=%v: seeded=%v lines %q", restarted, seeded, got)
+		}
+	}
+}

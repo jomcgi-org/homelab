@@ -128,6 +128,9 @@ func (b *Bridge) writeOfferLine(ctx context.Context, l *slog.Logger, m Message, 
 	return offerLine(m.ID)
 }
 
+// isOffer reports whether text is a gloves-off offer (offerText).
+func isOffer(text string) bool { return IsUnsafeReply(text) && strings.Contains(text, offerAsk) }
+
 // offerText is an offer's message: the line, offerAsk and the gloves-off
 // footer marker, so history readers treat it as a gloves-off reply.
 func offerText(line string, until time.Time) string {
