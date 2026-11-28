@@ -33,11 +33,19 @@ flowchart LR
 | Pool worker | Staged off. Holds the seed and forks the children | `../gvisor-fork/kvm-pool.yaml` | fork build `8cf248b96e08`, gVisor `0250f9acf` | None: only the router reaches it | KVM device, capabilities for forkd |
 | Engine image | Designed. Semgrep Pro Secrets engine, rules and a small server | none yet | Semgrep `1.186.0` | Request text, after the child's seccomp filter is on | A token file, real or placeholder (see "Pro engine image") |
 
-The gateway calls the scanner for the Hindsight route only
-(`../resources/atenet-egress-config.yaml`, `hindsight-api.hindsight.svc:8888`).
+The gateway calls the scanner for two routes
+(`../resources/egress-scan/gateway-policy.yaml`):
+
+- Hindsight, `hindsight-api.hindsight.svc:8888`.
+- Bosun's browser, `browser-mcp.factory-discord.svc:8080` (HOME-932). These calls
+  carry the URLs and text that the agent types into pages. Joe chose to scan
+  the agent's calls to the browser, not the page traffic: the browser holds no
+  credentials ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-932#comment-13043)).
+
+Both routes use `failureMode: deny`, the same body limit and the same timeout.
 Other egress is not scanned. So the scanner, and the gate behind it, see the text
-of Hindsight requests, and the observe data and the enforce decision describe that
-traffic.
+of those requests, and the observe data and the enforce decision describe that
+traffic. The observe data and the enforce decision came before the browser route.
 
 The scanner pods run under gVisor (`runtimeClassName: gvisor`). They reach the gate
 and DNS only because Cilium sets `socketLB.hostNamespaceOnly: true`
@@ -279,8 +287,9 @@ HorizontalPodAutoscaler on `factory_worker_pool_workers_wanted`. This pool
 needs no autoscaler: the in-flight cap is 4 and `replicas` stays fixed. The
 factory autoscaler would need `minReplicas: 1` to serve this pool.
 
-Joe decided that an engine outage denies the request. The Hindsight route has
-the only policy today, and a deny there blocks memory writes, not safety. In
+Joe decided that an engine outage denies the request. A deny on the Hindsight
+route blocks memory writes, and a deny on the browser route blocks a browser
+call. Neither blocks safety. In
 observe mode no engine failure changes a verdict.
 
 ## Capacity and scheduling

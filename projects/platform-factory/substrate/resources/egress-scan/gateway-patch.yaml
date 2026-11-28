@@ -130,6 +130,22 @@ data:
                 policies:
                   http:
                     requestTimeout: 80ms
+              - condition: destination.hostname == "browser-mcp.factory-discord.svc.cluster.local" && destination.port == 8080
+                host: egress-scan.ate-system.svc:8080
+                protocol:
+                  grpc:
+                    context:
+                      route: browser
+                    metadata:
+                      actor: '{"spiffe": source.spiffeId}'
+                failureMode: deny
+                includeRequestBody:
+                  maxRequestBytes: 524288
+                  allowPartialMessage: false
+                  packAsBytes: true
+                policies:
+                  http:
+                    requestTimeout: 80ms
       - protocol: TLS
         tcpRoutes:
         - backends:

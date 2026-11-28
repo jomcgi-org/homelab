@@ -30,4 +30,5 @@ detector:
 metrics:
   routes:
     - hindsight-api.hindsight.svc.cluster.local:8888
+    - browser-mcp.factory-discord.svc.cluster.local:8080
   maxLabelValues: 32
