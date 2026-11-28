@@ -61,7 +61,7 @@ ROUTER_CA = os.environ.get("ROUTER_CA_FILE", "/var/run/router-ca/trust-bundle.pe
 WORKER_WAIT = float(os.environ.get("WORKER_WAIT_SECONDS", "900"))
 SEED_WAIT = float(os.environ.get("SEED_WAIT_SECONDS", "600"))
 STATE_WAIT = float(os.environ.get("STATE_WAIT_SECONDS", "120"))
-REQUEST_TIMEOUT = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "60"))
+REQUEST_TIMEOUT = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "180"))
 CALL_TIMEOUT = float(os.environ.get("CALL_TIMEOUT_SECONDS", "300"))
 POLL = float(os.environ.get("POLL_SECONDS", "0.25"))
 
@@ -290,13 +290,32 @@ def verdict(checks: dict) -> dict[str, bool]:
     }
 
 
-def child(router: Router, name: str, prepared: bool = False) -> dict:
+def child(router: Router, name: str, mode: str, prepared: bool = False) -> dict:
+    """One child's request. It logs its sample at once, so a slow or failed
+    child still leaves the samples before it. A request that fails counts as a
+    failed sample, and the run goes on."""
     row: dict = {"name": name}
     if not prepared:
         row.update(prepare(name))
-    row["send_to_result_ms"], checks = router.run(name)
+    try:
+        row["send_to_result_ms"], checks = router.run(name)
+    except Failed as err:
+        row["error"] = str(err)
+        log(event="sample", mode=mode, name=name, error=repr(str(err)), pass_all=False)
+        return row
     row["checks"] = checks
     row["pass"] = verdict(checks)
+    log(
+        event="sample",
+        mode=mode,
+        name=name,
+        send_to_result_ms=f"{row['send_to_result_ms']:.1f}",
+        **{f"{k}_ms": checks.get(k, {}).get("ms") for k in ("allowed", "denied", "dns")},
+        allowed=json.dumps(checks.get("allowed"), sort_keys=True).replace(" ", ""),
+        denied=json.dumps(checks.get("denied"), sort_keys=True).replace(" ", ""),
+        dns=json.dumps(checks.get("dns"), sort_keys=True).replace(" ", ""),
+        **{f"pass_{k}": v for k, v in row["pass"].items()},
+    )
     return row
 
 
@@ -316,34 +335,18 @@ def prepare(name: str) -> dict:
 
 
 def record(mode: str, rows: list[dict]) -> bool:
-    ok = True
-    for row in rows:
-        checks, passed = row["checks"], row["pass"]
-        log(
-            event="sample",
-            mode=mode,
-            name=row["name"],
-            send_to_result_ms=f"{row['send_to_result_ms']:.1f}",
-            mcp_ms=checks.get("allowed", {}).get("ms"),
-            allowed=json.dumps(checks.get("allowed"), sort_keys=True).replace(" ", ""),
-            denied=json.dumps(checks.get("denied"), sort_keys=True).replace(" ", ""),
-            dns=json.dumps(checks.get("dns"), sort_keys=True).replace(" ", ""),
-            **{f"pass_{k}": v for k, v in passed.items()},
-        )
-        ok = ok and all(passed.values())
-    stats(mode, "send_to_result_ms", [r["send_to_result_ms"] for r in rows])
-    stats(
-        mode,
-        "mcp_ms",
-        [
-            float(r["checks"]["allowed"]["ms"])
-            for r in rows
-            if "ms" in r["checks"].get("allowed", {})
-        ],
-    )
+    """Stats over the answered samples; pass only when every child answered
+    and passed. child() has logged each sample."""
+    answered = [r for r in rows if "checks" in r]
+    ok = len(answered) == len(rows) and all(all(r["pass"].values()) for r in answered)
+    stats(mode, "send_to_result_ms", [r["send_to_result_ms"] for r in answered])
+    for check in ("allowed", "denied", "dns"):
+        stats(mode, f"{check}_ms", [
+            float(r["checks"][check]["ms"]) for r in answered if "ms" in r["checks"].get(check, {})
+        ])
     if mode == "ondemand":
         for key in ("create_ms", "policy_ms", "resume_ms"):
-            stats(mode, key, [r[key] for r in rows])
+            stats(mode, key, [r[key] for r in rows if key in r])
     return ok
 
 
@@ -398,7 +401,7 @@ def run() -> bool:
     )
 
     router = Router()
-    ok = record("ondemand", [child(router, f"od-{i}") for i in range(1, SAMPLES + 1)])
+    ok = record("ondemand", [child(router, f"od-{i}", "ondemand") for i in range(1, SAMPLES + 1)])
     rows: list[dict] = []
     for batch in range(0, SAMPLES, POOL_BATCH):
         names = [
@@ -406,7 +409,7 @@ def run() -> bool:
         ]
         for name in names:
             prepare(name)
-        rows += [child(router, name, prepared=True) for name in names]
+        rows += [child(router, name, "pool", prepared=True) for name in names]
     return record("pool", rows) and ok
 
 

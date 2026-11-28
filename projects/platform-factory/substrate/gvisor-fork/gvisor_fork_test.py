@@ -1726,7 +1726,7 @@ def test_x5_verdict() -> None:
 def test_x5_job_runs_once_as_ate_client_with_the_fork_cli() -> None:
     docs = list(yaml.safe_load_all((_X5 / "job.yaml").read_text()))
     (job,) = [d for d in docs if d["kind"] == "Job"]
-    assert job["metadata"]["name"] == "gvisor-fork-x5-2"
+    assert job["metadata"]["name"] == "gvisor-fork-x5-3"
     assert job["spec"]["suspend"] is False and job["spec"]["backoffLimit"] == 0
     pod = job["spec"]["template"]["spec"]
     assert pod["serviceAccountName"] == "ate-client"

@@ -829,7 +829,7 @@ _FORK_OBJECTS = {
     ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-conformance"),
     ("CiliumNetworkPolicy", "ate-system", "ate-api-server-gvisor-fork-x5"),
     ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-x5"),
-    ("Job", "ate-system", "gvisor-fork-x5-2"),
+    ("Job", "ate-system", "gvisor-fork-x5-3"),
     ("CiliumNetworkPolicy", _FORK_NS, "substrate-workers"),
     ("Job", "ate-system", "gvisor-fork-assets-init"),
     ("Job", "ate-system", "gvisor-fork-conformance-7"),
