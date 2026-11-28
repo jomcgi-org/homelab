@@ -562,17 +562,8 @@ func (c *Client) CheckRuns(ctx context.Context, repo, sha string) ([]CheckRun, e
 // bound to a statusCreator could never match it. Statuses past the first
 // 100 are not read.
 func (c *Client) Statuses(ctx context.Context, repo, sha string) ([]Status, error) {
-	var out []struct {
-		NodeID      string `json:"node_id"`
-		Context     string `json:"context"`
-		State       string `json:"state"`
-		Description string `json:"description"`
-		TargetURL   string `json:"target_url"`
-		Creator     struct {
-			Login string `json:"login"`
-		} `json:"creator"`
-	}
 	path := repoPath(repo) + "/commits/" + url.PathEscape(sha) + "/statuses?per_page=100"
+	var out []commitStatus
 	if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
@@ -589,6 +580,37 @@ func (c *Client) Statuses(ctx context.Context, repo, sha string) ([]Status, erro
 		})
 	}
 	return sts, nil
+}
+
+type commitStatus struct {
+	NodeID      string `json:"node_id"`
+	Context     string `json:"context"`
+	State       string `json:"state"`
+	Description string `json:"description"`
+	TargetURL   string `json:"target_url"`
+	Creator     struct {
+		Login string `json:"login"`
+	} `json:"creator"`
+}
+
+// StatusFrom reads newest first until the requested creator and context match.
+func (c *Client) StatusFrom(ctx context.Context, repo, sha, name, creator string, before func(int) error) (string, error) {
+	for page := 1; ; page++ {
+		var out []commitStatus
+		path := fmt.Sprintf("%s/commits/%s/statuses?per_page=100&page=%d", repoPath(repo), url.PathEscape(sha), page)
+		err := c.send(ctx, repo, http.MethodGet, path, nil, &out, true, sendPolicy{before: func() error { return before(page) }})
+		if err != nil {
+			return "", err
+		}
+		for _, s := range out {
+			if s.Context == name && strings.EqualFold(s.Creator.Login, creator) {
+				return s.State, nil
+			}
+		}
+		if len(out) < 100 {
+			return "", nil
+		}
+	}
 }
 
 type gqlError struct {

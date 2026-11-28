@@ -4518,3 +4518,16 @@ func (g *fakeGitHub) ListCheckRunsWithJournal(ctx context.Context, repo, sha str
 	}
 	return g.CheckRuns(ctx, repo, sha)
 }
+
+func (g *fakeGitHub) StatusFrom(ctx context.Context, repo, sha, name, creator string, before func(int) error) (string, error) {
+	if err := before(1); err != nil {
+		return "", err
+	}
+	sts, err := g.Statuses(ctx, repo, sha)
+	for _, s := range sts {
+		if s.Context == name && strings.EqualFold(s.Creator, creator) {
+			return s.State, err
+		}
+	}
+	return "", err
+}

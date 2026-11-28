@@ -1785,3 +1785,16 @@ func TestCommitTreeAndMergeBaseReadTheNamedCommits(t *testing.T) {
 		t.Fatalf("merge base without a SHA = %q", base)
 	}
 }
+
+func TestStatusFromSkipsNewerForeignCreator(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"context":"pr-checks","state":"failure","creator":{"login":"foreign"}},{"context":"pr-checks","state":"success","creator":{"login":"trusted"}},{"context":"pr-checks","state":"failure","creator":{"login":"trusted"}}]`))
+	}))
+	defer gh.Close()
+	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
+	calls := 0
+	got, err := c.StatusFrom(context.Background(), "example-org/homelab", "head", "pr-checks", "trusted", func(page int) error { calls++; return nil })
+	if err != nil || got != "success" || calls != 1 {
+		t.Fatalf("state %s calls %d err %v", got, calls, err)
+	}
+}

@@ -21,8 +21,9 @@ type Schedule struct {
 	// schedule. Prompt is what the connector sends the planner Agent: reviewed
 	// text on main, so no run takes its task from itsaplan. A schedule with no
 	// prompt admits no run.
-	Cron   string `yaml:"cron"`
-	Prompt string `yaml:"prompt"`
+	Actions []string `yaml:"actions,omitempty"`
+	Cron    string   `yaml:"cron"`
+	Prompt  string   `yaml:"prompt"`
 }
 
 // MaxPromptBytes bounds a schedule's analysis prompt.

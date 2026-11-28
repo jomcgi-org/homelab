@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -129,4 +130,106 @@ func (p Proposal) Description(instructions string) (string, bool) {
 // character set cannot contain "-->".
 func FingerprintMarker(fingerprint string) string {
 	return "<!-- factory-planner-fp:" + fingerprint + " -->"
+}
+
+// exactObject rejects extra, missing, duplicate and differently cased fields.
+func exactObject(raw []byte, fields map[string]any) bool {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	if t, _ := d.Token(); t != json.Delim('{') {
+		return false
+	}
+	for d.More() {
+		key, err := d.Token()
+		if err != nil {
+			return false
+		}
+		k, ok := key.(string)
+		if !ok || fields[k] == nil || d.Decode(fields[k]) != nil {
+			return false
+		}
+		delete(fields, k)
+	}
+	return len(fields) == 0
+}
+
+type Action struct {
+	Op, Target, Reason string
+	Args               json.RawMessage
+}
+
+func validArgs(a Action) bool {
+	fields := map[string]any{}
+	var priority string
+	var position *float64
+	var partition [][]int
+	switch a.Op {
+	case "delegate", "cancel", "grant_round", "recut":
+	case "set_priority":
+		fields["priority"] = &priority
+	case "move":
+		fields["position"] = &position
+	case "split":
+		fields["partition"] = &partition
+	default:
+		return false
+	}
+	if !exactObject(a.Args, fields) {
+		return false
+	}
+	switch a.Op {
+	case "set_priority":
+		return priority == "low" || priority == "medium" || priority == "high"
+	case "move":
+		return position != nil
+	case "split":
+		if len(partition) < 2 {
+			return false
+		}
+		seen := map[int]bool{}
+		for _, group := range partition {
+			if len(group) == 0 {
+				return false
+			}
+			for _, index := range group {
+				if index < 1 || seen[index] {
+					return false
+				}
+				seen[index] = true
+			}
+		}
+		return true
+	}
+	return true
+}
+
+// Observe validates all three lists but only returns audit candidates.
+func Observe(raw []byte, namespace string, allowed []string, targets map[string]json.RawMessage, prs map[int]bool) ([]Action, int) {
+	var actions, proposals, cards []json.RawMessage
+	if len(raw) > 65536 || !utf8.Valid(raw) || !json.Valid(raw) || !exactObject(raw, map[string]any{"actions": &actions, "proposals": &proposals, "cards": &cards}) || actions == nil || cards == nil || proposals == nil {
+		return nil, 1
+	}
+	var accepted []Action
+	dropped := 0
+	for _, item := range actions {
+		var a Action
+		if !exactObject(item, map[string]any{"op": &a.Op, "target": &a.Target, "reason": &a.Reason, "args": &a.Args}) || !slices.Contains(allowed, a.Op) || targets[a.Target] == nil || !validArgs(a) || strings.TrimSpace(a.Reason) == "" || strings.ContainsRune(a.Reason, 0) {
+			dropped++
+			continue
+		}
+		accepted = append(accepted, a)
+	}
+	for _, item := range proposals {
+		if _, ok := parseItem(item, namespace); !ok {
+			dropped++
+		}
+	}
+	for _, item := range cards {
+		var pr int
+		var findings []string
+		var recommendation string
+		if !exactObject(item, map[string]any{"pr": &pr, "findings": &findings, "recommendation": &recommendation}) || !prs[pr] || len(findings) == 0 || slices.ContainsFunc(findings, func(id string) bool { return strings.TrimSpace(id) == "" }) || strings.TrimSpace(recommendation) == "" {
+			dropped++
+		}
+	}
+	return accepted, dropped
 }

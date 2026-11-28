@@ -882,6 +882,21 @@
                 "pattern": "^[a-z0-9._/-]+:[a-z0-9._/-]+$",
                 "maxLength": 252
               },
+              "actions": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "delegate",
+                    "set_priority",
+                    "move",
+                    "cancel",
+                    "split",
+                    "grant_round",
+                    "recut"
+                  ]
+                }
+              },
               "ceiling": { "type": "string" },
               "minInterval": { "type": "string", "minLength": 1 },
               "cooldown": { "type": "string", "minLength": 1 },

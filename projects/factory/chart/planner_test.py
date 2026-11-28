@@ -163,6 +163,7 @@ def test_planner_agent_is_read_only_and_tool_free(on: list[dict]) -> None:
     assert agent["spec"]["egressPolicyRefs"] == [{"name": "github-git"}]
     assert inline["modelConfig"] == {"name": "planner"}
     prompt = inline["systemPrompt"]
+    assert "triage JSON object" not in prompt
     for phrase in (
         "read-only",
         "you never push, commit, open a PR",
@@ -444,3 +445,25 @@ def test_a_schedule_needs_both_cron_and_prompt(missing: str) -> None:
     del broken[0][missing]
     with pytest.raises(RuntimeError, match="set both cron and prompt"):
         _helm(f"connector.plannerSchedules={json.dumps(broken)}")
+
+
+def test_reviewed_triage_schedule() -> None:
+    defaults = yaml.safe_load((_CHART / "values.yaml").read_text())
+    triage = next(
+        s for s in defaults["connector"]["plannerSchedules"] if s["name"] == "triage"
+    )
+    docs = _helm("connector.plannerSchedules=" + json.dumps([triage]))
+    agent = _in(docs, "Agent", _NS, "homelab-planner")
+    assert "triage JSON object" in agent["spec"]["template"]["inline"]["systemPrompt"]
+    (schedule,) = _config(docs, "factory-connector")["plannerSchedules"]
+    assert schedule["ceiling"] == "backlog"
+    assert schedule["cron"] == "0 */3 * * *"
+    assert schedule["actions"] == [
+        "delegate",
+        "set_priority",
+        "move",
+        "cancel",
+        "split",
+        "grant_round",
+        "recut",
+    ]
