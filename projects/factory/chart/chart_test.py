@@ -1858,6 +1858,12 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
                 "tools": ["put", "template", "list"],
             }
         },
+        {
+            "mcp": {
+                "server": {"kind": "RemoteMCPServer", "name": "history"},
+                "tools": ["history_search", "history_around", "history_day"],
+            }
+        },
     ]
     assert "egressPolicyRefs" not in agent
     prompt = " ".join(agent["template"]["inline"]["systemPrompt"].split())
@@ -1912,7 +1918,11 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
     servers = {
         d["metadata"]["name"]: d for d in in_ns if d["kind"] == "RemoteMCPServer"
     }
-    assert set(servers) == {"scotland", "artifacts"}
+    assert set(servers) == {"scotland", "artifacts", "history"}
+    assert servers["history"]["spec"]["actorJwt"] == {"audiences": ["bosun-history"]}
+    assert servers["history"]["spec"]["url"] == (
+        "http://bosun-history.factory-discord.svc.cluster.local:8080/mcp"
+    )
     for server in servers.values():
         assert server["metadata"]["labels"]["kagent.dev/discovery"] == "disabled"
         assert server["spec"]["protocol"] == "STREAMABLE_HTTP"
