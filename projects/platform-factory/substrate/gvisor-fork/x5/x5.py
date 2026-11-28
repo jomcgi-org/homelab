@@ -204,10 +204,6 @@ def stats(mode: str, metric: str, values: list[float]) -> None:
 
 # The API refuses a container argument over 4096 characters.
 ARG_LIMIT = 4096
-PROBE_HOSTS = (
-    "mcp-grafana.grafana.svc.cluster.local",
-    "hindsight-api.hindsight.svc.cluster.local",
-)
 
 
 def compact(source: str) -> str:
@@ -398,7 +394,10 @@ def run() -> bool:
     text = template_text(
         (CONFIG / "probe.py").read_text(),
         (CONFIG / "template.yaml").read_text(),
-        [socket.gethostbyname(host) for host in PROBE_HOSTS],
+        [
+            socket.gethostbyname(os.environ[key])
+            for key in ("ALLOWED_HOST", "DENIED_HOST")
+        ],
     )
     rendered = WORK / "template.yaml"
     rendered.write_text(text)
