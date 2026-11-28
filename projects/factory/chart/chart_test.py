@@ -1949,11 +1949,10 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
 
 def test_discord_bridge_starts_new_channel_sessions_for_the_tools() -> None:
     # kagent pins a session to the Agent revision that created it, so a new
-    # sessionEpoch gives every channel a new session (HOME-915). It ships
-    # empty: the bridge syncs before the Agent, so the epoch moves in a later
-    # change, after the tools revision is live.
+    # sessionEpoch gives every channel a new session (HOME-915). Deploy sets
+    # it after the tools revision was live (2026-11-28).
     deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
-    assert deploy["discord"]["bridge"]["policy"]["sessionEpoch"] == ""
+    assert deploy["discord"]["bridge"]["policy"]["sessionEpoch"] == "tools1"
     defaults = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
     assert defaults["discord"]["bridge"]["policy"]["sessionEpoch"] == ""
 
