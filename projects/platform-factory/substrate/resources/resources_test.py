@@ -827,7 +827,7 @@ _FORK_OBJECTS = {
     ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-conformance"),
     ("CiliumNetworkPolicy", _FORK_NS, "substrate-workers"),
     ("Job", "ate-system", "gvisor-fork-assets-init"),
-    ("Job", "ate-system", "gvisor-fork-conformance-6"),
+    ("Job", "ate-system", "gvisor-fork-conformance-7"),
     ("Namespace", None, _FORK_NS),
     ("SandboxConfig", None, "gvisor-fork"),
     ("ServiceAccount", _FORK_NS, "fork-worker"),
@@ -894,7 +894,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
     # its own (and deletes it), so the worker holds no seed.
     pool = _one(docs, "WorkerPool", "gvisor-fork")
     assert pool["spec"]["replicas"] == 1
-    conformance = _one(docs, "Job", "gvisor-fork-conformance-6")
+    conformance = _one(docs, "Job", "gvisor-fork-conformance-7")
     assert conformance["spec"]["suspend"] is False
     # A Pending Job leaves the Application Degraded and the cluster is request
     # tight, so the pod requests little.
@@ -1076,13 +1076,13 @@ def test_fork_seed_gate_is_on() -> None:
 
 # 8cf248b96e08 contains the earlier KVM-only ForkSeed patch (1e7a877d0ca3), so
 # both builds give the gate to KVM pools' workers only.
-_KVM_ONLY_GATE_BUILDS = {"fork-1e7a877d0ca3", "fork-8cf248b96e08"}
+_KVM_ONLY_GATE_BUILDS = {"fork-1e7a877d0ca3", "fork-8cf248b96e08", "fork-7edec5939cba"}
 _FORK_IMAGES = "ghcr.io/jomcgi-org/homelab/substrate-fork/"
-_FORK_TAG = "fork-8cf248b96e08"
+_FORK_TAG = "fork-7edec5939cba"
 _FORK_DIGESTS = {
-    "ateapi": "b4feb50d685dbaedaa5433ba77ae9b6c9181c30b81bd3e0522cca102b9865835",
-    "atecontroller": "d8386836296bb7554a0dc12ba9415c154e17f933ecee37f70cb1fe715efcb55a",
-    "atelet": "f72e25955d72f2475ac15342b6073857c603eabd5486c7ddd77344999f40a1e0",
+    "ateapi": "6798bf9af31eb1f3134eb5f1eef6f07edc8120b9784de3bb1488aec98216a931",
+    "atecontroller": "a6cb2d6b48f26e832b414d8f46ba2974cd0503ecb1c015f4ce089359b1d146c9",
+    "atelet": "25e89f5ac3a6f42fc6cedd4adbfb90ebd3be2cea54c9c75c847d3d0ef06cfc2e",
 }
 
 
@@ -1137,7 +1137,7 @@ def test_fork_images_share_one_fork_commit_tag() -> None:
     refs["workerpool/gvisor-fork"] = _one(docs, "WorkerPool", "gvisor-fork")["spec"][
         "workerImage"
     ]
-    job = _one(docs, "Job", "gvisor-fork-conformance-6")
+    job = _one(docs, "Job", "gvisor-fork-conformance-7")
     (cli,) = [
         v["image"]["reference"]
         for v in job["spec"]["template"]["spec"]["volumes"]

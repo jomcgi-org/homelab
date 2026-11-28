@@ -1,6 +1,6 @@
 # Rendered by render-upstream.sh from oci://ghcr.io/kagent-dev/substrate/helm/substrate:1.0.1
 # (sha256:336c12f7f265e1b6400529eb1ef69c8d0765872d810f18f97525c66d2ba90f86) templates/ate-api-server.yaml. Do not edit.
-# Overlaid by render-upstream.sh from https://github.com/jomcgi-org/substrate 8cf248b96e08fcf2402199804fb04deadab5348b (fork overlay).
+# Overlaid by render-upstream.sh from https://github.com/jomcgi-org/substrate 7edec5939cbaf9b21811230dafa0fdb8b5127d2d (fork overlay).
 # The ateapi image is the fork build.
 ---
 apiVersion: policy/v1
@@ -181,7 +181,7 @@ spec:
           capabilities:
             add: [NET_BIND_SERVICE]
             drop: [ALL]
-        image: ghcr.io/jomcgi-org/homelab/substrate-fork/ateapi:fork-8cf248b96e08@sha256:b4feb50d685dbaedaa5433ba77ae9b6c9181c30b81bd3e0522cca102b9865835
+        image: ghcr.io/jomcgi-org/homelab/substrate-fork/ateapi:fork-7edec5939cba@sha256:6798bf9af31eb1f3134eb5f1eef6f07edc8120b9784de3bb1488aec98216a931
         resources:
           limits:
             cpu: "2"

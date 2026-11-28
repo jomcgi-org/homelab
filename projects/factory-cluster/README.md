@@ -648,7 +648,7 @@ makes a fork template, in its own atespace, and deletes it.
 | --- | --- | --- |
 | SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | wired (step 5). No pool uses the config until step 6. `gvisor-default` stays the class default |
 | WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | one worker (step 6). It holds no seed while no template sets `fork_config` (the conformance Job makes one for its run) |
-| Conformance Job `gvisor-fork-conformance-6` | `gvisor-fork/conformance-job.yaml` | runs once (step 8); `suspend: false` |
+| Conformance Job `gvisor-fork-conformance-7` | `gvisor-fork/conformance-job.yaml` | runs once (step 8); `suspend: false` |
 | Latency Jobs `gvisor-fork-latency-1` and `gvisor-fork-latency-data-1` | `gvisor-fork/latency/` | a kustomization the directory does not list, and `suspend: true` |
 | Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | the three control-plane images are pinned and live (step 4); `ateworker-gvisor` runs in the pool (step 6) and `kubectl-ate` in the conformance Job (step 8) |
 | `ForkSeed` preview gate | `substrate/values/common.yaml` | on (step 7). The controller gives it to KVM pools' workers only. It starts no fork until a template sets `fork_config` (step 10) |
@@ -921,7 +921,7 @@ flowchart LR
    again: it is not a hook, and later syncs apply the same spec. It stays, with
    its log, until a separate PR deletes `conformance-job.yaml` and its
    kustomization entries (Argo then prunes it). Read the log any time:
-   `kubectl -n ate-system logs job/gvisor-fork-conformance-6 | grep '^CONFORMANCE '`.
+   `kubectl -n ate-system logs job/gvisor-fork-conformance-7 | grep '^CONFORMANCE '`.
 
    | Job | Result |
    | --- | --- |
@@ -1003,6 +1003,36 @@ flowchart LR
     the relation, or creates the templates as an owner. Joe's rule from the
     2026-11-22 design session is that nothing is enabled on the factory until
     the gates pass. No HOME ticket or decision comment records it yet.
+
+#### Gateway egress for fork children (HOME-924)
+
+Fork `7edec5939cba` (branch `fork/egress-gateway`) lets a fork template set
+`fork_config.egress: FORK_EGRESS_GATEWAY`. The control plane then sends the
+default egress gateway in atelet's `Fork`, and the worker mints the child's
+actor certificate and activates its egress before the sandbox starts, as for a
+booted actor. The child's own `EgressPolicy` decides what it reaches. A template
+without the field is unchanged: no egress, DNS refused.
+[Joe approved the roll](https://factory-plan.jomcgi.dev/factory/issue/HOME-924#comment-13032)
+on 2026-11-28.
+
+The re-pin moves all five fork images to `fork-7edec5939cba`. It rolls the
+same objects as step 7: `ate-api-server` (2, one at a time), `ate-controller`,
+`atelet` (3, one node at a time) and the `gvisor-fork` worker. Other pools keep
+their args. The conformance Job runs again as `gvisor-fork-conformance-7`, so
+the worker pins the `fork-conformance` atespace; the next fork user restarts
+the worker first (`factory.jomcgi.dev/worker-restart`).
+
+Verify, read-only:
+
+```sh
+kubectl get workerpools -A                     # every pool Ready
+kubectl -n ate-system get pods -l 'app in (ate-api-server,ate-controller,atelet)' -o jsonpath='{range .items[*]}{.metadata.name} {.status.containerStatuses[0].imageID}{"\n"}{end}'   # fork-7edec5939cba digests
+kubectl -n ate-system logs job/gvisor-fork-conformance-7 | grep '^CONFORMANCE '   # C1 to C8 pass
+```
+
+Then check that an existing actor still starts (the smoke test in "Agent
+Substrate"). To roll back, revert the PR: the images return to
+`fork-8cf248b96e08`.
 
 #### Isolation gates
 
