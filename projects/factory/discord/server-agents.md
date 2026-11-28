@@ -295,7 +295,8 @@ adds `webToolsPrompt`. Factory MCP
 waits for factory-mcp.jomcgi.dev, which is not built yet (HOME-900; binding
 in HOME-916). Recall as a tool waits for a bank bound to the turn's server
 (see "Recall as a tool" below); the bridge still puts the turn's own
-server memories in each prompt.
+server memories in each prompt. The notes vault tools are built
+(see "Notes vault" below); binding them is a deploy values change.
 
 ```mermaid
 flowchart LR
@@ -313,6 +314,7 @@ flowchart LR
 | Scotland `plan`, `check`, `aurora`, `light` | scotland-connector, public, read-only | Hermes MCP timeout | None |
 | GitHub `search_repositories`, `search_code`, `get_file_contents`, branches, tags, commits, releases, pull requests, issues (16 read tools) | github-mcp in factory-discord, read-only, public-repositories token | GitHub's API rate limit for the token | None |
 | Artifacts `put`, `template`, `list` (no `delete`) | bosun-artifacts in factory-discord, actor JWT | 2 MiB a file; bucket quota (see "Artifacts") | None |
+| Notes `notes_list`, `notes_read`, `notes_search`, `notes_write`, `notes_append`, `notes_delete` (to `.trash/`) | bosun-artifacts `/notes/mcp`, actor JWT, server from the bridge | 256 KiB a note (see "Notes vault") | None |
 
 - **Narrow opening.** The kagent fork's Hermes runner (jomcgi-org/kagent#6)
   names only the bound MCP servers in `platform_toolsets.api_server`, so no
@@ -395,8 +397,13 @@ Each turn's prompt holds other people's channel text, recalled memories,
 web pages and tool results. All of it is untrusted, and none of it may
 cause a write.
 
-- **Writes.** The only bound write tool is artifacts `put`, which changes
-  only the Joe-only artifact bucket. `delete` is not bound: it cannot be
+- **Writes.** The bound write tools are artifacts `put`, which changes
+  only the Joe-only artifact bucket, and, when bound, the notes vault's
+  `notes_write`, `notes_append` and `notes_delete`. The prompt allows a
+  notes write only when Joe's tagging message asks to note, save or
+  delete something, and keeps other people's messages and memories out
+  of a note unless Joe asks. The vault's server comes from the bridge's
+  session record, not from the model; nothing deletes a note for good. `delete` is not bound: it cannot be
   undone. The prompt allows `put` only when the tagging message asks for a
   page or file, asks for a new path unless Joe asks to replace one, and
   keeps memories and other people's messages out of a file unless Joe
@@ -441,7 +448,7 @@ Options, recommended first:
 
 | Option | Enforcement | Cost |
 | --- | --- | --- |
-| Bind the bank to the session: the bridge records channel to server for each session it creates, and the Hindsight extension accepts an actor JWT and allows only that session's server bank | Gateway and Hindsight, no prompt | A session-to-server map that Hindsight can read, and actor JWT on the RemoteMCPServer |
+| Bind the bank to the session: the bridge records channel to server for each session it creates, and the Hindsight extension accepts an actor JWT and allows only that session's server bank | Gateway and Hindsight, no prompt | Hindsight reads the bridge's session record (`GET /sessions/<id>`, built for the notes vault) and takes an actor JWT on the RemoteMCPServer |
 | One Agent per server, each with a one-bank token (section 3's design) | Credentials per atespace | Four Agents and WorkerPools; Joe's cross-server session goes |
 | Bind the token now and keep the prompt rule (own bank unless Joe names another server) | Prompt only | Injected text can still cause a cross-server read |
 
@@ -476,6 +483,82 @@ flowchart LR
   JSON, and the model confirms briefly. A failed store is logged, the
   note says the fact was not saved, and the turn still answers.
 - The exchange retain does not change.
+
+### Notes vault (HOME-918)
+
+Joe decided on 2026-11-28 that Bosun keeps notes per Discord server in
+Garage, as an Obsidian-style vault
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-918#comment-12931)),
+and that Hermes' own memory files live in the same vault
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-921#comment-12939),
+which supersedes "MEMORY.md stays off"). One session per channel means each
+channel actor has its own volume, so files on the volume would split per
+channel and live only in snapshots.
+
+```mermaid
+sequenceDiagram
+  participant B as Bridge
+  participant H as Hermes actor (session S)
+  participant G as Egress gateway
+  participant N as bosun-artifacts /notes/mcp
+  participant S3 as Garage bosun-notes
+  B->>B: record S -> server, channel
+  B->>H: turn
+  H->>G: notes_write (no server argument)
+  G->>N: actor JWT names session S
+  N->>B: GET /sessions/S
+  B-->>N: server_id, channel_id
+  N->>S3: PUT <server>/<path>.md (notes key)
+```
+
+| Path under `<server-id>/` | What | Who writes |
+| --- | --- | --- |
+| `<path>.md` | Notes; `[[Note name]]` links | `notes_write`, `notes_append` |
+| `_hermes/MEMORY.md`, `_hermes/USER.md` | Hermes' memory files, read by every member (Joe chose this; `USER.md` is about Joe). `SOUL.md` stays in git | The runner's sync (`memory_write`, HOME-921) |
+| `.trash/<path>.md` | Deleted notes; a taken name gets a UTC time suffix | `notes_delete` (a move) |
+| `.history/<path>/<time>.md` | The version a replace overwrote | `notes_write` with `replace`, `memory_write` |
+
+- **Server from the turn.** The actor JWT names the session
+  (`session-<id>`). The bridge records each server agent session's server
+  and channel before it sends the turn (`sessions.go`), and serves the
+  record at `GET /sessions/<id>`; only bosun-artifacts reaches it, GET
+  only (Cilium). No tool takes a server argument, and an unknown argument
+  is refused. A session the bridge has not recorded, or a server outside
+  `bridge.policy.guilds`, gets no vault. The record is in memory: after a
+  bridge restart a session is known again at its next turn, the only time
+  it calls a tool.
+- **No hard delete.** `notes_delete` copies the note to `.trash/` and then
+  removes the original, so a failure leaves two copies, never none.
+  `.trash/` and `.history/` stay out of `notes_list` and `notes_search`
+  unless `include_trash` is set; `notes_read` reads them, so Joe can get
+  a note back. The model cannot write `_hermes/`, `.trash/` or `.history/`.
+- **Writes.** The prompt (`discord.notes.prompt`, added when a binding is
+  named `notes`) allows a write, append or delete only when Joe's tagging
+  message asks for it, and never copies other people's messages or
+  recalled memories into a note unless Joe asks. Reading is allowed any
+  time.
+- **Memory sync.** `memory_read` returns a file and its version (SHA-256,
+  `""` for a missing file); `memory_write` replaces it only from the
+  current version, else it changes nothing and returns the newer copy to
+  merge into. They are for the Hermes runner (HOME-921), not for the model:
+  the binding's `tools` list leaves them out.
+- **One replica.** bosun-artifacts runs one pod, and a lock for each key
+  makes append, delete and the version check atomic.
+- **Key.** Secret `bosun-notes-s3` (garage-init `GRANTS`) is only in the
+  bosun-artifacts pod, as `NOTES_*` variables beside the artifact key. A new
+  pod waits for garage-init to fill it; the old pod keeps serving.
+- **Viewer.** Members will read their server's vault at
+  `notes.jomcgi.dev/<server-id>/`, read-only
+  ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-920#comment-12935)).
+  Its own PR adds it.
+
+**Wiring.** A deploy values entry binds it to the homelab agent
+(`discord.serverAgents.homelab.mcpServers`): name `notes`, URL
+`http://bosun-artifacts.factory-discord.svc.cluster.local:8080/notes/mcp`,
+`actorJwt.audiences: [bosun-artifacts]`, tools `notes_list`, `notes_read`,
+`notes_search`, `notes_write`, `notes_append` and `notes_delete`. Then a new
+`sessionEpoch`, in a later change, moves existing channels onto it (see
+"New sessions").
 
 ### Artifacts (HOME-909)
 
@@ -1069,7 +1152,6 @@ Each decision names the rule that needs Joe.
 | HOME-162 rule changes | HOME-162 is Joe's contract | Accept the table in section 6; accept it without rule 3 (no agent tools yet); keep Bosun |
 | Homelab agent's factory access | factory-mcp is Joe-only (HOME-900) | Read-only service identity for the agent; no factory tools |
 | Model key per server | HOME-162 rule 2 | One OpenRouter key and limit per server; one shared key with bridge limits only |
-| Hermes `MEMORY.md` writes | HOME-162 rule 1 | Off; on for the homelab server only; on everywhere |
 | Web search beside server memories (off until decided) | HOME-915 tool security | Turn web search and fetch on with the prompt rule only (a query may carry memory text); build searches that run without the session's memories first; keep them off |
 | Recall as a tool | HOME-915, "Recall as a tool" | Bind the bank to the session at the gateway; one Agent per server; bind now with the prompt rule only |
 | Private channels in recall (follow-up) | HOME-904 | Tag non-public channels at ingest and leave them out of server-wide recall; keep server-wide recall as decided |

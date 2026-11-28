@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//projects/factory/broker/actorjwt",
         "//projects/factory/discord/artifacts",
+        "//projects/factory/discord/notes",
     ],
 )
 

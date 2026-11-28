@@ -126,6 +126,9 @@ func run(log *slog.Logger) error {
 		// message; Lookup names a mentioned user that no message named.
 		History: rest,
 		Lookup:  &discord.UserLookup{Users: rest},
+		// Which server each server agent session serves, for the notes
+		// tools (HOME-918, GET /sessions/{id}).
+		SessionPlaces: &discord.SessionPlaces{},
 	}
 	if u := os.Getenv("DISCORD_RENDER_URL"); u != "" {
 		bridge.Render = &discord.HTTPRenderer{BaseURL: u}
@@ -244,6 +247,7 @@ func run(log *slog.Logger) error {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.Handle("POST /notify", discord.NotificationHandler(policy.NotificationChannels, fileValue("/var/run/secrets/factory-notify/app-password"), rest))
+	mux.Handle("GET /sessions/{id}", bridge.SessionPlaces)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	server := &http.Server{Addr: cfg.health, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

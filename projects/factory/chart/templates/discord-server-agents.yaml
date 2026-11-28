@@ -274,7 +274,10 @@ spec:
       {{- $web := "" }}
       {{- with $a.serverTools }}{{- if or .webSearch .webFetch }}{{- $web = $a.webToolsPrompt | default "" }}{{- end }}{{- end }}
       {{- $ghPrompt := ternary ($d.github.prompt | default "") "" $github }}
-      systemPrompt: {{ printf "%s%s%s%s" $a.systemPrompt ($a.toolsPrompt | default "") $web $ghPrompt | quote }}
+      {{- /* A binding named notes (HOME-918) adds the notes vault's write rule. */}}
+      {{- $notesPrompt := "" }}
+      {{- range $m := $mcp }}{{- if eq $m.name "notes" }}{{- $notesPrompt = ($d.notes | default dict).prompt | default "" }}{{- end }}{{- end }}
+      systemPrompt: {{ printf "%s%s%s%s%s" $a.systemPrompt ($a.toolsPrompt | default "") $web $ghPrompt $notesPrompt | quote }}
       {{- else }}
       systemPrompt: {{ $a.systemPrompt | quote }}
       {{- end }}

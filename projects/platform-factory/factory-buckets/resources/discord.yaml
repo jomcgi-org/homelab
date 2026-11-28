@@ -34,6 +34,18 @@ metadata:
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 type: Opaque
 ---
+# The key of the bosun-notes bucket, Bosun's per-server notes vault
+# (projects/factory/discord/notes). Only the bosun-artifacts MCP service loads
+# it; the Hermes actor never holds a key.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bosun-notes-s3
+  namespace: factory-discord
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -42,7 +54,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: [bosun-artifacts-s3, bosun-libs-s3, bosun-artifacts-share-s3]
+    resourceNames: [bosun-artifacts-s3, bosun-libs-s3, bosun-artifacts-share-s3, bosun-notes-s3]
     verbs: [get, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
