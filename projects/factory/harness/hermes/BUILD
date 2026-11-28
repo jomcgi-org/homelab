@@ -124,6 +124,8 @@ py_test(
         "@platforms//cpu:x86_64",
     ],
     deps = [
+        "@pip//grpcio",
+        "@pip//protobuf",
         "@pip//pytest",
         "@pip//pyyaml",
     ],
