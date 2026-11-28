@@ -126,8 +126,14 @@ func (s *Store) prefix(server string) (string, error) {
 // or .history/ (reads only).
 func CleanPath(p string, reserved bool) (string, error) {
 	p = strings.TrimSpace(strings.TrimPrefix(p, "/"))
-	if p == "" || len(p) > 200 {
-		return "", &ParamError{"path", "must be 1 to 200 characters"}
+	// A trash or history copy adds a folder, a time and up to two
+	// segments to a note's path, so reads of those allow more.
+	maxLen, maxSegments := 200, 8
+	if reserved {
+		maxLen, maxSegments = 260, 10
+	}
+	if p == "" || len(p) > maxLen {
+		return "", &ParamError{"path", fmt.Sprintf("must be 1 to %d characters", maxLen)}
 	}
 	if strings.HasSuffix(strings.ToLower(p), ".md") {
 		p = p[:len(p)-3] + ".md"
@@ -135,8 +141,8 @@ func CleanPath(p string, reserved bool) (string, error) {
 		p += ".md"
 	}
 	parts := strings.Split(p, "/")
-	if len(parts) > 8 {
-		return "", &ParamError{"path", "may have at most 8 segments"}
+	if len(parts) > maxSegments {
+		return "", &ParamError{"path", fmt.Sprintf("may have at most %d segments", maxSegments)}
 	}
 	for i, part := range parts {
 		if i == 0 && reserved && (part == Trash || part == History) && len(parts) > 1 {
