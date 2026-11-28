@@ -872,11 +872,12 @@ def test_gvisor_fork_slice_is_wired() -> None:
     ).stdout
     rendered = {key(d) for d in yaml.safe_load_all(slice_docs) if d}
     assert rendered <= {key(d) for d in docs}
-    # The two generated ConfigMaps carry a content hash in their names.
+    # The three generated ConfigMaps carry a content hash in their names.
     configmaps = {k for k in rendered if k[0] == "ConfigMap"}
     assert {k[2].rsplit("-", 1)[0] for k in configmaps} == {
         "gvisor-fork-assets",
         "gvisor-fork-conformance",
+        "gvisor-fork-x5",
     }
     assert rendered - configmaps == _FORK_OBJECTS
     classes = {
