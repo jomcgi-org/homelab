@@ -8,7 +8,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: gvisor-fork-x5-2
+  name: gvisor-fork-x5-3
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: "2"
@@ -16,7 +16,7 @@ spec:
   suspend: false
   backoffLimit: 0
   # The worker wait (900 s), the seed (600 s), the phases and their cleanup.
-  activeDeadlineSeconds: 2400
+  activeDeadlineSeconds: 4200
   template:
     metadata:
       labels:

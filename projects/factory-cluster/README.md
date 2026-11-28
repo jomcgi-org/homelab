@@ -1060,7 +1060,7 @@ Substrate"). To roll back, revert the PR: the images return to
 
 #### Gate X5 for fork children (HOME-924)
 
-The Job `gvisor-fork-x5-2` (`gvisor-fork/x5/`) runs once on sync. It needs the
+The Job `gvisor-fork-x5-3` (`gvisor-fork/x5/`) runs once on sync. It needs the
 gateway egress re-pin above and the `ate-client` SPIFFE ID in the router's
 ingress allowlist (`values/substrate.yaml`, Joe chose a permanent grant on
 2026-11-28). The same change restarts the pool's worker
@@ -1086,11 +1086,11 @@ prepared pool of four.
 Verify, read-only:
 
 ```sh
-kubectl -n ate-system logs job/gvisor-fork-x5-2 | grep '^X5 ' | grep -E 'event=(stats|summary|error)'
-kubectl -n ate-system logs job/gvisor-fork-x5-2 | grep '^X5 ' | grep 'pass_.*=False'   # none
+kubectl -n ate-system logs job/gvisor-fork-x5-3 | grep '^X5 ' | grep -E 'event=(stats|summary|error)'
+kubectl -n ate-system logs job/gvisor-fork-x5-3 | grep '^X5 ' | grep 'pass_.*=False'   # none
 ```
 
-Run `-1` (2026-11-28 10:42Z) failed before any seed: the API refuses a container argument over 4096 characters, and the inlined probe was 5314. `x5.py` now inlines it as code only (3379). `event=summary result=ok` passes the gate. The stats lines give p50 and p95 of
+Run `-1` (2026-11-28 10:42Z) failed before any seed: the API refuses a container argument over 4096 characters, and the inlined probe was 5314. `x5.py` now inlines it as code only (3379). Run `-2` (10:55Z) forked and served children, but each child took about 60 s and the third passed the 60 s request timeout; the script logged nothing before the end. `-3` logs each child at once with the time of each check, waits up to 180 s, and counts a timeout as a failed sample. `event=summary result=ok` passes the gate. The stats lines give p50 and p95 of
 `send_to_result_ms` and `mcp_ms` in modes `ondemand` and `pool`. To roll back,
 remove `x5` from `gvisor-fork/kustomization.yaml`; the ate-client router grant
 stays.
