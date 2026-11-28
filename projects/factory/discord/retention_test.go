@@ -254,11 +254,15 @@ func TestBackfillLeavesOutAMessageWithAPlainBlockedReply(t *testing.T) {
 func TestArchivePageLeavesOutAMessageWithAPlainBlockedReply(t *testing.T) {
 	store := &fakeArchive{}
 	a := newTestArchiver(store)
-	refusal := HistoryMessage{Message: Message{ID: "32", ChannelID: arcChannel, GuildID: arcGuild, Type: 19,
-		Author: User{ID: arcBot, Bot: true}, Reference: &Reference{MessageID: "31"}}}
+	refusal := HistoryMessage{Message: Message{
+		ID: "32", ChannelID: arcChannel, GuildID: arcGuild, Type: 19,
+		Author: User{ID: arcBot, Bot: true}, Reference: &Reference{MessageID: "31"},
+	}}
 	refusal.Components = []Component{{Type: componentText, Content: ReplyBlocked}}
-	joke := HistoryMessage{Message: Message{ID: "31", ChannelID: arcChannel, GuildID: arcGuild,
-		Author: User{ID: "u1", Username: "joe"}, Content: "the refused joke"}}
+	joke := HistoryMessage{Message: Message{
+		ID: "31", ChannelID: arcChannel, GuildID: arcGuild,
+		Author: User{ID: "u1", Username: "joe"}, Content: "the refused joke",
+	}}
 	a.Page(context.Background(), arcGuild, Channel{ID: arcChannel}, "", []HistoryMessage{refusal})
 	a.Page(context.Background(), arcGuild, Channel{ID: arcChannel}, "32", []HistoryMessage{joke})
 	store.mu.Lock()
