@@ -1,0 +1,160 @@
+package discord
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
+)
+
+// Out of gloves-off credits (HOME-938, Joe 2026-11-28). abliteration.ai
+// answers 402 when the prepaid balance is spent (docs.abliteration.ai,
+// "API errors"); Hermes fails the turn with "HTTP 402: …", and the kagent
+// fork's Hermes adapter makes that the allowlisted reason
+// ReasonNoCredits. A 429 is a rate limit, which Hermes retries itself; it
+// stays a plain failure here.
+//
+//	gloves-off turn -> insufficient_credits -> notice + 🔄 (24 h)
+//	Joe's 🔄 -> the same turn once more, in the same session
+//	  answered -> reply as usual
+//	  no credits again -> a new notice + 🔄; never an automatic retry
+//
+// A retry answers in gloves-off mode even when the window has ended, and
+// never opens the window again. The pending retry is in bridge memory
+// only. The offer line (offer.go) falls back to a canned line instead.
+
+// ReasonNoCredits is the failure reason of a turn that the provider
+// refused for an empty prepaid balance (kagent fork Hermes adapter).
+const ReasonNoCredits = "insufficient_credits"
+
+// CreditsExhausted reports whether err is a turn that failed for want of
+// provider credits.
+func CreditsExhausted(err error) bool {
+	var f *TurnFailure
+	return errors.As(err, &f) && f.State == kagent.StateFailed && strings.Contains(f.Message, ReasonNoCredits)
+}
+
+const (
+	retryEmoji = "🔄"
+	retryTTL   = 24 * time.Hour
+	// maxRetries bounds the waiting retries; past it a notice gets no 🔄.
+	maxRetries = 16
+)
+
+// glovesTopUpURL is where Joe buys credits (docs.abliteration.ai, "API
+// errors": "Top up in the console").
+const glovesTopUpURL = "https://abliteration.ai/console"
+
+// ReplyNoCredits answers a gloves-off turn with no credits left.
+const ReplyNoCredits = "Out of gloves-off credits. Top up: <" + glovesTopUpURL + ">, then tap " + retryEmoji + " to retry."
+
+// pendingRetry is a gloves-off turn waiting for Joe's 🔄.
+type pendingRetry struct {
+	m       Message
+	window  unsafeWindow
+	attempt int
+	until   time.Time
+}
+
+// noCredits posts the notice for gloves-off turn m with the gloves-off
+// footer, so history readers drop it and m, then reacts 🔄 and keeps the
+// retry. Without an Actor it posts the notice with no retry.
+func (b *Bridge) noCredits(ctx context.Context, l *slog.Logger, m Message, w unsafeWindow, attempt int, until time.Time) {
+	text := withUnsafeFooter(ReplyNoCredits, w.end)
+	actor, ok := b.Replies.(Actor)
+	if !ok {
+		b.reply(ctx, m, text)
+		return
+	}
+	id, err := actor.Post(ctx, m.ChannelID, NewReply(text, m.ID))
+	if err != nil || id == "" {
+		l.WarnContext(ctx, "no-credits notice failed", "error", err)
+		return
+	}
+	b.mu.Lock()
+	for k, r := range b.retries {
+		if !b.now().Before(r.until) {
+			delete(b.retries, k)
+		}
+	}
+	full := len(b.retries) >= maxRetries
+	if !full {
+		if b.retries == nil {
+			b.retries = map[string]pendingRetry{}
+		}
+		b.retries[id] = pendingRetry{m: m, window: w, attempt: attempt, until: until}
+	}
+	b.mu.Unlock()
+	if full {
+		return
+	}
+	if err := actor.React(ctx, m.ChannelID, id, retryEmoji); err != nil {
+		actionFailed(ctx, l, "retry react", err) // Joe can still add 🔄 himself.
+	}
+	l.InfoContext(ctx, "gloves off out of credits", "notice", id, "attempt", attempt)
+}
+
+// acceptRetry takes Joe's 🔄 on a no-credits notice: the same gloves-off
+// turn once more, on the channel's queue. The caller checked that the
+// reaction is Joe's 🔄.
+func (b *Bridge) acceptRetry(ctx context.Context, r ReactionAdd) {
+	now := b.now()
+	b.mu.Lock()
+	p, ok := b.retries[r.MessageID]
+	if ok {
+		delete(b.retries, r.MessageID) // A notice is retried once.
+	}
+	b.mu.Unlock()
+	if !ok || p.m.ChannelID != r.ChannelID || !now.Before(p.until) {
+		return
+	}
+	notices, admitted := b.admitReplay(ctx)
+	if !admitted {
+		return
+	}
+	b.mu.Lock()
+	// The window as it was: an ended window stays ended (no openWindow).
+	if b.decided == nil {
+		b.decided = map[string]unsafeDecision{}
+	}
+	b.decided[p.m.ID] = unsafeDecision{unsafe: true, window: p.window, at: now}
+	if b.attempts == nil {
+		b.attempts = map[string]retryAttempt{}
+	}
+	b.attempts[p.m.ID] = retryAttempt{n: p.attempt + 1, until: p.until}
+	b.mu.Unlock()
+	b.Log.InfoContext(ctx, "gloves-off retry", "channel", p.m.ChannelID, "message", p.m.ID, "attempt", p.attempt+1)
+	b.queueTurn(ctx, notices, p.m, true)
+}
+
+// retryAttempt is the next attempt of a retried gloves-off turn.
+type retryAttempt struct {
+	n     int
+	until time.Time
+}
+
+// takeAttempt returns and clears m's retry attempt: 0 and the default
+// expiry for a first attempt.
+func (b *Bridge) takeAttempt(id string) (int, time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	a, ok := b.attempts[id]
+	if !ok {
+		return 0, b.now().Add(retryTTL)
+	}
+	delete(b.attempts, id)
+	return a.n, a.until
+}
+
+// attemptID is the A2A message ID of an attempt: kagent answers a repeated
+// message ID with its earlier task, so each retry needs its own.
+func attemptID(messageID string, attempt int) string {
+	if attempt == 0 {
+		return messageID
+	}
+	return fmt.Sprintf("%s-retry%d", messageID, attempt)
+}

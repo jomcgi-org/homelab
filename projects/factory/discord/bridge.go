@@ -190,6 +190,10 @@ type Bridge struct {
 	shares map[string]pendingShare
 	// offers holds gloves-off offers by the offer message's ID (offer.go).
 	offers map[string]glovesOffer
+	// retries holds no-credits notices by message ID until Joe's 🔄, and
+	// attempts the next attempt of each retried turn (credits.go).
+	retries  map[string]pendingRetry
+	attempts map[string]retryAttempt
 	// blocked holds the IDs of messages that the provider's safety filter
 	// refused, for the dedupe window. A later turn's context leaves them
 	// out, so one refused message does not refuse the next turn.

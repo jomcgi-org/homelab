@@ -1324,6 +1324,14 @@ stateDiagram-v2
   turn that answers it. The bridge keeps the message in memory only until
   the offer ends. Without gloves off, or for another author, the reply
   stays the blocked one.
+- **Out of credits.** abliteration.ai answers 402 for an empty balance;
+  the kagent fork reports it as `insufficient_credits`. A gloves-off turn
+  that fails so gets a marked notice with the top-up link and Bosun's 🔄.
+  Joe's own 🔄 within 24 h runs the same turn once more, in the same
+  session, under a new message ID; a turn still out of credits gets a new
+  notice, never an automatic retry. A retry never opens an ended window
+  again. A 429 stays a plain failure. The offer line falls back to a
+  canned line with no notice. `credits.go` holds it.
 - **GIFs.** `gloves/gloves-off.gif` and `gloves/gloves-on.gif` are
   embedded in the bridge. To use other files, replace those two files.
 - **Billing.** Prepaid credits only, with auto-reload off.
