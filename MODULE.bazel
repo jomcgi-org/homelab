@@ -188,11 +188,11 @@ http_archive(
 )
 
 http_archive(
-    name = "discord_lib_space_grotesk",
-    build_file_content = 'exports_files(["files/space-grotesk-latin-wght-normal.woff2", "LICENSE"])',
-    sha256 = "47d1b51d64ed541b7e74f38e9e682a8ff1bbfd1b68bfd7fff74ac9175058e73c",
+    name = "discord_lib_schibsted_grotesk",
+    build_file_content = 'exports_files(["files/schibsted-grotesk-latin-wght-normal.woff2", "LICENSE"])',
+    sha256 = "dd729607754cfbf3f4c7f0872ba6d727e953a3d2b533184afe009b134f04f996",
     strip_prefix = "package",
-    urls = ["https://registry.npmjs.org/@fontsource-variable/space-grotesk/-/space-grotesk-5.3.0.tgz"],
+    urls = ["https://registry.npmjs.org/@fontsource-variable/schibsted-grotesk/-/schibsted-grotesk-5.3.0.tgz"],
 )
 
 # Private API server for the factory credential admission test. Match the
