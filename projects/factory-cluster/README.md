@@ -192,22 +192,42 @@ the factory inventory. Keep this shell open for the commands below.
 
 Build and test leftovers on the node-1 workstation filled its root filesystem
 on 2026-11-23, and the kubelet tainted the node for disk pressure.
+The disk filled again on 2026-11-28 (88%): the Go cache was 14 GiB of
+recently used files, and idle Claude Code session directories held 43 GiB.
 [`nodes/node-disk-gc.sh`](nodes/node-disk-gc.sh) removes only Go build cache
-files, Bazel disk cache files, and old test directories (`/tmp/pgdata*` and
-`/tmp/tmp*`). It does nothing until you pass `--apply`. Run it as the node
-operator, never as root:
+files, Bazel disk cache files, old test directories (`/tmp/pgdata*` and
+`/tmp/tmp*`), and idle Claude Code session directories
+(`/tmp/claude-<uid>/<project>/<session>`). It does nothing until you pass
+`--apply`. Run it as the node operator, never as root:
 
 ```bash
 projects/factory-cluster/nodes/node-disk-gc.sh          # list what it would remove
 projects/factory-cluster/nodes/node-disk-gc.sh --apply  # remove it
 ```
 
-Options `--go-days` (3), `--tmp-hours` (12) and `--bazel-days` (7) set the age
-limits. Each is a whole number of at most 6 digits, and `--tmp-hours` must be
-at least 1. The check
-is exact: with `--go-days 3`, a file 2.9 days old stays. The Go fuzz corpus
-(`fuzz/`) always stays. `GOCACHE`, `BAZEL_DISK_CACHE` and `GC_TMP_DIR` set the
-three paths. The script uses real paths: it resolves `GC_TMP_DIR` first, and it
+On node-1 a timer runs it with `--apply` every 6 h. Install or update it:
+
+```bash
+sudo install -D -m 0755 projects/factory-cluster/nodes/node-disk-gc.sh /usr/local/libexec/node-disk-gc.sh
+sudo install -m 0644 projects/factory-cluster/nodes/node-disk-gc@.service \
+  projects/factory-cluster/nodes/node-disk-gc@.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now node-disk-gc@"$USER".timer
+journalctl -u node-disk-gc@"$USER" -n 20   # the last run
+```
+
+Options `--go-days` (3), `--tmp-hours` (12), `--bazel-days` (7) and
+`--scratch-days` (3) set the age limits. A session directory goes only when no
+file in it changed in `--scratch-days`. `--go-max-gib` (4) caps the Go cache:
+Go refreshes a file's time each time a build uses it, so the script then
+removes the oldest files until the cache fits. Each option is a whole number of
+at most 6 digits, and `--tmp-hours` and `--scratch-days` must be at least 1.
+The check is exact: with `--go-days 3`, a file 2.9 days old stays. The Go fuzz
+corpus (`fuzz/`) always stays. `GOCACHE`, `BAZEL_DISK_CACHE`, `GC_TMP_DIR` and
+`GC_SCRATCH_DIR` (default `<GC_TMP_DIR>/claude-<uid>`) set the paths. A session
+root that is missing, not owned by the caller, or holds the home directory is
+skipped. Session directories get the same in-use and mount checks as test
+directories. The script uses real paths: it resolves `GC_TMP_DIR` first, and it
 skips a Go cache or Bazel disk cache that is the home directory or holds it
 (the Bazel path must also be named `disk_cache` after symlinks). `HOME` must be an
 absolute path.
