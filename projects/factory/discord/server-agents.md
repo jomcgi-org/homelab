@@ -445,6 +445,38 @@ Options, recommended first:
 | One Agent per server, each with a one-bank token (section 3's design) | Credentials per atespace | Four Agents and WorkerPools; Joe's cross-server session goes |
 | Bind the token now and keep the prompt rule (own bank unless Joe names another server) | Prompt only | Injected text can still cause a cross-server read |
 
+### Remember (HOME-919)
+
+When Joe tags Bosun and asks it to remember a fact, the bridge stores
+that fact in the server's bank. The model gets no retain tool and no
+write credential: only the bridge writes, and only for Joe
+([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-919#comment-12933)).
+
+```mermaid
+flowchart LR
+    M[Tagged message] --> O{From Joe?<br/>fromOperator}
+    O -- no --> T[Normal turn]
+    O -- yes --> P{"remember X" /<br/>"remember that X"}
+    P -- no --> T
+    P -- yes --> R[RetainFact: own document,<br/>tags channel + kind:remembered]
+    R -- stored --> N1[Trusted note: saved]
+    R -- failed --> N2[Trusted note: not saved]
+    N1 --> T
+    N2 --> T
+```
+
+- `RememberFact` (`remember.go`) reads the text after the bot mention:
+  `remember X`, `remember that X` or `remember: X`, with an optional
+  `please`, in any case. A question is not a fact.
+- The stored line is `[kind=remembered] Joe asked Bosun to remember
+  (channel <id>, <time>): <fact>`. It is its own document, keyed by the
+  tagging message, so a server with `ingest` keeps both the message and
+  the fact.
+- The bridge puts a trusted note before the prompt, outside the Discord
+  JSON, and the model confirms briefly. A failed store is logged, the
+  note says the fact was not saved, and the turn still answers.
+- The exchange retain does not change.
+
 ### Artifacts (HOME-909)
 
 The homelab agent can publish a page or file and give Joe a link. The
