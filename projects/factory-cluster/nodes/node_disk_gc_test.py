@@ -215,6 +215,8 @@ def test_age_options(node):
         ["--tmp-hours", "1000000"],
         ["--go-days", "99999999999999999999"],
         ["--bazel-days", "1000000"],
+        ["--scratch-days", "0"],
+        ["--go-max-gib", "x"],
         ["extra"],
     ],
 )
@@ -773,3 +775,88 @@ def test_a_bazel_cache_link_to_a_directory_not_named_disk_cache(node, base):
     assert result.returncode == 0, result.stderr
     assert victim.exists()
     assert "skipped (not a disk_cache directory" in result.stdout
+
+
+GIB = 1024**3
+
+
+def test_the_go_cache_is_capped_oldest_first(node):
+    # Sparse files: their size counts, but they take no disk.
+    go = node["go"]
+    for name, days in (("c1", 2.5), ("c2", 2.0), ("c3", 1.0)):
+        path = go / "cd" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            f.truncate(GIB)
+        age(path, int(days * DAY))
+    result = run(node, "--apply", "--go-max-gib", "3")
+    assert result.returncode == 0, result.stderr
+    # 3 GiB plus ab/new-a is over the cap: the oldest entry goes.
+    assert files(go) == {"README", "trim.txt", "ab/new-a", "cd/c2", "cd/c3"}
+    assert "over 3 GiB" in result.stdout
+
+
+def test_the_go_cache_under_the_cap_keeps_new_files(node):
+    result = run(node, "--apply", "--go-max-gib", "1")
+    assert result.returncode == 0, result.stderr
+    assert files(node["go"]) == {"README", "trim.txt", "ab/new-a"}
+
+
+def scratch_node(node):
+    root = node["tmp"] / f"claude-{os.geteuid()}"
+    project = root / "-home-op-repo"
+    old = old_tree(project / "aaaa-old", hours=5 * 24)
+    fresh = old_tree(project / "bbbb-fresh", hours=5 * 24)
+    write(fresh / "scratchpad" / "new")
+    recent = old_tree(project / "cccc-recent", hours=2 * 24)
+    return root, project, old, fresh, recent
+
+
+def test_idle_session_directories_go(node):
+    root, project, old, fresh, recent = scratch_node(node)
+    held = old_tree(project / "dddd-held", hours=5 * 24)
+    (project / "eeee-link").symlink_to(held)
+    top = write(root / "loose-file", old=10 * DAY)
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], cwd=held
+    )
+    try:
+        time.sleep(0.3)
+        dry = run(node)
+        result = run(node, "--apply")
+    finally:
+        holder.kill()
+        holder.wait()
+    assert dry.returncode == 0, dry.stderr
+    assert "Session directories" in dry.stdout and ": 1, " in dry.stdout
+    assert result.returncode == 0, result.stderr
+    assert sorted(p.name for p in project.iterdir()) == [
+        "bbbb-fresh",
+        "cccc-recent",
+        "dddd-held",
+        "eeee-link",
+    ]
+    assert top.exists()
+    assert "keep (in use)" in result.stdout
+
+
+def test_scratch_days_option(node):
+    _, project, old, fresh, recent = scratch_node(node)
+    result = run(node, "--apply", "--scratch-days", "1")
+    assert result.returncode == 0, result.stderr
+    assert sorted(p.name for p in project.iterdir()) == ["bbbb-fresh"]
+
+
+@pytest.mark.parametrize("value", ["{home}", "{parent}", "missing"])
+def test_unsafe_session_roots_are_skipped(node, base, value):
+    root = {
+        "{home}": str(node["home"]),
+        "{parent}": str(node["home"].parent),
+        "missing": str(base / "missing"),
+    }[value]
+    old_tree(node["home"] / "proj" / "sess", hours=10 * 24)
+    env = dict(node["env"], GC_SCRATCH_DIR=root)
+    result = run(node, "--apply", env=env)
+    assert result.returncode == 0, result.stderr
+    assert "Session directories" in result.stdout and "skipped" in result.stdout
+    assert (node["home"] / "proj" / "sess").exists()
