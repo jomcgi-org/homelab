@@ -66,20 +66,65 @@ LOGINS = [
         "factory-storyboard-db",
     ),
     ("factory-db-reaper-login", "factory_reaper", "factory", "factory-reaper-db"),
-    ("factory-db-trips-login", "factory_trips", "trips", "trips-postgres"),
+    # Trips is not deployed (Joe, 2026-11-26): its login Secret, role and
+    # database stay in factory-db, but no trips Role admits this Job.
     (
         "factory-db-leaderboard-login",
         "factory_leaderboard",
         "factory",
         "factory-leaderboard-db",
     ),
+    # Bosun's message archive (HOME-909): the bridge's login and
+    # bosun-history's SELECT-only login.
+    (
+        "factory-db-discord-archive-login",
+        "factory_discord_archive",
+        "factory-discord",
+        "discord-archive-db",
+    ),
+    (
+        "factory-db-discord-archive-reader-login",
+        "factory_discord_archive_reader",
+        "factory-discord",
+        "discord-archive-reader-db",
+    ),
+    # history_sql (HOME-909): one login per Discord server.
+    (
+        "factory-db-discord-sql-185442367703220224-login",
+        "factory_discord_sql_185442367703220224",
+        "factory-discord",
+        "discord-sql-185442367703220224-db",
+    ),
+    (
+        "factory-db-discord-sql-1290668195249917964-login",
+        "factory_discord_sql_1290668195249917964",
+        "factory-discord",
+        "discord-sql-1290668195249917964-db",
+    ),
+    (
+        "factory-db-discord-sql-1501965852042330302-login",
+        "factory_discord_sql_1501965852042330302",
+        "factory-discord",
+        "discord-sql-1501965852042330302-db",
+    ),
+    (
+        "factory-db-discord-sql-1512814732392927463-login",
+        "factory_discord_sql_1512814732392927463",
+        "factory-discord",
+        "discord-sql-1512814732392927463-db",
+    ),
 ]
-# These logins share the connector database and own no database.
+# These logins share another login's database and own none.
 DATABASES = {
     "factory_broker_accounting": "factory_connector",
     "factory_storyboard": "factory_connector",
     "factory_reaper": "factory_connector",
     "factory_leaderboard": "factory_connector",
+    "factory_discord_archive_reader": "factory_discord_archive",
+    "factory_discord_sql_185442367703220224": "factory_discord_archive",
+    "factory_discord_sql_1290668195249917964": "factory_discord_archive",
+    "factory_discord_sql_1501965852042330302": "factory_discord_archive",
+    "factory_discord_sql_1512814732392927463": "factory_discord_archive",
 }
 
 

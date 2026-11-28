@@ -26,3 +26,12 @@ s3_region = "garage"
 
 [admin]
 api_bind_addr = "0.0.0.0:3903"
+
+# The website endpoint. It serves only buckets with website access, which
+# garage-init turns on for the buckets in WEBSITES (garage_init.py). A
+# request's Host picks the bucket: <bucket><root_domain>. The edge rewrites
+# artifact.jomcgi.dev to bosun-artifacts.web.garage.internal; the name is
+# not in DNS. Only the edge proxy reaches this port (network-policy.yaml).
+[s3_web]
+bind_addr = "0.0.0.0:3902"
+root_domain = ".web.garage.internal"

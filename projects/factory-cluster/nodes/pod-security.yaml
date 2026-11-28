@@ -1,0 +1,40 @@
+# invariant: CLUS-7
+# Pod Security defaults for every namespace on the factory cluster.
+#
+# Installed to /etc/rancher/k3s/pod-security.yaml by install-node.sh and read
+# by the API server at start (`admission-control-config-file` in
+# k3s-config.yaml). A change here needs a k3s restart on each node.
+#
+# A namespace with no pod-security.kubernetes.io label gets these levels, so a
+# new namespace is covered without a label. A namespace label overrides the
+# default: `restricted` to tighten, `privileged` to opt out. Substrate worker
+# namespaces opt out by label where git declares them, because a gVisor worker
+# needs SYS_ADMIN, NET_ADMIN and no seccomp or AppArmor profile.
+apiVersion: apiserver.config.k8s.io/v1
+kind: AdmissionConfiguration
+plugins:
+  - name: PodSecurity
+    configuration:
+      apiVersion: pod-security.admission.config.k8s.io/v1
+      kind: PodSecurityConfiguration
+      defaults:
+        enforce: baseline
+        enforce-version: latest
+        audit: baseline
+        audit-version: latest
+        warn: baseline
+        warn-version: latest
+      exemptions:
+        usernames: []
+        runtimeClasses: []
+        # Each of these runs a workload that baseline forbids. Add a namespace
+        # only with the reason beside it.
+        namespaces:
+          # Cilium agent, Envoy and operator: host network, privileged init.
+          - kube-system
+          # atelet mounts /dev and the kubelet plugin directories.
+          - ate-system
+          # The log collector reads /var/log/pods and the audit log.
+          - otel-collector
+          # The relay mounts the node-1 socket directory /run/t3-cluster.
+          - t3

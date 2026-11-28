@@ -257,6 +257,37 @@ spec:
         - ports:
             - port: "8888"
               protocol: TCP
+    # Bosun's artifact tools, with the actor JWT the gateway injects (the
+    # factory chart's discord-artifacts.yaml).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: bosun-artifacts
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Bosun's history tools, with the actor JWT the gateway injects (the
+    # factory chart's discord-history.yaml).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: bosun-history
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # hindsight-discord's MCP recall for the homelab Discord Hermes agent,
+    # with the recall token the gateway injects (HOME-909;
+    # projects/platform-factory/hindsight-discord).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: hindsight-discord
+            app.kubernetes.io/name: hindsight
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
     # git over HTTPS for factory repository bindings, with the broker-minted
     # token the gateway injects (EgressPolicy github-git).
     - toFQDNs:
@@ -265,11 +296,44 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
-    # The Discord bot's model calls (factory chart `discord.agent`), with the
-    # dedicated OpenRouter key the gateway injects. kagent admits this origin
-    # only for actors whose ModelConfig names it.
+    # The Discord agents' model calls (factory chart `discord.agent` and
+    # `discord.serverAgents`), with the key the gateway injects: OpenRouter,
+    # or Anthropic's Messages API, and abliteration.ai's for the gloves-off
+    # agent (HOME-938; the gateway scans its requests). kagent admits each
+    # origin only for actors whose ModelConfig names it.
     - toFQDNs:
         - matchName: openrouter.ai
+        - matchName: api.anthropic.com
+        - matchName: api.abliteration.ai
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Bosun's read-only public GitHub MCP server (factory chart
+    # discord-github.yaml), with the token the gateway injects.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: github-mcp
+      toPorts:
+        - ports:
+            - port: "8082"
+              protocol: TCP
+    # Bosun's headless browser (factory chart discord-browser.yaml, HOME-931).
+    # It holds no credential; egress-scan checks these calls (HOME-932).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: browser-mcp
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # The homelab Discord Hermes agent's Scotland outdoors MCP server
+    # (factory chart `discord.serverAgents.<key>.mcpServers`), public and
+    # read-only, with no credential. kagent admits it only for that actor.
+    - toFQDNs:
+        - matchName: scotland-mcp.jomcgi.dev
       toPorts:
         - ports:
             - port: "443"
@@ -284,6 +348,16 @@ spec:
         - matchName: registry.npmjs.org
         - matchName: pypi.org
         - matchName: files.pythonhosted.org
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Public GitHub reads for Bosun's research explorer (factory chart
+    # `discord.explorer`, EgressPolicy public-github), with no credential;
+    # github.com is admitted above.
+    - toFQDNs:
+        - matchName: codeload.github.com
+        - matchName: objects.githubusercontent.com
       toPorts:
         - ports:
             - port: "443"

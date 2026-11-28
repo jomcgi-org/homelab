@@ -192,22 +192,46 @@ the factory inventory. Keep this shell open for the commands below.
 
 Build and test leftovers on the node-1 workstation filled its root filesystem
 on 2026-11-23, and the kubelet tainted the node for disk pressure.
+The disk filled again on 2026-11-28 (88%): the Go cache was 14 GiB of
+recently used files, and idle Claude Code session directories held 43 GiB.
 [`nodes/node-disk-gc.sh`](nodes/node-disk-gc.sh) removes only Go build cache
-files, Bazel disk cache files, and old test directories (`/tmp/pgdata*` and
-`/tmp/tmp*`). It does nothing until you pass `--apply`. Run it as the node
-operator, never as root:
+files, Bazel disk cache files, old test directories (`/tmp/pgdata*` and
+`/tmp/tmp*`), and idle Claude Code session directories
+(`/tmp/claude-<uid>/<project>/<session>`). It does nothing until you pass
+`--apply`. Run it as the node operator, never as root:
 
 ```bash
 projects/factory-cluster/nodes/node-disk-gc.sh          # list what it would remove
 projects/factory-cluster/nodes/node-disk-gc.sh --apply  # remove it
 ```
 
-Options `--go-days` (3), `--tmp-hours` (12) and `--bazel-days` (7) set the age
-limits. Each is a whole number of at most 6 digits, and `--tmp-hours` must be
-at least 1. The check
-is exact: with `--go-days 3`, a file 2.9 days old stays. The Go fuzz corpus
-(`fuzz/`) always stays. `GOCACHE`, `BAZEL_DISK_CACHE` and `GC_TMP_DIR` set the
-three paths. The script uses real paths: it resolves `GC_TMP_DIR` first, and it
+On node-1 a timer runs it with `--apply` every 6 h. Install or update it:
+
+```bash
+sudo install -D -m 0755 projects/factory-cluster/nodes/node-disk-gc.sh /usr/local/libexec/node-disk-gc.sh
+sudo install -m 0644 projects/factory-cluster/nodes/node-disk-gc@.service \
+  projects/factory-cluster/nodes/node-disk-gc@.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now node-disk-gc@"$USER".timer
+journalctl -u node-disk-gc@"$USER" -n 20   # the last run
+```
+
+Options `--go-days` (3), `--tmp-hours` (12), `--bazel-days` (7) and
+`--scratch-days` (3) set the age limits. A session directory goes only when no
+file in it changed in `--scratch-days`. `--go-max-gib` (4) caps the Go cache:
+Go refreshes a file's time each time a build uses it, so the script then
+removes the oldest files until the cache fits. Each option is a whole number of
+at most 6 digits, and `--tmp-hours` and `--scratch-days` must be at least 1.
+The check is exact: with `--go-days 3`, a file 2.9 days old stays. The Go fuzz
+corpus (`fuzz/`) always stays. `GOCACHE`, `BAZEL_DISK_CACHE`, `GC_TMP_DIR` and
+`GC_SCRATCH_DIR` (default `<GC_TMP_DIR>/claude-<uid>`) set the paths. A session
+root that is missing, not owned by the caller, or holds the home directory is
+skipped. Only `<project>/<session>` directories match, with a project name that
+starts with `-` and a UUID session name, so other trees in the root (such as
+`bundled-skills/` or a virtualenv) stay. Session directories get the same
+in-use and mount checks as test directories. A Claude Code session does not
+keep its scratchpad open, so a session idle for more than `--scratch-days`
+loses its scratch files. The timer runs with the default `GOCACHE`. The script uses real paths: it resolves `GC_TMP_DIR` first, and it
 skips a Go cache or Bazel disk cache that is the home directory or holds it
 (the Bazel path must also be named `disk_cache` after symlinks). `HOME` must be an
 absolute path.
@@ -403,6 +427,18 @@ a k3s restart: rerun step 2 of "Bootstrap and rebuild". The API server
 fetches Authentik's keys from factory-auth.jomcgi.dev, through Cloudflare. A
 watch or `logs -f` with no traffic for about 100 seconds ends at Cloudflare;
 run it again.
+
+### Pod Security
+
+The API server reads `nodes/pod-security.yaml` from
+`/etc/rancher/k3s/pod-security.yaml` at start. A namespace with no
+`pod-security.kubernetes.io` label enforces `baseline`. The file exempts
+`kube-system`, `ate-system`, `otel-collector` and `t3`; substrate worker
+namespaces carry `pod-security.kubernetes.io/enforce: privileged` where git
+declares them. The level applies when a pod is created, so a running pod is
+not stopped. A change to the file needs a k3s restart: rerun step 2 of
+"Bootstrap and rebuild". To allow one more namespace without a restart, set
+its enforce label to `privileged` in git.
 
 ### kubectl from node-1
 
@@ -636,7 +672,7 @@ makes a fork template, in its own atespace, and deletes it.
 | --- | --- | --- |
 | SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | wired (step 5). No pool uses the config until step 6. `gvisor-default` stays the class default |
 | WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | one worker (step 6). It holds no seed while no template sets `fork_config` (the conformance Job makes one for its run) |
-| Conformance Job `gvisor-fork-conformance-6` | `gvisor-fork/conformance-job.yaml` | runs once (step 8); `suspend: false` |
+| Conformance Job `gvisor-fork-conformance-7` | `gvisor-fork/conformance-job.yaml` | runs once (step 8); `suspend: false` |
 | Latency Jobs `gvisor-fork-latency-1` and `gvisor-fork-latency-data-1` | `gvisor-fork/latency/` | a kustomization the directory does not list, and `suspend: true` |
 | Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | the three control-plane images are pinned and live (step 4); `ateworker-gvisor` runs in the pool (step 6) and `kubectl-ate` in the conformance Job (step 8) |
 | `ForkSeed` preview gate | `substrate/values/common.yaml` | on (step 7). The controller gives it to KVM pools' workers only. It starts no fork until a template sets `fork_config` (step 10) |
@@ -807,7 +843,7 @@ flowchart LR
    ```
 
    The worker image is the `workerImage` of `kvm-pool.yaml`:
-   `ateworker-gvisor:fork-8cf248b96e08@sha256:779fb7dd…80f8`, from the
+   `ateworker-gvisor:fork-c7f37a993862@sha256:e6d5716a…e4c1`, from the
    re-pins (#8623, then the re-pin of step 8). Check that the pod's `imageID` ends in that digest.
    A pod on the old digest (`65f14b69…`) means the pool did not take the pin.
 
@@ -909,7 +945,7 @@ flowchart LR
    again: it is not a hook, and later syncs apply the same spec. It stays, with
    its log, until a separate PR deletes `conformance-job.yaml` and its
    kustomization entries (Argo then prunes it). Read the log any time:
-   `kubectl -n ate-system logs job/gvisor-fork-conformance-6 | grep '^CONFORMANCE '`.
+   `kubectl -n ate-system logs job/gvisor-fork-conformance-7 | grep '^CONFORMANCE '`.
 
    | Job | Result |
    | --- | --- |
@@ -922,7 +958,7 @@ flowchart LR
    the name. Editing anything under `conformance/` changes the hash in the name
    of the generated ConfigMap, and so the Job's pod template: bump the suffix in
    the same change. `resources_test.py` pins the ConfigMap name
-   (`gvisor-fork-conformance-tgf4tdtbht`) so such an edit fails CI. A Failed Job
+   (`gvisor-fork-conformance-khtmk9cc87`) so such an edit fails CI. A Failed Job
    leaves `substrate` Degraded until it is removed or replaced. Do not merge other
    `substrate` changes while a run is in progress.
 
@@ -991,6 +1027,73 @@ flowchart LR
     the relation, or creates the templates as an owner. Joe's rule from the
     2026-11-22 design session is that nothing is enabled on the factory until
     the gates pass. No HOME ticket or decision comment records it yet.
+
+#### Gateway egress for fork children (HOME-924)
+
+Fork `c7f37a993862` (on `fork/seed-slice1`) lets a fork template set
+`fork_config.egress: FORK_EGRESS_GATEWAY`. The control plane then sends the
+default egress gateway in atelet's `Fork`, and the worker mints the child's
+actor certificate and activates its egress before the sandbox starts, as for a
+booted actor. The child's own `EgressPolicy` decides what it reaches. A template
+without the field is unchanged: no egress, DNS refused.
+[Joe approved the roll](https://factory-plan.jomcgi.dev/factory/issue/HOME-924#comment-13032)
+on 2026-11-28.
+
+The re-pin moves all five fork images to `fork-c7f37a993862`. It rolls the
+same objects as step 7: `ate-api-server` (2, one at a time), `ate-controller`,
+`atelet` (3, one node at a time) and the `gvisor-fork` worker. Other pools keep
+their args. The conformance Job runs again as `gvisor-fork-conformance-7`, so
+the worker pins the `fork-conformance` atespace; the next fork user restarts
+the worker first (`factory.jomcgi.dev/worker-restart`).
+
+Verify, read-only:
+
+```sh
+kubectl get workerpools -A                     # every pool Ready
+kubectl -n ate-system get pods -l 'app in (ate-api-server,ate-controller,atelet)' -o jsonpath='{range .items[*]}{.metadata.name} {.status.containerStatuses[0].imageID}{"\n"}{end}'   # fork-c7f37a993862 digests
+kubectl -n ate-system logs job/gvisor-fork-conformance-7 | grep '^CONFORMANCE '   # C1 to C8 pass
+```
+
+Then check that an existing actor still starts (the smoke test in "Agent
+Substrate"). To roll back, revert the PR: the images return to
+`fork-8cf248b96e08`.
+
+#### Gate X5 for fork children (HOME-924)
+
+The Job `gvisor-fork-x5-3` (`gvisor-fork/x5/`) runs once on sync. It needs the
+gateway egress re-pin above and the `ate-client` SPIFFE ID in the router's
+ingress allowlist (`values/substrate.yaml`, Joe chose a permanent grant on
+2026-11-28). The same change restarts the pool's worker
+(`factory.jomcgi.dev/worker-restart`), so the `fork-x5` atespace is its first
+seed. Merge it only after `gvisor-fork-conformance-7` is Complete.
+
+```mermaid
+flowchart LR
+  J[x5 Job, ate-client] -->|create actor, EgressPolicy, resume| A[ate-api]
+  J -->|POST /run, mTLS| R[atenet router] --> C[fork child]
+  C -->|mcp-grafana:8000, allowed| G[egress gateway] --> M[mcp-grafana]
+  C -.->|hindsight:8888, refused| G
+  C -.->|DNS example.com, refused| G
+```
+
+Each child gets its own `EgressPolicy` (`x5/policy.yaml`: HTTP to
+`mcp-grafana.grafana.svc.cluster.local:8000` only), because a fork template
+cannot carry a golden egress policy. The fork runner (HOME-922) will set the
+caller's MCP rules the same way. The probe holds no MCP token, so mcp-grafana's
+own 401 is the expected answer. Ten children run one at a time, and ten from a
+prepared pool of four.
+
+Verify, read-only:
+
+```sh
+kubectl -n ate-system logs job/gvisor-fork-x5-3 | grep '^X5 ' | grep -E 'event=(stats|summary|error)'
+kubectl -n ate-system logs job/gvisor-fork-x5-3 | grep '^X5 ' | grep 'pass_.*=False'   # none
+```
+
+Run `-1` (2026-11-28 10:42Z) failed before any seed: the API refuses a container argument over 4096 characters, and the inlined probe was 5314. `x5.py` now inlines it as code only (3379). Run `-2` (10:55Z) forked and served children, but each child took about 60 s and the third passed the 60 s request timeout; the script logged nothing before the end. `-3` logs each child at once with the time of each check, waits up to 180 s, and counts a timeout as a failed sample. `event=summary result=ok` passes the gate. The stats lines give p50 and p95 of
+`send_to_result_ms` and `mcp_ms` in modes `ondemand` and `pool`. To roll back,
+remove `x5` from `gvisor-fork/kustomization.yaml`; the ate-client router grant
+stays.
 
 #### Isolation gates
 
@@ -1223,9 +1326,8 @@ Useful starting points in the `metrics` dataset, all filtered on
   `service.instance.id` (etcd and etcd-readiness, per API server), and
   `MAX(apiserver_storage_size_bytes)`.
 
-For logs, run an environment-wide query filtered on
-`k8s.cluster.name = factory` and group by `service.name` and
-`k8s.namespace.name`. etcd's own metrics listen on 127.0.0.1:2381 on each node,
+For pod logs, query the `factory-k8s-logs` dataset and group by
+`k8s.workload.name` and `k8s.namespace.name`. etcd's own metrics listen on 127.0.0.1:2381 on each node,
 out of a pod's reach, so etcd health comes from the API servers' readiness
 checks instead.
 

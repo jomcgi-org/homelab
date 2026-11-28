@@ -1,0 +1,216 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: home-assistant
+automountServiceAccountToken: false
+---
+# local-path binds the volume to the node of the first pod.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: home-assistant-config
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: home-assistant
+spec:
+  replicas: 1
+  # One pod owns the SQLite database.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: home-assistant
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: home-assistant
+    spec:
+      serviceAccountName: home-assistant
+      automountServiceAccountToken: false
+      initContainers:
+        # Home Assistant reads its HTTP settings from .storage/http. The seed
+        # is storage version 1, which Home Assistant migrates to its current
+        # format on load. Writing it on every start keeps git authoritative:
+        # the edge proxy must stay trusted, or every request gets 400.
+        - name: http-settings
+          image: ghcr.io/home-assistant/home-assistant:2026.11.3@sha256:24e541ddae5818bf8eb27898b9ba00d0c344a655aa5097e9e9bd4b19356be847
+          command:
+            - sh
+            - -c
+            - mkdir -p /config/.storage && cp /seed/http-storage.json /config/.storage/http
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: configuration
+              mountPath: /seed/http-storage.json
+              subPath: http-storage.json
+              readOnly: true
+        # Authentik sign-in (configuration.yaml auth_oidc). The script checks
+        # the release zip against a pinned sha256 and installs the packages in
+        # auth-oidc-requirements.lock with --require-hashes.
+        - name: auth-oidc
+          image: ghcr.io/home-assistant/home-assistant:2026.11.3@sha256:24e541ddae5818bf8eb27898b9ba00d0c344a655aa5097e9e9bd4b19356be847
+          command: [python3, -I, /seed/install-auth-oidc.py]
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: configuration
+              mountPath: /seed/install-auth-oidc.py
+              subPath: install-auth-oidc.py
+              readOnly: true
+            - name: configuration
+              mountPath: /seed/auth-oidc-requirements.lock
+              subPath: auth-oidc-requirements.lock
+              readOnly: true
+      containers:
+        - name: home-assistant
+          image: ghcr.io/home-assistant/home-assistant:2026.11.3@sha256:24e541ddae5818bf8eb27898b9ba00d0c344a655aa5097e9e9bd4b19356be847
+          env:
+            - name: TZ
+              value: Europe/London
+            # Locked packages from the auth-oidc init container.
+            - name: PYTHONPATH
+              value: /config/deps/auth_oidc
+          # The image's s6 init runs as root.
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - name: http
+              containerPort: 8123
+          startupProbe:
+            httpGet:
+              path: /manifest.json
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /manifest.json
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: configuration
+              mountPath: /config/configuration.yaml
+              subPath: configuration.yaml
+              readOnly: true
+            - name: configuration
+              mountPath: /config/dashboards/heating.yaml
+              subPath: heating-dashboard.yaml
+              readOnly: true
+            - name: configuration
+              mountPath: /config/dashboards/bedroom.yaml
+              subPath: bedroom-dashboard.yaml
+              readOnly: true
+            - name: configuration
+              mountPath: /config/packages/bedroom.yaml
+              subPath: bedroom-package.yaml
+              readOnly: true
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: home-assistant-config
+        - name: configuration
+          configMap:
+            name: home-assistant
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: home-assistant
+spec:
+  selector:
+    app.kubernetes.io/name: home-assistant
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: home-assistant
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: home-assistant
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: edge
+      toPorts:
+        - ports:
+            - port: "8123"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: mosquitto
+      toPorts:
+        - ports:
+            - port: "1883"
+              protocol: TCP
+    # Integrations and version checks are on the internet.
+    - toEntities: [world]
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Philips TV JointSpace API on the LAN (HTTP 1925, HTTPS 1926).
+    - toCIDR: [192.168.4.23/32]
+      toPorts:
+        - ports:
+            - port: "1925"
+              protocol: TCP
+            - port: "1926"
+              protocol: TCP
+    # Bedroom Nest Mini (Google Cast): device info (HTTPS 8443, HTTP 8008)
+    # and the control channel (8009). The Mini fetches the media it plays
+    # from the internet, not from Home Assistant.
+    - toCIDR: [192.168.4.36/32]
+      toPorts:
+        - ports:
+            - port: "8008"
+              protocol: TCP
+            - port: "8009"
+              protocol: TCP
+            - port: "8443"
+              protocol: TCP

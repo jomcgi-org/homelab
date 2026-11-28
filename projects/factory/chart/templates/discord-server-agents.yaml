@@ -1,0 +1,363 @@
+{{- /*
+Per-server Hermes agents (HOME-905, projects/factory/discord/server-agents.md).
+Each enabled server gets its own namespace and atespace,
+discord-<guild>, with a gVisor WorkerPool, a Hermes Harness and an Agent. Its
+tools are only the listed MCP servers' listed tools and Anthropic server
+tools (server-agents.md, "Tools"). The actor holds placeholders only: the
+egress gateway injects the model key and MCP tokens for this atespace. With `route`, the bridge sends the server's
+tagged messages to it in one persistent session (HOME-909); it has no
+Hindsight of its own yet (slice 3), so the bridge recalls for it.
+*/}}
+{{- $d := .Values.discord }}
+{{- range $server := keys $d.serverAgents | sortAlpha }}
+{{- $a := index $d.serverAgents $server }}
+{{- if $a.enabled }}
+{{- $ns := $a.namespace | default (printf "discord-%s" $a.guild) }}
+{{- $worker := printf "%s-worker" $a.name }}
+{{- $image := $d.hermesImage }}
+{{- $mcp := $a.mcpServers | default list }}
+{{- /* discord.github (templates/discord-github.yaml) binds its read-only GitHub tools to every routed agent. */}}
+{{- $github := and $d.github.enabled $d.bridge.enabled $a.route }}
+{{- if $github }}
+{{- $mcp = append $mcp (dict "name" "github" "url" (printf "http://github-mcp.%s.svc.cluster.local:8082/readonly" $d.bridge.namespace) "secret" "discord-github" "tools" $d.github.tools) }}
+{{- end }}
+{{- /* discord.browser (templates/discord-browser.yaml) binds the headless browser to every routed agent; it needs no credential. */}}
+{{- $browser := and ($d.browser | default dict).enabled $d.bridge.enabled $a.route }}
+{{- if $browser }}
+{{- $mcp = append $mcp (dict "name" "playwright" "url" (printf "http://browser-mcp.%s.svc.cluster.local:8080/mcp" $d.bridge.namespace) "tools" $d.browser.tools) }}
+{{- end }}
+{{- /* The unsafe mode agent (HOME-938) is plain chat: no route, tools or memory. */}}
+{{- $u := $d.unsafe | default dict }}
+{{- if and $u.enabled (eq $server ($u.agent | default "")) (or $a.route $mcp $a.serverTools $a.memory) }}
+{{- fail (printf "discord.serverAgents.%s is the unsafe mode agent: it takes no route, mcpServers, serverTools or memory" $server) }}
+{{- end }}
+{{- if and $a.serverTools (eq ($a.provider | default "openAI") "openAI") }}
+{{- fail (printf "discord.serverAgents.%s.serverTools needs provider anthropic: only the Messages API runs them" $server) }}
+{{- end }}
+{{- range $m := $mcp }}
+{{- /* The fork's Hermes toolset names and selectors (go/harness/hermes/config ReservedMCPServerName). */}}
+{{- $reserved := list "a2a" "all" "bot_room" "browser" "catalog" "clarify" "code_execution" "coding" "computer_use" "connections" "context_engine" "cronjob" "debugging" "delegation" "desktop_ui" "discord" "discord_admin" "feishu_doc" "feishu_drive" "file" "image_gen" "kanban" "memory" "no_mcp" "onboarding" "project" "safe" "search" "session_search" "skills" "terminal" "todo" "tts" "video" "video_gen" "vision" "web" "x_search" }}
+{{- if or (has $m.name $reserved) (hasPrefix "hermes" $m.name) (hasPrefix "mcp-" $m.name) }}
+{{- fail (printf "discord.serverAgents.%s.mcpServers name %s is a Hermes toolset name" $server $m.name) }}
+{{- end }}
+{{- if and $m.secret $m.actorJwt }}
+{{- fail (printf "discord.serverAgents.%s.mcpServers %s takes secret or actorJwt, not both" $server $m.name) }}
+{{- end }}
+{{- if or (not $m.url) (empty $m.tools) }}
+{{- fail (printf "discord.serverAgents.%s.mcpServers %s needs url and tools: Hermes registers only listed tools" $server $m.name) }}
+{{- end }}
+{{- if or (has "memory_read" $m.tools) (has "memory_write" $m.tools) }}
+{{- fail (printf "discord.serverAgents.%s.mcpServers %s lists memory_read or memory_write: they are for the runner's memory sync, not the model" $server $m.name) }}
+{{- end }}
+{{- end }}
+{{- /* memory names the binding that holds Hermes's MEMORY.md and USER.md (HOME-921); off until that binding exists. */}}
+{{- if and $a.memory (ne $a.memory "notes") }}
+{{- fail (printf "discord.serverAgents.%s.memory must be notes or empty: only the notes vault serves memory_read and memory_write" $server) }}
+{{- end }}
+{{- $memory := "" }}
+{{- range $m := $mcp }}{{- if and $a.memory (eq $m.name $a.memory) }}{{- $memory = $m.name }}{{- end }}{{- end }}
+---
+# Kept: deleting it would take the WorkerPool and the session's snapshots.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    # Substrate's worker egress policy selects worker pods only in namespaces
+    # with this label (projects/platform-factory/substrate).
+    factory.jomcgi.dev/substrate-workers: "true"
+    # gVisor workers need SYS_ADMIN and no seccomp profile, which the cluster
+    # default (projects/factory-cluster/nodes/pod-security.yaml) forbids.
+    pod-security.kubernetes.io/enforce: privileged
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.keep" $ | nindent 4 }}
+---
+# Worker pods run as this account, with no API token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $worker }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+automountServiceAccountToken: false
+---
+# The OpenRouter key. The label lets Substrate's credential provider inject
+# api-key at the egress gateway for this atespace only.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: discord-llm
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    substrate.ate.dev/injectable: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ $a.llmItemPath | quote }}
+{{- if $.Values.substrate.credentialProvider.secretReaderBinding }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: substrate-credential-provider
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $.Values.substrate.credentialProvider.clusterRole }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $.Values.substrate.credentialProvider.serviceAccount }}
+    namespace: {{ $.Values.substrate.namespace }}
+{{- end }}
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: {{ $a.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    kagent.dev/worker-pool-name: {{ $a.name }}
+    kagent.dev/worker-pool-namespace: {{ $ns }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: {{ $a.concurrency }}
+  workerImage: {{ $.Values.workers.image | quote }}
+  sandboxClasses:
+    - name: gvisor
+      configRef:
+        name: {{ $.Values.workers.sandboxConfig }}
+  template:
+    serviceAccountName: {{ $worker }}
+    resources:
+      {{- toYaml $a.worker.resources | nindent 6 }}
+---
+# kagent swaps the Secret for a placeholder in the actor and binds it to the
+# base URL at the egress gateway.
+apiVersion: api.kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: {{ $a.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  {{- if eq ($a.provider | default "openAI") "anthropic" }}
+  provider: Anthropic
+  model: {{ $a.model | quote }}
+  apiKeySecret: discord-llm
+  apiKeySecretKey: api-key
+  anthropic:
+    baseUrl: {{ $a.baseUrl | quote }}
+    {{- with $a.cacheTTL }}
+    promptCaching: true
+    cacheTTL: {{ . | quote }}
+    {{- end }}
+  {{- else }}
+  provider: OpenAI
+  model: {{ $a.model | quote }}
+  apiKeySecret: discord-llm
+  apiKeySecretKey: api-key
+  openAI:
+    baseUrl: {{ $a.baseUrl | quote }}
+  {{- end }}
+{{- range $m := $mcp }}
+---
+# An MCP server for this agent (server-agents.md, "Tools"). Discovery is off:
+# the Agent lists the only tools Hermes registers. With a secret, the egress
+# gateway injects its `token` as the Authorization header; the actor holds a
+# placeholder.
+apiVersion: api.kagent.dev/v1alpha3
+kind: RemoteMCPServer
+metadata:
+  name: {{ $m.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    kagent.dev/discovery: disabled
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  description: {{ printf "%s for the %s Discord agent" $m.name $server | quote }}
+  url: {{ $m.url | quote }}
+  protocol: STREAMABLE_HTTP
+  {{- with $m.actorJwt }}
+  # The gateway injects an actor JWT for these audiences.
+  actorJwt:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $m.secret }}
+  headersFrom:
+    - name: Authorization
+      valueFrom:
+        type: Secret
+        name: {{ . | quote }}
+        key: token
+  {{- end }}
+{{- end }}
+---
+# Hermes Agent with the kagent fork's runner (projects/factory/harness/hermes).
+# The runner turns every built-in Hermes toolset and lazy install off, and
+# memory too unless spec.hermes.memory is set, and denies every approval. The Harness CRD admits only a digest reference,
+# which helm_chart(images) writes into the published chart.
+apiVersion: api.kagent.dev/v1alpha3
+kind: Harness
+metadata:
+  name: hermes
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  {{- if or $a.compression $a.serverTools $memory }}
+  hermes:
+    {{- with $a.compression }}
+    # Compact before a long chat resends its whole history each turn
+    # (server-agents.md, "Model and token cost").
+    compression:
+      {{- with .thresholdTokens }}
+      thresholdTokens: {{ int . }}
+      {{- end }}
+      {{- with .minTailUserMessages }}
+      minTailUserMessages: {{ int . }}
+      {{- end }}
+      {{- with .model }}
+      model: {{ . | quote }}
+      {{- end }}
+    {{- end }}
+    {{- with $a.serverTools }}
+    # Anthropic runs these tools (server-agents.md, "Tools"); maxUses bounds
+    # each Messages request.
+    serverTools:
+      {{- with .webSearch }}
+      webSearch:
+        maxUses: {{ int .maxUses }}
+      {{- end }}
+      {{- with .webFetch }}
+      webFetch:
+        maxUses: {{ int .maxUses }}
+      {{- end }}
+      {{- if .codeExecution }}
+      codeExecution: true
+      {{- end }}
+    {{- end }}
+    {{- with $memory }}
+    # Hermes's memory tool on; the runner keeps MEMORY.md and USER.md in
+    # this binding's vault, one copy per server (server-agents.md, "Notes
+    # vault").
+    memory:
+      remoteMCPServer: {{ . }}
+    {{- end }}
+  {{- else }}
+  hermes: {}
+  {{- end }}
+  workload:
+    image: {{ ternary (printf "%s@%s" $image.repository $image.digest) (printf "%s:%s" $image.repository $image.tag) (not (empty $image.digest)) | quote }}
+  substrate:
+    workerPoolRef:
+      name: {{ $a.name }}
+    snapshotPolicy:
+      location: {{ printf "%s%s/" $.Values.workers.snapshotLocationPrefix $ns | quote }}
+  {{- with $a.idleSuspendDelay }}
+  # Keep the actor running between turns of an active chat: each restore
+  # restarts the Hermes gateway, about 10 s before the first model call.
+  idleSuspendDelay: {{ . | quote }}
+  {{- end }}
+---
+# kagent grants egress only to the model origin and the listed MCP servers'
+# origins; Anthropic runs the server tools.
+apiVersion: api.kagent.dev/v1alpha3
+kind: Agent
+metadata:
+  name: {{ $a.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  template:
+    inline:
+      description: {{ $a.description | default (printf "The %s Discord server's agent (HOME-905)" $server) | quote }}
+      modelConfig:
+        name: {{ $a.name }}
+      {{- if or $mcp $a.serverTools }}
+      {{- $web := "" }}
+      {{- with $a.serverTools }}{{- if or .webSearch .webFetch }}{{- $web = $a.webToolsPrompt | default "" }}{{- end }}{{- end }}
+      {{- $ghPrompt := ternary ($d.github.prompt | default "") "" $github }}
+      {{- $browserPrompt := ternary (($d.browser | default dict).prompt | default "") "" $browser }}
+      {{- /* A binding named notes (HOME-918) adds the notes vault's write rule. */}}
+      {{- $notesPrompt := "" }}
+      {{- range $m := $mcp }}{{- if eq $m.name "notes" }}{{- $notesPrompt = ($d.notes | default dict).prompt | default "" }}{{- end }}{{- end }}
+      {{- $memoryPrompt := ternary (($d.notes | default dict).memoryPrompt | default "") "" (not (empty $memory)) }}
+      systemPrompt: {{ printf "%s%s%s%s%s%s%s" $a.systemPrompt ($a.toolsPrompt | default "") $web $ghPrompt $browserPrompt $notesPrompt $memoryPrompt | quote }}
+      {{- else }}
+      systemPrompt: {{ $a.systemPrompt | quote }}
+      {{- end }}
+      {{- with $mcp }}
+      tools:
+        {{- range . }}
+        - mcp:
+            server:
+              kind: RemoteMCPServer
+              name: {{ .name }}
+            tools: {{ .tools | toJson }}
+        {{- end }}
+      {{- end }}
+  harnessRef:
+    name: hermes
+{{- if $.Values.networkPolicy.cilium }}
+---
+# Worker pods: kagent's A2A calls reach the actor only through Substrate's
+# router, and actor traffic leaves only through its egress gateway. The
+# gateway admits only the Agent's compiled origins for this actor.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: substrate-workers
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: ate.dev/worker-pool
+        operator: Exists
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $.Values.substrate.namespace }}
+            app: atenet-router
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $.Values.substrate.namespace }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+{{- end }}
+{{- end }}
+{{- end }}

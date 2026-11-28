@@ -52,6 +52,9 @@ metadata:
   name: substrate-gvisor-fork
   labels:
     factory.jomcgi.dev/substrate-workers: "true"
+    # gVisor workers need SYS_ADMIN and no seccomp profile, which the cluster
+    # default (projects/factory-cluster/nodes/pod-security.yaml) forbids.
+    pod-security.kubernetes.io/enforce: privileged
 ---
 # Worker pods run as this account, with no API token.
 apiVersion: v1
@@ -106,8 +109,8 @@ spec:
   # stays fixed, and it must never scale to zero while the engine tier is on.
   replicas: 1
   # The fork build of ateworker-gvisor, published by
-  # .github/workflows/substrate-fork-images.yml at fork commit 8cf248b96e08.
-  workerImage: ghcr.io/jomcgi-org/homelab/substrate-fork/ateworker-gvisor:fork-8cf248b96e08@sha256:779fb7dd9e036adfd22cb4642d91d3a1283cb03c37ce57cc0d39957497ad80f8
+  # .github/workflows/substrate-fork-images.yml at fork commit c7f37a993862.
+  workerImage: ghcr.io/jomcgi-org/homelab/substrate-fork/ateworker-gvisor:fork-c7f37a993862@sha256:e6d5716a890a7ce202aef1a4d18656a85e853bfa6eedfdf93a4847040b59e4c1
   sandboxClasses:
     - name: gvisor
       platform: kvm
@@ -122,7 +125,7 @@ spec:
     # Keys under ate.dev are reserved (the CRD refuses them). README, step 8,
     # "The atespace pin".
     annotations:
-      factory.jomcgi.dev/worker-restart: "2026-11-23 clear the conformance atespace pin"
+      factory.jomcgi.dev/worker-restart: "2026-11-28 clear the conformance-7 atespace pin for X5"
     serviceAccountName: fork-worker
     nodeAffinity:
       preferredDuringSchedulingIgnoredDuringExecution:

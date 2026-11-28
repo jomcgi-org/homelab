@@ -121,7 +121,7 @@ they do not launch their own planner, review or landing sequence.
   `KUBECONFIG=~/.kube/factory-sessions.yaml` on node-1. The Argo CD UI is
   `factory-argocd.jomcgi.dev`, behind Authentik. Kargo has no UI.
 - **New service:** a chart and `deploy/` under `projects/<svc>/` (copy
-  `projects/trips/deploy/` for the factory pattern), plus an entry for that
+  `projects/hikes/deploy/` for the factory pattern), plus an entry for that
   `deploy/` directory in `projects/platform-factory/kustomization.yaml`.
   `ci regen` does not create the Application.
 

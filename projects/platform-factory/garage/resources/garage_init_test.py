@@ -260,3 +260,91 @@ def test_discovery_rbac_and_garage_ingress():
     assert selector["matchExpressions"] == [
         {"key": "k8s:io.kubernetes.pod.namespace", "operator": "Exists"}
     ]
+
+
+def record_garage(monkeypatch, info):
+    calls = []
+
+    def garage(method, endpoint, body=None, query=None, missing_ok=False):
+        calls.append((method, endpoint, body, query))
+        return info
+
+    monkeypatch.setattr(INIT, "garage", garage)
+    return calls
+
+
+def test_only_listed_buckets_serve_a_website_with_a_quota(monkeypatch):
+    assert set(INIT.WEBSITES) == {"bosun-artifacts", "bosun-libs"}
+    calls = record_garage(monkeypatch, {"websiteAccess": False, "quotas": {}})
+    INIT.ensure_website("id1", "bosun-artifacts")
+    max_size, max_objects = INIT.WEBSITES["bosun-artifacts"]
+    assert calls[-1] == (
+        "POST",
+        "UpdateBucket",
+        {
+            "websiteAccess": {
+                "enabled": True,
+                "indexDocument": "index.html",
+                "errorDocument": None,
+            },
+            "quotas": {"maxSize": max_size, "maxObjects": max_objects},
+        },
+        {"id": "id1"},
+    )
+
+
+def test_website_in_place_is_not_rewritten(monkeypatch):
+    max_size, max_objects = INIT.WEBSITES["bosun-artifacts"]
+    calls = record_garage(
+        monkeypatch,
+        {
+            "websiteAccess": True,
+            "websiteConfig": {"indexDocument": "index.html"},
+            "quotas": {"maxSize": max_size, "maxObjects": max_objects},
+        },
+    )
+    INIT.ensure_website("id1", "bosun-artifacts")
+    assert [c[1] for c in calls] == ["GetBucketInfo"]
+
+
+def test_website_is_turned_off_on_other_buckets(monkeypatch):
+    calls = record_garage(monkeypatch, {"websiteAccess": True})
+    INIT.ensure_website("id2", "factory-evidence")
+    assert calls[-1] == (
+        "POST",
+        "UpdateBucket",
+        {"websiteAccess": {"enabled": False}},
+        {"id": "id2"},
+    )
+    calls = record_garage(monkeypatch, {"websiteAccess": False})
+    INIT.ensure_website("id2", "factory-evidence")
+    assert [c[1] for c in calls] == ["GetBucketInfo"]
+
+
+def test_the_artifact_share_key_is_read_only(monkeypatch):
+    granted = []
+    monkeypatch.setattr(INIT, "wait_for_nodes", lambda: [])
+    monkeypatch.setattr(INIT, "ensure_layout", lambda _: None)
+    monkeypatch.setattr(INIT, "ensure_bucket", lambda name: "id-" + name)
+    monkeypatch.setattr(INIT, "ensure_website", lambda *args: None)
+    monkeypatch.setattr(INIT, "discover_grants", lambda: [])
+    monkeypatch.setattr(INIT, "ensure_grant", lambda *args: granted.append(args))
+    monkeypatch.setattr(
+        INIT,
+        "garage",
+        lambda *args: {
+            "status": "healthy",
+            "storageNodesUp": 3,
+            "storageNodes": 3,
+            "partitionsAllOk": 1,
+            "partitions": 1,
+        },
+    )
+    INIT.bootstrap()
+    access = {(ns, name): a for _, _, ns, name, a in granted}
+    assert access["factory-discord", "bosun-artifacts-share-s3"] == "read"
+    assert access["factory-discord", "bosun-artifacts-s3"] == "readwrite"
+    # The notes viewer (HOME-920) only reads; Bosun's notes key writes.
+    assert access["factory-discord", "bosun-notes-viewer-s3"] == "read"
+    assert access["factory-discord", "bosun-notes-s3"] == "readwrite"
+    assert {a for a in access.values()} == {"read", "readwrite"}

@@ -1,0 +1,12 @@
+# Removes build and test leftovers for one node operator (the instance name).
+# node-disk-gc@<user>.timer starts it. Install with the commands in the README,
+# section "Node disk cleanup".
+[Unit]
+Description=Node disk cleanup for %i
+
+[Service]
+Type=oneshot
+User=%i
+ExecStart=/usr/local/libexec/node-disk-gc.sh --apply
+Nice=19
+IOSchedulingClass=idle

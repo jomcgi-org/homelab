@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -44,12 +45,16 @@ type Ingestor struct {
 type ingestChannel struct {
 	guild, channel string
 	lines          []ingestLine
-	bytes          int
-	first          time.Time
-	flush          sync.Mutex // one flush per channel at a time, in order
+	// sending holds the lines of the flush in progress, so Recent still
+	// sees them before the store has them.
+	sending []ingestLine
+	bytes   int
+	first   time.Time
+	flush   sync.Mutex // one flush per channel at a time, in order
 }
 
 type ingestLine struct {
+	id   string
 	at   time.Time
 	text string
 }
@@ -108,7 +113,7 @@ func (i *Ingestor) Add(guildID, channelID, messageID string, at time.Time, text 
 	if len(c.lines) == 0 {
 		c.first = now
 	}
-	c.lines = append(c.lines, ingestLine{at: at, text: text})
+	c.lines = append(c.lines, ingestLine{id: messageID, at: at, text: text})
 	c.bytes += len(text)
 	i.trimLocked(c)
 }
@@ -159,7 +164,13 @@ func (i *Ingestor) flush(ctx context.Context, c *ingestChannel) error {
 	i.mu.Lock()
 	lines := c.lines
 	c.lines, c.bytes, c.first = nil, 0, time.Time{}
+	c.sending = lines
 	i.mu.Unlock()
+	defer func() {
+		i.mu.Lock()
+		c.sending = nil
+		i.mu.Unlock()
+	}()
 	groups := byDay(lines)
 	for n, group := range groups {
 		var b strings.Builder
@@ -176,10 +187,40 @@ func (i *Ingestor) flush(ctx context.Context, c *ingestChannel) error {
 	return nil
 }
 
+// Recent returns a channel's lines that the store may not hold yet, oldest
+// first: the newest at most maxLines lines and maxChars bytes, without the
+// line of message skipID. A turn puts them in its prompt, so it need not
+// wait for the store (HOME-909).
+func (i *Ingestor) Recent(guildID, channelID, skipID string, maxLines, maxChars int) []string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	c, ok := i.chans[channelKey(guildID, channelID)]
+	if !ok {
+		return nil
+	}
+	all := append(append([]ingestLine(nil), c.sending...), c.lines...)
+	var out []string
+	chars := 0
+	for n := len(all) - 1; n >= 0 && len(out) < maxLines; n-- {
+		l := all[n]
+		if skipID != "" && l.id == skipID {
+			continue
+		}
+		if chars+len(l.text) > maxChars {
+			break
+		}
+		chars += len(l.text)
+		out = append(out, l.text)
+	}
+	slices.Reverse(out)
+	return out
+}
+
 // requeue puts unsent lines back ahead of the lines added since.
 func (i *Ingestor) requeue(c *ingestChannel, lines []ingestLine) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	c.sending = nil // The lines are back in c.lines; Recent must not see them twice.
 	c.lines = append(lines, c.lines...)
 	c.bytes = 0
 	for _, l := range c.lines {

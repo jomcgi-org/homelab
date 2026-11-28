@@ -1,0 +1,11 @@
+[Unit]
+Description=Node disk cleanup for %i every 6 h
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

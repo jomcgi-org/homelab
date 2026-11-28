@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>The factory this week: 148 merged</title>
+    <link
+      rel="stylesheet"
+      href="/_lib/house-2.css"
+      integrity="sha384-a2fadyQmBhj6Aujn4v94i0XtFMp6Ab2iatksRuqSrURuIf26LE2KB0rBR5ouNLB2"
+      crossorigin="anonymous"
+    />
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <span class="eyebrow"
+          ><i data-lucide="chart-line"></i> Weekly report</span
+        >
+        <h1>148 PRs merged with fewer review rounds</h1>
+        <p class="lede">
+          Review rounds fell from 2.6 to 1.4 per PR in five weeks. Queue
+          conflicts on a shared lock file cost the most time.
+        </p>
+        <div class="meta">
+          <span class="chip"
+            ><i data-lucide="calendar"></i> 21 to 27 Nov 2026</span
+          >
+          <span class="badge good"
+            ><i data-lucide="trending-up"></i> healthy</span
+          >
+        </div>
+      </header>
+
+      <section class="section">
+        <div class="stats">
+          <div class="stat accent">
+            <span class="label">PRs merged</span><span class="value">148</span
+            ><span class="delta">+23 on last week</span>
+          </div>
+          <div class="stat">
+            <span class="label">Median review rounds</span
+            ><span class="value">1.4</span><span class="delta up">-0.3</span>
+          </div>
+          <div class="stat">
+            <span class="label">Queue ejections</span
+            ><span class="value">19</span><span class="delta down">+7</span>
+          </div>
+          <div class="stat">
+            <span class="label">Rollbacks</span><span class="value">0</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section grid two">
+        <figure class="figure">
+          <script type="application/json" class="vega-lite">
+            {
+              "title": "Merged per day",
+              "data": {
+                "values": [
+                  { "d": "Fri", "n": 18 },
+                  { "d": "Sat", "n": 12 },
+                  { "d": "Sun", "n": 9 },
+                  { "d": "Mon", "n": 24 },
+                  { "d": "Tue", "n": 27 },
+                  { "d": "Wed", "n": 31 },
+                  { "d": "Thu", "n": 27 }
+                ]
+              },
+              "mark": "bar",
+              "encoding": {
+                "x": {
+                  "field": "d",
+                  "type": "ordinal",
+                  "sort": null,
+                  "title": null
+                },
+                "y": { "field": "n", "type": "quantitative", "title": null }
+              }
+            }
+          </script>
+          <figcaption>Busiest midweek; the weekend is quiet.</figcaption>
+        </figure>
+        <figure class="figure">
+          <script type="application/json" class="vega-lite">
+            {
+              "title": "Review rounds per PR",
+              "data": {
+                "values": [
+                  { "w": "W44", "r": 2.6 },
+                  { "w": "W45", "r": 2.1 },
+                  { "w": "W46", "r": 1.9 },
+                  { "w": "W47", "r": 1.7 },
+                  { "w": "W48", "r": 1.4 }
+                ]
+              },
+              "mark": { "type": "line", "point": true },
+              "encoding": {
+                "x": { "field": "w", "type": "ordinal", "title": null },
+                "y": {
+                  "field": "r",
+                  "type": "quantitative",
+                  "title": null,
+                  "scale": { "zero": false }
+                }
+              }
+            }
+          </script>
+          <figcaption>Five weeks of steady decline.</figcaption>
+        </figure>
+      </section>
+
+      <section class="section split">
+        <div>
+          <div class="section-head">
+            <h2>What happened</h2>
+            <p>The three events that moved the numbers.</p>
+          </div>
+          <ol class="timeline">
+            <li class="done">
+              <time>Mon 24</time>
+              <h3>Severity rules tightened</h3>
+              <p>Reviews block only on what someone would notice.</p>
+            </li>
+            <li class="done">
+              <time>Wed 26</time>
+              <h3>Render lock contention</h3>
+              <p>Seven PRs left the queue on the same hash file.</p>
+            </li>
+            <li>
+              <time>Fri 28</time>
+              <h3>Lock file split proposed</h3>
+              <p>One hash per chart would end most conflicts.</p>
+            </li>
+          </ol>
+        </div>
+        <div>
+          <div class="section-head">
+            <h2>Next</h2>
+            <p>Ordered by expected time saved.</p>
+          </div>
+          <div class="grid">
+            <article class="card">
+              <span class="icon"><i data-lucide="git-merge"></i></span>
+              <h3>Split the render lock</h3>
+              <p>About 3 hours a week of rebases.</p>
+            </article>
+            <article class="card">
+              <span class="icon"><i data-lucide="gauge"></i></span>
+              <h3>Cache chart renders</h3>
+              <p>Cuts the lock test from 40 s to 5 s.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <footer class="page-foot">
+        An example page for Bosun; the numbers are made up.
+      </footer>
+    </main>
+    <script
+      src="/_lib/lucide-1.72.0.min.js"
+      integrity="sha384-LJKEYnLhvei+XTxKjLahwKnS/kWFWfkb3n+v8n7YKWAAS3oamYHQyT4Bwch3XplL"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/mermaid-12.3.0.min.js"
+      integrity="sha384-HHW54r639fK42Ip0coGF3mz8oSiGn0eEoWNTLs75X7H63pLSDBa0Tqs0RwGmLlXE"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/vega-6.4.0.min.js"
+      integrity="sha384-VKdcJr3ZaBIJMbVcopTAI/JEuUkSY6qnwVu9iLuw0DnQ9gQ1JjsfZJhXFQAgNi43"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/vega-lite-6.5.0.min.js"
+      integrity="sha384-pV2l7nzmyxZh02knvUH7N8zvtyCYsYiGt+SsE/emG/dFiBI6G0YJZFZ2FzEX72P3"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/vega-embed-7.3.0.min.js"
+      integrity="sha384-Muy1QRxYFeNrA1zShc1KtN4OfipkR/61gt+HWqN57c1Zxu3Oe16TsilsruVVjfKL"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/house-2.js"
+      integrity="sha384-QnBr/08aY6bzFwE+905otA0BI+TfSTDpsUrz/7FoJ5xlO9gNcC2ugi/gsjDa6H3E"
+      crossorigin="anonymous"
+    ></script>
+  </body>
+</html>

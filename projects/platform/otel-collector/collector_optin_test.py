@@ -1262,6 +1262,16 @@ def test_gke_log_agent_pipeline():
     assert headers["x-honeycomb-team"] == "${env:HONEYCOMB_API_KEY}"
     assert headers["x-honeycomb-dataset"] == "k8s-logs"
 
+    # The environment makes one dataset per service.name (cap 100), so pod
+    # logs share one service.name and group by k8s.workload.name.
+    (stmts,) = config["processors"]["transform/service"]["log_statements"]
+    service_sets = [
+        s for s in stmts["statements"] if 'set(resource.attributes["service.name"]' in s
+    ]
+    assert service_sets == [
+        'set(resource.attributes["service.name"], "k8s-logs") where resource.attributes["service.name"] == nil'
+    ]
+
 
 def test_gke_log_agent_workload_shape():
     docs = _render_overlay("values-gke")
@@ -1451,6 +1461,7 @@ def test_factory_node_agent_pipelines():
             "factory-r-homelab-review",
             "factory-discord-agent",
             "factory-discord",
+            "discord-1501965852042330302",
         )
     ]
     # Sanitize before parsing; redact and dedup after filtering and before

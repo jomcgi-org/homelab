@@ -1,0 +1,165 @@
+{{- /*
+Bosun's headless browser (HOME-931, discord/server-agents.md "Browser"):
+Microsoft's Playwright MCP server under gVisor, in HTTP mode. It is signed
+out: --isolated keeps each profile in memory, and each MCP session gets a
+new browser context. It holds no credential, so nothing is injected. In:
+only Substrate's egress gateway, which scans the calls with egress-scan
+(HOME-932). Out: the public internet on 80 and 443 only.
+*/}}
+{{- $d := .Values.discord }}
+{{- $b := $d.browser }}
+{{- if and $b.enabled $d.bridge.enabled }}
+{{- $ns := $d.bridge.namespace }}
+{{- $name := "browser-mcp" }}
+{{- $routed := list }}
+{{- range $key := keys $d.serverAgents | sortAlpha }}
+{{- $a := index $d.serverAgents $key }}
+{{- if and $a.enabled $a.route }}
+{{- $routed = append $routed $key }}
+{{- end }}
+{{- end }}
+{{- if empty $b.tools }}
+{{- fail "discord.browser.tools must list the browser tools: Hermes registers only those" }}
+{{- end }}
+{{- range $t := list "browser_evaluate" "browser_run_code_unsafe" "browser_file_upload" "browser_drop" }}
+{{- if has $t $b.tools }}
+{{- fail (printf "discord.browser.tools lists %s: it runs JavaScript or reads local files" $t) }}
+{{- end }}
+{{- end }}
+{{- if $routed }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+    spec:
+      # Chromium runs with --no-sandbox (the image's entrypoint): gVisor is
+      # the sandbox between page code and the node.
+      runtimeClassName: gvisor
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # The image's `node` user.
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          image: {{ $b.image | quote }}
+          # Appended to the entrypoint's --headless --browser chromium
+          # --no-sandbox. --allowed-hosts is the Host header the gateway
+          # sends (the check ignores the port). Pages cannot add tools
+          # (--no-webmcp) or keep service workers.
+          args:
+            - --port=8080
+            - --host=0.0.0.0
+            - {{ printf "--allowed-hosts=%s.%s.svc.cluster.local" $name $ns | quote }}
+            - --isolated
+            - --no-webmcp
+            - --block-service-workers
+            - --output-dir=/tmp/playwright
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml $b.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/node
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        # Chromium's caches and the in-memory profile's spill, never kept.
+        - name: home
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+{{- if .Values.networkPolicy.cilium }}
+---
+# Only Substrate's egress gateway connects in. Out: the public internet on
+# 80 and 443; deniedCIDRs keeps out node, private and special ranges, and a
+# CIDR rule never selects cluster pods. DNS is the cluster baseline's.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            {{- toYaml $b.deniedCIDRs | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+{{- end }}
+{{- end }}
+{{- end }}

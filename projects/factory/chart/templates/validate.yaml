@@ -25,6 +25,33 @@ instead of silently rendering nothing.
 {{- end }}
 {{- $runtime := .Values.kagent.config.runtimeDefaults }}
 {{- $watched := .Values.kagent.rbac.namespaces }}
+{{- with .Values.discord.explorer }}
+{{- if .enabled }}
+{{- if not (and $.Values.discord.bridge.enabled $.Values.broker.enabled $.Values.broker.claude.enabled) }}
+{{- fail "discord.explorer needs discord.bridge, broker and broker.claude: the bridge runs its turns on the broker's Claude relay" }}
+{{- end }}
+{{- if not (has .namespace $watched) }}
+{{- fail (printf "discord.explorer: add namespace %s to kagent.rbac.namespaces so the controller watches it" .namespace) }}
+{{- end }}
+{{- if has .namespace (list (include "factory.kagentNamespace" $) $.Values.broker.namespace $.Values.discord.bridge.namespace $.Values.discord.agent.namespace $.Values.discord.operator.namespace) }}
+{{- fail (printf "discord.explorer: namespace %s must be the explorer Agent's alone" .namespace) }}
+{{- end }}
+{{- range $server, $a := $.Values.discord.serverAgents }}
+{{- if eq ($a.namespace | default (printf "discord-%s" $a.guild)) $.Values.discord.explorer.namespace }}
+{{- fail (printf "discord.explorer: namespace %s must be the explorer Agent's alone" $.Values.discord.explorer.namespace) }}
+{{- end }}
+{{- end }}
+{{- if (or (ne (toString .resources.cpu) (toString $runtime.cpu)) (ne (toString .resources.memory) (toString $runtime.memory))) }}
+{{- fail (printf "discord.explorer: resources must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $runtime.cpu $runtime.memory) }}
+{{- end }}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (.harnessImage | default "")) }}
+{{- fail "discord.explorer.harnessImage: set a digest-pinned Claude harness image" }}
+{{- end }}
+{{- if not (hasKey ($.Values.broker.claude.modelAllowlist | default dict) (printf "actor/%s/session-*" .namespace)) }}
+{{- fail (printf "discord.explorer: add actor/%s/session-* with %s to broker.claude.modelAllowlist" .namespace .model) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- $seen := dict }}
 {{- range $r := .Values.repositories }}
 {{- $a := index $.Values.agents $r.agent }}
@@ -102,8 +129,49 @@ instead of silently rendering nothing.
 {{- end }}
 {{- end }}
 {{- end }}
-{{- if and .Values.discord.import.enabled (not .Values.discord.bridge.enabled) }}
-{{- fail "discord.import needs discord.bridge: the Job uses the bridge's policy, token and network policy" }}
+{{- range $server, $a := .Values.discord.serverAgents }}
+{{- if $a.enabled }}
+{{- if or (not (kindIs "string" $a.guild)) (not (regexMatch "^[0-9]+$" $a.guild)) }}
+{{- fail (printf "discord.serverAgents.%s.guild: quote the server ID; Helm reads a bare number as a float and loses digits" $server) }}
+{{- end }}
+{{- $ns := $a.namespace | default (printf "discord-%s" $a.guild) }}
+{{- if not (has $ns $watched) }}
+{{- fail (printf "discord.serverAgents.%s: add namespace %s to kagent.rbac.namespaces so the controller watches it" $server $ns) }}
+{{- end }}
+{{- if or (hasKey $seen $ns) (has $ns (list $.Values.discord.agent.namespace $.Values.discord.operator.namespace $.Values.discord.bridge.namespace)) }}
+{{- fail (printf "discord.serverAgents.%s: namespace %s must be the server Agent's alone" $server $ns) }}
+{{- end }}
+{{- $_ := set $seen $ns true }}
+{{- if or (ne (toString $a.resources.cpu) (toString $runtime.cpu)) (ne (toString $a.resources.memory) (toString $runtime.memory)) }}
+{{- fail (printf "discord.serverAgents.%s: resources must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $server $runtime.cpu $runtime.memory) }}
+{{- end }}
+{{- if not $a.llmItemPath }}
+{{- fail (printf "discord.serverAgents.%s.llmItemPath: name the model key's 1Password item" $server) }}
+{{- end }}
+{{- $provider := $a.provider | default "openAI" }}
+{{- if not (has $provider (list "openAI" "anthropic")) }}
+{{- fail (printf "discord.serverAgents.%s.provider must be openAI or anthropic" $server) }}
+{{- end }}
+{{- if and $a.cacheTTL (or (ne $provider "anthropic") (not (has $a.cacheTTL (list "5m" "1h")))) }}
+{{- fail (printf "discord.serverAgents.%s.cacheTTL: 5m or 1h, for provider anthropic only" $server) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $u := .Values.discord.unsafe | default dict }}
+{{- if $u.enabled }}
+{{- $ua := index .Values.discord.serverAgents ($u.agent | default "") }}
+{{- if not (and $ua $ua.enabled) }}
+{{- fail (printf "discord.unsafe.agent %q must name an enabled discord.serverAgents entry" ($u.agent | default "")) }}
+{{- end }}
+{{- if not .Values.discord.bridge.enabled }}
+{{- fail "discord.unsafe needs discord.bridge: the bridge keeps the mode and runs its turns" }}
+{{- end }}
+{{- if not (or .Values.discord.operator.enabled (eq (.Values.discord.bridge.policy.users | default "all") "operator")) }}
+{{- fail "discord.unsafe needs the operator's user ID: set discord.operator.enabled or discord.bridge.policy.users: operator" }}
+{{- end }}
+{{- end }}
+{{- if and .Values.discord.backfill.enabled (not .Values.discord.bridge.enabled) }}
+{{- fail "discord.backfill needs discord.bridge: the bridge runs the backfill" }}
 {{- end }}
 {{- if and .Values.discord.bridge.enabled (not .Values.discord.agent.enabled) }}
 {{- fail "discord.bridge needs discord.agent: the bridge sends every turn to that Agent" }}

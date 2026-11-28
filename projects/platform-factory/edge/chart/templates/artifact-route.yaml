@@ -1,0 +1,269 @@
+{{- /*
+Bosun's artifacts at artifact.jomcgi.dev (projects/factory/discord/artifacts):
+Garage's website endpoint for bucket bosun-artifacts. Every file is
+untrusted: an agent wrote it from prompts that hold other people's Discord
+text. So every response gets a CSP sandbox without allow-same-origin: the
+page runs in an opaque origin, with no cookies, no storage and no same-origin
+reads of other artifacts. Without allow-forms and allow-top-navigation it can
+post no form and cannot navigate a frame above it. Pages must inline their
+assets: CORP same-origin also stops them from loading other artifacts, and
+the fetch directives (values.yaml) stop a page from reaching any other
+origin. The backend gets no cookie and can set none.
+
+Who may read (HOME-917):
+
+  /<server-id>/...  members of Authentik group discord-<server-id>, and
+                    authentik Admins (one route rule and policy per server)
+  /_lib/...         anyone, GET and HEAD (route artifact-lib below)
+  /s/<key>?sig      anyone with a valid signed link, GET and HEAD (route
+                    artifact-share below)
+  everything else   authentik Admins only (rule "admins"), private/ included
+
+Each policy targets one route rule and merges (JSONMerge) into the
+gateway-wide edge-authentik-oidc policy, so every rule shares that policy's
+sign-in and cookies; a merged policy replaces only the authorization rules.
+A Discord member's groups sync at each Discord sign-in
+(projects/platform/authentik/factory-blueprints/factory-social.yaml).
+*/}}
+{{- define "edge.artifactFilters" -}}
+# Garage picks the bucket from Host (garage.toml [s3_web]).
+- type: URLRewrite
+  urlRewrite:
+    hostname: {{ .Values.artifacts.garageHost }}
+- type: RequestHeaderModifier
+  requestHeaderModifier:
+    remove: [Cookie, Authorization]
+- type: ResponseHeaderModifier
+  responseHeaderModifier:
+    set:
+      - name: Content-Security-Policy
+        value: {{ .Values.artifacts.contentSecurityPolicy | quote }}
+      - name: X-Content-Type-Options
+        value: nosniff
+      - name: Referrer-Policy
+        value: no-referrer
+      - name: Cross-Origin-Resource-Policy
+        value: same-origin
+    remove: [Set-Cookie, Access-Control-Allow-Origin]
+{{- end -}}
+{{- define "edge.artifactBackend" -}}
+- group: ""
+  kind: Service
+  name: garage-web
+  namespace: garage
+  port: 3902
+  weight: 1
+{{- end -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: artifact
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+      sectionName: http
+  hostnames: [{{ .Values.artifacts.hostname }}]
+  rules:
+    {{- range .Values.artifacts.servers }}
+    - name: server-{{ . }}
+      matches:
+        - path:
+            type: PathPrefix
+            value: /{{ . }}/
+      filters:
+        {{- include "edge.artifactFilters" $ | nindent 8 }}
+      backendRefs:
+        {{- include "edge.artifactBackend" $ | nindent 8 }}
+    {{- end }}
+    - name: admins
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        {{- include "edge.artifactFilters" . | nindent 8 }}
+      backendRefs:
+        {{- include "edge.artifactBackend" . | nindent 8 }}
+---
+{{- /*
+The pinned libraries artifact pages load (projects/factory/discord/libs),
+from bucket bosun-libs. Its SecurityPolicy turns off the gateway's sign-in:
+a sandboxed page has an opaque origin and sends no cookie, so its script
+requests cannot sign in. GET only: a rule with replacePrefixMatch takes
+exactly one PathPrefix match. The files are public packages and a reviewed self-test page. CORS
+and a cross-origin CORP let the page check each script's integrity hash.
+The longer path prefix wins over the artifact route.
+*/}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: artifact-lib
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+      sectionName: http
+  hostnames: [{{ .Values.artifacts.hostname }}]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.artifacts.libsPath }}
+          method: GET
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            hostname: {{ .Values.artifacts.libsGarageHost }}
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove: [Cookie, Authorization]
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Content-Security-Policy
+                value: {{ .Values.artifacts.contentSecurityPolicy | quote }}
+              - name: X-Content-Type-Options
+                value: nosniff
+              - name: Referrer-Policy
+                value: no-referrer
+              - name: Cross-Origin-Resource-Policy
+                value: cross-origin
+              - name: Access-Control-Allow-Origin
+                value: "*"
+              # Short, so a 404 cached before an upload clears soon.
+              - name: Cache-Control
+                value: public, max-age=3600
+            remove: [Set-Cookie]
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: garage-web
+          namespace: garage
+          port: 3902
+          weight: 1
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: artifact-lib-no-gateway-oidc
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: artifact-lib
+  authorization:
+    defaultAction: Allow
+---
+{{- /*
+Signed, expiring share links (HOME-917). The discord bridge signs an S3
+presigned GET after Joe confirms (projects/factory/discord/share.go), with a
+read-only key for the bucket. A link is /s/<key>?X-Amz-...: this route
+rewrites only the path prefix to /<bucket>/ and keeps Host, which the
+signature covers, and Garage's S3 API checks the signature and the expiry.
+A bad or unsigned request gets Garage's 403, an expired one its 400. No sign-in: the
+signature is the credential. GET and HEAD only. Every response gets the
+artifact sandbox headers and noindex, and no cache may keep it past expiry.
+*/}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: artifact-share
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+      sectionName: http
+  hostnames: [{{ .Values.artifacts.hostname }}]
+  rules:
+    # One rule per method: replacePrefixMatch needs exactly one PathPrefix
+    # match in its rule.
+    {{- range $method := list "GET" "HEAD" }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ $.Values.artifacts.sharePath }}
+          method: {{ $method }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /{{ $.Values.artifacts.shareBucket }}
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove: [Cookie, Authorization]
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Content-Security-Policy
+                value: {{ $.Values.artifacts.contentSecurityPolicy | quote }}
+              - name: X-Content-Type-Options
+                value: nosniff
+              - name: Referrer-Policy
+                value: no-referrer
+              - name: Cross-Origin-Resource-Policy
+                value: same-origin
+              - name: X-Robots-Tag
+                value: noindex, nofollow
+              - name: Cache-Control
+                value: private, no-store
+            remove: [Set-Cookie, Access-Control-Allow-Origin]
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: garage
+          namespace: garage
+          port: 3900
+          weight: 1
+    {{- end }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: artifact-share-no-gateway-oidc
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: artifact-share
+  authorization:
+    defaultAction: Allow
+{{- range $rule := concat (list "admins") .Values.artifacts.servers }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ ternary "artifact-admins" (printf "artifact-server-%s" $rule) (eq $rule "admins") }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: artifact
+      sectionName: {{ ternary "admins" (printf "server-%s" $rule) (eq $rule "admins") }}
+  # Keep the gateway policy's OIDC sign-in and replace its authorization.
+  mergeType: JSONMerge
+  {{- if eq $rule "admins" }}
+  {{- include "edge.operatorAuthorization" (dict "Values" $.Values "adminOnly" true) | nindent 2 }}
+  {{- else }}
+  {{- include "edge.operatorAuthorization" (dict "Values" $.Values "adminOnly" true "extraGroups" (list (printf "discord-%s" $rule))) | nindent 2 }}
+  {{- end }}
+{{- end }}

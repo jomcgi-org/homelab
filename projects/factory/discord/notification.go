@@ -58,7 +58,7 @@ func NotificationHandler(channels map[string]string, credential func() (string, 
 		nonce := hex.EncodeToString(hash[:12])
 		ref := "-# ref " + nonce
 		reply := NewReply(n.Level+": "+text, "")
-		reply.Components = append(reply.Components, TextDisplay{Type: componentText, Content: ref})
+		reply.Components = append(reply.Components, ReplyComponent{Type: componentText, Content: ref})
 		reply.Nonce = nonce
 		reply.EnforceNonce = true
 

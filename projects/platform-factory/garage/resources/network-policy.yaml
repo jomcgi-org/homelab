@@ -74,6 +74,18 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: grimoire
             cnpg.io/cluster: grimoire-recovered
+        # Bosun's artifact tools (projects/factory/chart, discord-artifacts.yaml).
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: bosun-artifacts
+        # The Job that uploads the libraries artifact pages load.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: bosun-libs
+        # Home Assistant's nightly volume archives (home-assistant/resources/backup.yaml).
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: home-assistant
+            app.kubernetes.io/name: home-assistant-backup
         # The connector's evidence (factory chart).
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
@@ -93,6 +105,20 @@ spec:
                 - gvisor-fork-assets-init
       toPorts:
         - ports:
+            - port: "3900"
+              protocol: TCP
+    # The website endpoint: the edge proxy only, for artifact.jomcgi.dev;
+    # and the S3 API for its signed share links (artifact.jomcgi.dev/s/),
+    # which Garage checks.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: edge
+      toPorts:
+        - ports:
+            - port: "3902"
+              protocol: TCP
             - port: "3900"
               protocol: TCP
   egress:

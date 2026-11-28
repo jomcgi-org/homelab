@@ -1,5 +1,6 @@
 # invariant: CLUS-1
 # invariant: CLUS-2
+# invariant: CLUS-7
 # k3s server configuration shared by every factory home node.
 #
 # Installed to /etc/rancher/k3s/config.yaml by install-node.sh. Per-node join
@@ -55,6 +56,9 @@ kube-apiserver-arg:
   # Authentik ID tokens for kubectl at factory-kube.jomcgi.dev
   # (authentication-config.yaml, installed beside this file).
   - "authentication-config=/etc/rancher/k3s/authentication-config.yaml"
+  # Pod Security defaults: baseline for every namespace without a label
+  # (pod-security.yaml, installed beside this file).
+  - "admission-control-config-file=/etc/rancher/k3s/pod-security.yaml"
 
 kubelet-arg:
   - "pod-max-pids=4096"

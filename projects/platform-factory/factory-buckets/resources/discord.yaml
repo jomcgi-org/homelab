@@ -1,0 +1,88 @@
+# Bosun's artifact bucket key (projects/factory/discord/artifacts). Only the
+# bosun-artifacts MCP service in factory-discord loads it; the Hermes actor
+# never holds a key. garage-init fills it like the factory keys (keys.yaml).
+# The factory-discord namespace comes from the hindsight-discord consumer
+# Application; the Application's retries cover the order.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bosun-artifacts-s3
+  namespace: factory-discord
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+# The key of the bosun-libs bucket (artifact.jomcgi.dev/_lib/), for the
+# bosun-libs upload Job only.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bosun-libs-s3
+  namespace: factory-discord
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+# The read-only share key (HOME-917): the discord bridge signs artifact
+# share links with it after Joe confirms. Rotating it revokes every link.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bosun-artifacts-share-s3
+  namespace: factory-discord
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+# The key of the bosun-notes bucket, Bosun's per-server notes vault
+# (projects/factory/discord/notes). Only the bosun-artifacts MCP service loads
+# it; the Hermes actor never holds a key.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bosun-notes-s3
+  namespace: factory-discord
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+# A read-only key on bosun-notes, for the members' notes viewer
+# (projects/factory/discord/notesview) only.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bosun-notes-viewer-s3
+  namespace: factory-discord
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-init
+  namespace: factory-discord
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames:
+      - bosun-artifacts-s3
+      - bosun-libs-s3
+      - bosun-artifacts-share-s3
+      - bosun-notes-s3
+      - bosun-notes-viewer-s3
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-init
+  namespace: factory-discord
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: garage-init
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage

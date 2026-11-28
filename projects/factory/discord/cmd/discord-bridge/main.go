@@ -1,9 +1,11 @@
 // discord-bridge connects Bosun to Discord's gateway (HOME-162): it answers
 // messages that tag the bot in allowlisted servers, with memory from
 // hindsight-discord and turns on a kagent Agent. In a server whose policy
-// sets `ingest`, it also stores every human message (HOME-833).
-// "discord-bridge import"
-// replays allowlisted servers' history into their banks instead (HOME-164).
+// sets `ingest`, it also stores every human message (HOME-833). With
+// BACKFILL_ENABLED, it also replays the history of each server with
+// `history: true` into its bank in the background (HOME-164, HOME-836).
+// With ARCHIVE_DATABASE_URL_FILE, it also keeps the verbatim archive of every
+// message for Bosun's history tools (HOME-909).
 package main
 
 import (
@@ -14,10 +16,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/discord"
@@ -25,11 +30,7 @@ import (
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	command := run
-	if len(os.Args) > 1 && os.Args[1] == "import" {
-		command = runImport
-	}
-	if err := command(log); err != nil {
+	if err := run(log); err != nil {
 		log.Error("discord bridge stopped", "error", err)
 		os.Exit(1)
 	}
@@ -57,6 +58,19 @@ func env(name string) (string, error) {
 		return "", fmt.Errorf("%s is not set", name)
 	}
 	return v, nil
+}
+
+// durationEnv reads a Go duration, or def when name is unset.
+func durationEnv(name string, def time.Duration) (time.Duration, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", name, err)
+	}
+	return d, nil
 }
 
 func run(log *slog.Logger) error {
@@ -106,12 +120,45 @@ func run(log *slog.Logger) error {
 		Memory:  memory,
 		Replies: rest,
 		Log:     log,
+		// Only allowlisted servers are cached: anyone can add the bot.
+		Places: &discord.Places{Keep: func(id string) bool { _, ok := policy.Guilds[id]; return ok }},
+		// History reads a channel's conversation since Bosun's last
+		// message; Lookup names a mentioned user that no message named.
+		History: rest,
+		Lookup:  &discord.UserLookup{Users: rest},
+		// Which server each server agent session serves, for the notes
+		// tools (HOME-918, GET /sessions/{id}).
+		SessionPlaces: &discord.SessionPlaces{},
+		// Server agent turns see the images Joe sends (HOME-939).
+		Images: &discord.ImageFetcher{HTTP: &http.Client{Timeout: 30 * time.Second}},
 	}
+	if u := os.Getenv("DISCORD_RENDER_URL"); u != "" {
+		bridge.Render = &discord.HTTPRenderer{BaseURL: u}
+		log.Info("renderer on", "url", u)
+	}
+	wireOperatorUser(log, bridge)
+	wireShare(log, bridge)
+	wireServerAgents(log, bridge, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions)
+	wireUnsafe(log, bridge, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions)
+	wireExplorer(log, bridge, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions)
 	if err := wireOperator(log, bridge, rest, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions); err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// Turns run on work, not ctx: on SIGTERM the gateway closes, so no new
+	// turn starts, and the bridge drains the in-flight turns before work
+	// ends (Bridge.Drain).
+	work, stopWork := context.WithCancel(context.Background())
+	defer stopWork()
+	drain, err := durationEnv("DISCORD_DRAIN_TIMEOUT", 5*time.Minute)
+	if err != nil {
+		return err
+	}
+	catchUp, err := durationEnv("DISCORD_CATCHUP_WINDOW", discord.CatchUpWindow)
+	if err != nil {
+		return err
+	}
 
 	// The bridge registers no slash commands. Clear any the old hub bot left,
 	// so the picker lists none. A failure only logs: the bridge works without it.
@@ -122,6 +169,10 @@ func run(log *slog.Logger) error {
 	// A server with `ingest` stores every human message (HOME-833). The
 	// ingestor outlives the gateway so the last turns' lines are stored.
 	intents := discord.IntentsFor(policy)
+	if bridge.Share != nil {
+		// Joe's ✅ confirms a share link (discord/share.go).
+		intents |= discord.IntentGuildMessageReactions
+	}
 	ingestDone := make(chan struct{})
 	stopIngest := func() {}
 	if intents&discord.IntentMessageContent != 0 {
@@ -136,8 +187,73 @@ func run(log *slog.Logger) error {
 		close(ingestDone)
 	}
 
+	reg := prometheus.NewRegistry()
+	backfill, err := newBackfill(log, policy, rest, bridge.Places, cfg.hindsightURL, fileValue(cfg.hindsightKey), reg)
+	if err != nil {
+		return err
+	}
+	// The verbatim archive (HOME-909) outlives the gateway, as the ingestor
+	// does, so the last events are written.
+	archiver, archiveStore := newArchive(log, policy, bridge.Places, reg)
+	if archiver != nil {
+		archiver.Unsafe = bridge // Unsafe mode turns are never archived (HOME-938).
+	}
+	archiveDone := make(chan struct{})
+	stopArchive := func() {}
+	if archiver != nil {
+		if backfill != nil {
+			backfill.Importer.Archive = archiver
+		}
+		actx, cancel := context.WithCancel(context.Background())
+		stopArchive = cancel
+		go func() {
+			defer close(archiveDone)
+			runArchive(actx, log, archiver, archiveStore, policy)
+		}()
+	} else {
+		close(archiveDone)
+	}
+	// The backfill starts once the gateway is ready, with Bosun's user ID
+	// from READY. It stops with ctx.
+	ready := make(chan struct{})
+	var readyOnce sync.Once
+	onReady := func(u discord.User) {
+		bridge.SetBot(u)
+		if archiver != nil {
+			archiver.SetBot(u)
+		}
+		readyOnce.Do(func() {
+			if backfill != nil {
+				backfill.Importer.BotID = u.ID
+			}
+			close(ready)
+		})
+	}
+	// After a restart, answer Joe's tags that the old bridge left
+	// unanswered, once, after READY.
+	go func() {
+		select {
+		case <-ready:
+			bridge.CatchUp(work, rest, catchUp)
+		case <-ctx.Done():
+		}
+	}()
+	// Explorer sessions past the TTL or the cap are deleted each hour.
+	go bridge.RunExploreSweep(ctx, time.Hour)
+	backfillDone := make(chan struct{})
+	if backfill != nil {
+		go func() {
+			defer close(backfillDone)
+			backfill.Run(ctx, ready)
+		}()
+	} else {
+		close(backfillDone)
+	}
+
 	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.Handle("POST /notify", discord.NotificationHandler(policy.NotificationChannels, fileValue("/var/run/secrets/factory-notify/app-password"), rest))
+	mux.Handle("GET /sessions/{id}", bridge.SessionPlaces)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	server := &http.Server{Addr: cfg.health, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -150,88 +266,30 @@ func run(log *slog.Logger) error {
 	gateway := &discord.Gateway{
 		REST:      rest,
 		Token:     botToken,
-		OnReady:   bridge.SetBot,
-		OnMessage: func(m discord.Message) { bridge.Handle(ctx, m) },
-		Log:       log,
-		Intents:   intents,
+		OnReady:   onReady,
+		OnMessage: func(m discord.Message) { bridge.Handle(work, m) },
+		// Off the gateway's reader: a confirmed share signs and posts.
+		OnReaction: func(r discord.ReactionAdd) { go bridge.HandleReaction(ctx, r) },
+		Places:     bridge.Places,
+		Log:        log,
+		Intents:    intents,
 	}
-	log.Info("discord bridge starting", "guilds", len(policy.Guilds), "agent", cfg.agent, "intents", intents)
+	if archiver != nil {
+		gateway.OnArchive = archiver.Event
+	}
+	log.Info("discord bridge starting", "guilds", len(policy.Guilds), "agent", cfg.agent, "intents", intents,
+		"backfill", backfill != nil, "archive", archiver != nil)
 	err = gateway.Run(ctx)
 	stop()
+	bridge.Drain(drain)
+	stopWork()
 	bridge.Wait()
+	<-backfillDone
 	stopIngest()
 	<-ingestDone
+	stopArchive()
+	<-archiveDone
 	if errors.Is(err, context.Canceled) {
-		return nil
-	}
-	return err
-}
-
-// runImport replays history once and exits. A run that reaches its document
-// cap succeeds; the next run continues where it stopped.
-func runImport(log *slog.Logger) error {
-	var cfg struct{ policy, token, hindsightURL, hindsightKey string }
-	for name, dst := range map[string]*string{
-		"DISCORD_POLICY_FILE": &cfg.policy, "DISCORD_TOKEN_FILE": &cfg.token,
-		"HINDSIGHT_URL": &cfg.hindsightURL, "HINDSIGHT_KEY_FILE": &cfg.hindsightKey,
-	} {
-		v, err := env(name)
-		if err != nil {
-			return err
-		}
-		*dst = v
-	}
-	data, err := os.ReadFile(cfg.policy)
-	if err != nil {
-		return err
-	}
-	policy, err := discord.ParsePolicy(data)
-	if err != nil {
-		return err
-	}
-	number := func(name string, fallback int) (int, error) {
-		v := os.Getenv(name)
-		if v == "" {
-			return fallback, nil
-		}
-		return strconv.Atoi(v)
-	}
-	maxDocs, err := number("IMPORT_MAX_DOCUMENTS", 500)
-	if err != nil {
-		return err
-	}
-	workers, err := number("IMPORT_WORKERS", 2)
-	if err != nil {
-		return err
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	rest := &discord.REST{Token: fileValue(cfg.token)}
-	me, err := rest.Me(ctx)
-	if err != nil {
-		return fmt.Errorf("bot user: %w", err)
-	}
-	im := &discord.Importer{
-		Source: rest,
-		// A synchronous retain runs the LLM's extraction, which retries
-		// on its own; one call took over 3 minutes on 2026-11-25.
-		Store: &discord.Hindsight{
-			BaseURL: strings.TrimSuffix(cfg.hindsightURL, "/"), Key: fileValue(cfg.hindsightKey),
-			HTTP: &http.Client{Timeout: 10 * time.Minute},
-		},
-		Config:        policy,
-		BotID:         me.ID,
-		IncludeBots:   os.Getenv("IMPORT_INCLUDE_BOTS") == "true",
-		MaxDocuments:  maxDocs,
-		Workers:       workers,
-		RetainRetries: 4,
-		Backoff:       30 * time.Second,
-		Log:           log,
-	}
-	stats, err := im.Run(ctx)
-	log.Info("history import finished", "channels", stats.Channels, "retained", stats.Retained,
-		"skipped", stats.Skipped, "capped", stats.Capped)
-	if errors.Is(err, discord.ErrCapped) {
 		return nil
 	}
 	return err

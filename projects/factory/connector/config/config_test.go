@@ -347,3 +347,21 @@ plannerTracked:
 		t.Error("planner agent accepted as a coding agent")
 	}
 }
+
+func TestParseDrainAgent(t *testing.T) {
+	drain := strings.Replace(sample, "agents:\n  - key: coder\n", "agents:\n  - key: retired\n    apiKeyFile: /keys/retired\n    drain: true\n  - key: coder\n", 1)
+	f, err := Parse([]byte(drain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.Agents[0].Drain || f.Agents[1].Drain {
+		t.Fatalf("agents = %+v, want only retired draining", f.Agents)
+	}
+	if _, ok := f.KeyFiles()["retired"]; !ok {
+		t.Fatal("drain agent has no key file")
+	}
+	bound := strings.Replace(drain, "agents: [coder]", "agents: [coder, retired]", 1)
+	if _, err := Parse([]byte(bound)); err == nil || !strings.Contains(err.Error(), "drain agent") {
+		t.Fatalf("binding a drain agent: err = %v", err)
+	}
+}

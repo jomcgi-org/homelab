@@ -26,6 +26,8 @@ _NAMESPACES = [
     "factory-r-homelab-review",
     "factory-discord-agent",
     "factory-discord-operator",
+    "discord-1501965852042330302",
+    "discord-unsafe",
     _NS,
 ]
 _SCHEDULES = [
@@ -75,6 +77,8 @@ def _helm(*sets: str, planner: bool = True, schedules: bool = True) -> list[dict
         "planner.harnessImage=",
         "--set",
         "broker.claude.enabled=false",
+        "--set",
+        "discord.explorer.enabled=false",
         "--set",
         f"planner.enabled={str(planner).lower()}",
     ]
@@ -378,9 +382,11 @@ def test_claude_planner_stays_read_only(claude: list[dict]) -> None:
     broker = _config(claude, "factory-broker")
     assert all(b["namespace"] != _NS for b in broker["reviewBindings"])
     assert _NS in broker["actorJwt"]["allowedAtespaces"]
-    # The coding and review bindings stay on Codex.
+    # The coding and review bindings stay on Codex. The Discord server
+    # agents pick their own provider (discord.serverAgents).
     for d in claude:
-        if d["kind"] == "ModelConfig" and d["metadata"]["namespace"] != _NS:
+        ns = d["metadata"].get("namespace", "")
+        if d["kind"] == "ModelConfig" and ns != _NS and not ns.startswith("discord-"):
             assert d["spec"]["provider"] == "OpenAI"
 
 

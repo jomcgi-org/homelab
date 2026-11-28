@@ -46,6 +46,9 @@ broker:
       actor/factory-r-homelab-planner/session-*:
         - claude-opus-5-5
         - claude-fable-5-2
+      # Bosun's research explorer (discord.explorer, HOME-909).
+      actor/discord-explorer/session-*:
+        - claude-opus-5-5
 
 kagent:
   # The pinned chart reads these Git values before the replacement chart ships.
@@ -64,16 +67,16 @@ kagent:
   # Agents and the controller's watch: kagent's own namespace plus each
   # repository binding's.
   rbac:
-    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-r-homelab-planner, factory-discord-agent, factory-discord-operator]
+    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-r-homelab-planner, factory-discord-agent, factory-discord-operator, discord-1501965852042330302, discord-explorer, discord-unsafe]
   # The controller's metrics for Prometheus
   # (projects/platform-factory/prometheus): HTTPS on 8443, admitting a token
   # whose subject may GET /metrics.
   controller:
     metrics:
       enabled: true
-    # kagent v1.0.1 built from jomcgi-org/kagent commit e3d14ee3dd62
+    # kagent v1.0.1 built from jomcgi-org/kagent commit ce4e068bc4a0
     # (branch jomcgi/codex-6.2, build run
-    # https://github.com/jomcgi-org/kagent/actions/runs/44250376557). Commit
+    # https://github.com/jomcgi-org/kagent/actions/runs/46127430919). Commit
     # 2c2fc329a8d8 sets PinnedCodexVersion and the harness Dockerfile to Codex
     # 0.169.1, the first stable Codex whose bundled catalogue has
     # gpt-6.2-astra and gpt-6.2-sol (agents.*.model below). Upstream kagent
@@ -87,10 +90,27 @@ kagent:
     # tests it: SuspendActor gets its own 2 min deadline
     # (substrate.snapshotTimeout) in place of the 30 s call deadline, whose
     # timeout wedges the session (kagent#3311/#3312).
+    # Commit 5bff0419a464 (jomcgi-org/kagent#1) adds the Hermes runner: a
+    # `spec.hermes` Harness and its translator. The Codex and Claude paths do
+    # not change. Commit 5aee46ff1464 (jomcgi-org/kagent#2) writes the model
+    # endpoint as a named Hermes provider: Hermes resolved an openrouter.ai
+    # model.base_url to a custom runtime with no key. Commit 75914efa79f6
+    # (jomcgi-org/kagent#3) adds Harness spec.idleSuspendDelay: a settled
+    # Session stays running for that delay instead of suspending at once.
+    # Commit 91e862974d4d (jomcgi-org/kagent#4) adds Harness
+    # spec.hermes.compression: threshold, verbatim user tail and summary model.
+    # Commit 34088646786a (jomcgi-org/kagent#5) runs Hermes on an Anthropic
+    # ModelConfig through the Messages API, with its prompt cache TTL.
+    # Commit 8198a63ae97f (jomcgi-org/kagent#6) gives Hermes RemoteMCPServer
+    # tools with explicit lists and Harness spec.hermes.serverTools
+    # (Anthropic web search, web fetch and code execution).
+    # Commit ce4e068bc4a0 (jomcgi-org/kagent#8) adds Harness
+    # spec.hermes.memory: the runner syncs Hermes' MEMORY.md and USER.md
+    # with the notes vault through that RemoteMCPServer (HOME-921).
     image:
       registry: ghcr.io
       repository: jomcgi-org/kagent/controller
-      tag: 1.0.1-jomcgi.e3d14ee3dd62@sha256:f7fb26c1a1158df556e1b0f861903c9b5d7b383e61278b32abb04534adcc931c
+      tag: 1.0.1-jomcgi.ce4e068bc4a0@sha256:7c05bb74d95c5b80ad48abc139d5cce96bd3436fefb36db62c36840c8bf3a5c1
   # The UI peaked at 4Mi over two days (2026-11-16) against the chart's
   # 256Mi request.
   ui:
@@ -104,8 +124,8 @@ kagent:
     # 0.169.1 in place of 0.161.0. The controller starts only when `release`
     # equals its own version, so it names the fork build, not 1.0.1.
     harnessImages:
-      release: 1.0.1-jomcgi.e3d14ee3dd62
-      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:51d92a9c9b5e819325e89491a80678539fc60dc7713a6e4e4b150ff9adc0a3cb
+      release: 1.0.1-jomcgi.ce4e068bc4a0
+      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:e6e89c4783b16d21e8bea8875ff9ea65ac010ed082f0e9bb2eeea6f29d40f887
     runtimeDefaults:
       cpu: "4"
       memory: 8Gi
@@ -253,10 +273,14 @@ connector:
   enabled: true
   # task-agent claims up to 10 runs at once, two fewer than the
   # agents.codex.concurrency workers that hold them (see there). It is the
-  # only delegate; homelab-codex is retired (HOME-898).
+  # only delegate. homelab-codex is retired (HOME-898) and drains: it claims
+  # nothing, but its key stays mounted so the runs it held can heartbeat,
+  # report and close. Without the key those runs failed every poll.
   agents:
     - username: task-agent
       concurrency: 10
+    - username: homelab-codex
+      drain: true
   # 120 s between polls of one open PR, up from 60 s. On 2026-11-22 about 45
   # open PRs at 60 s used about 5,400 GraphQL points an hour against the
   # installation's 5,000, so delivery stopped for part of every hour
@@ -386,27 +410,36 @@ discord:
     enforceAgentPath: true
     policy:
       # Every server Bosun is in (Joe, HOME-162 comment 1942). history marks
-      # each for the history import (HOME-164). ingest stores every human
+      # each for the history backfill (HOME-164). ingest stores every human
       # message in each (Joe, 2026-11-25, HOME-833); it needs the Message
-      # Content intent enabled for the application (HOME-834).
+      # Content intent enabled for the application (HOME-834). ingestSince is
+      # the first full ingested UTC day; the backfill imports earlier days.
+      # 2026-11-26 was the last day of bridge restarts during the Bosun and
+      # Hermes rollout, so its live documents are incomplete.
       guilds:
-        "185442367703220224": {history: true, ingest: true} # NOT DEM BOYZ
-        "1290668195249917964": {history: true, ingest: true} # The gang...
-        "1501965852042330302": {history: true, ingest: true} # homelab
-        "1512814732392927463": {history: true, ingest: true} # Loom
-      userLimit: {count: 10, window: 1h}
+        "185442367703220224": {history: true, ingest: true, ingestSince: "2026-11-27"} # NOT DEM BOYZ
+        "1290668195249917964": {history: true, ingest: true, ingestSince: "2026-11-27"} # The gang...
+        "1501965852042330302": {history: true, ingest: true, ingestSince: "2026-11-27"} # homelab
+        "1512814732392927463": {history: true, ingest: true, ingestSince: "2026-11-27"} # Loom
+      userLimit: {count: 60, window: 1h}
       guildLimit: {count: 60, window: 1h}
       globalLimit: {count: 300, window: 24h}
       queueDepth: 3
-  # The history import (HOME-164): one Job per runId reads every server's
-  # history into its bank, up to maxDocuments channel-days per run (Joe,
-  # 2026-11-25). A new runId continues where the last one stopped.
-  import:
+      # The bot answers Joe alone, in every server (Joe, 2026-11-27,
+      # HOME-909); other authors' tags get no turn and no reply.
+      users: operator
+      # Part of each channel session's request ID (HOME-915). kagent pins a
+      # session to the Agent revision that created it, so a new value gives
+      # every channel a new session on the current tools and prompt; the
+      # old context goes, Hindsight memory stays. Set a new value only after
+      # kagent has prepared the new Agent revision: the bridge syncs first.
+      # refused1 (2026-11-28): revision ce4cfcd2 (runner drops a refused turn,
+      # HOME-909) was latest successful before this change.
+      sessionEpoch: refused1
+  # The bridge backfills each server's history (HOME-164), in place of the
+  # import Job (Joe, 2026-11-26, HOME-836).
+  backfill:
     enabled: true
-    runId: "4"
-    # The connector build of #8725 (retain retries). A fixed digest keeps the
-    # kept Job's template the same across releases.
-    image: ghcr.io/jomcgi/homelab/projects/factory/connector@sha256:a419c71123c3144a03b66034ea3fed139087bd2f9ae13ac7ddcdd1f6b62393aa # ratchet-allow: image-digest (the import Job must not follow the connector's digest; bump it by PR)
   # Joe's operator session (HOME-314 step 1): a persistent session per thread
   # under #factory in the homelab server, for Joe's messages only. His user ID
   # is the `operator-user-id` field of the bot's 1Password item.
@@ -414,6 +447,99 @@ discord:
     enabled: true
     guild: "1501965852042330302"
     channels: ["1575140752776757368"]
+  # Bosun's research explorer (HOME-909): Claude Code on the broker's
+  # Claude relay (Joe's subscription, which outlives the Console credits),
+  # cloning public GitHub repositories with no credential. Bosun starts and
+  # continues research with fenced explore blocks.
+  explorer:
+    enabled: true
+    # The planner's Claude harness image (2026-11-25 build).
+    harnessImage: ghcr.io/jomcgi/homelab/projects/factory/harness/claude@sha256:ff770f2257b0ec50539e758043833b795d9caed5402d2e1bf4a3a35d15535009 # ratchet-allow: image-digest (no chart images entry pins a harness image; bump it by PR)
+  # The homelab server's Hermes agent (HOME-907): a persistent session that
+  # suspends when idle. It answers Joe's tags in every server, in its one
+  # session, in place of Bosun (Joe, 2026-11-27, HOME-909). Bosun's Agent
+  # stays rendered for a later friends' app.
+  serverAgents:
+    homelab:
+      enabled: true
+      route: true
+      servers: all
+      # Joe's Anthropic Console key (2026-11-27): Opus 5.5 answers, Sonnet
+      # 5.5 writes compaction summaries, both on that key. Its promotional
+      # credits end 2026-12-03 00:00 GMT (discord/server-agents.md, "Model
+      # and token cost"). The 1 h cache TTL matches the 1 h idle compaction.
+      llmItemPath: vaults/k8s-homelab/items/factory-discord-anthropic
+      provider: anthropic
+      model: claude-opus-5-5
+      baseUrl: https://api.anthropic.com
+      cacheTTL: 1h
+      compression:
+        model: claude-sonnet-5-5
+      # One session per channel (Joe, 2026-11-27): up to 3 channels answer
+      # at once, one worker each; idle sessions suspend.
+      concurrency: 3
+      # Joe's tools (2026-11-27, HOME-915; server-agents.md "Tools"). Code
+      # execution costs tokens and container time after the free monthly
+      # hours. Web search and fetch are on with the prompt rule only (Joe,
+      # 2026-11-28): a query may carry memory text (server-agents.md, "Tool
+      # security"). Recall as a tool waits for a bank bound to the turn's
+      # server; factory MCP waits for factory-mcp (HOME-916).
+      serverTools:
+        codeExecution: true
+        webSearch:
+          maxUses: 5
+        webFetch:
+          maxUses: 3
+      mcpServers:
+        # Public and read-only, with no sign-in (projects/scotland-connector).
+        - name: scotland
+          url: https://scotland-mcp.jomcgi.dev/mcp
+          tools: [plan, check, aurora, light]
+        # Bosun's artifacts (HOME-917, templates/discord-artifacts.yaml):
+        # publishes to the Joe-only artifact.jomcgi.dev. The cluster domain
+        # is required: Substrate resolves actor destinations as absolute
+        # names. No Secret: the gateway injects an actor JWT.
+        # put, template and list; no delete: it cannot be undone, and a turn holds
+        # untrusted text (server-agents.md, "Tool security").
+        - name: artifacts
+          url: http://bosun-artifacts.factory-discord.svc.cluster.local:8080/mcp
+          actorJwt:
+            audiences: [bosun-artifacts]
+          tools: [put, template, list]
+        # Bosun's message archive (discord.archive, templates/discord-history.yaml):
+        # read-only, one allowlisted server per call; history_sql reads with
+        # that server's own login. No Secret: the gateway injects an actor JWT.
+        - name: history
+          url: http://bosun-history.factory-discord.svc.cluster.local:8080/mcp
+          actorJwt:
+            audiences: [bosun-history]
+          tools: [history_search, history_around, history_day, history_sql]
+        # Bosun's notes vault (HOME-918, discord/notes, served by
+        # bosun-artifacts at /notes/mcp): the server comes from the bridge's
+        # record of the session, not from the model. No hard delete:
+        # notes_delete moves a note to .trash/. memory_read and memory_write
+        # are for the Hermes runner, not the model. Naming it notes adds
+        # discord.notes.prompt (Joe, 2026-11-28, HOME-918 comment 12931).
+        - name: notes
+          url: http://bosun-artifacts.factory-discord.svc.cluster.local:8080/notes/mcp
+          actorJwt:
+            audiences: [bosun-artifacts]
+          tools: [notes_list, notes_read, notes_search, notes_write, notes_append, notes_delete]
+    # Joe's gloves-off agent (HOME-938): abliteration.ai, no tools. His
+    # 1Password item factory-discord-abliteration exists (Joe, 2026-11-28);
+    # prepaid credits only, with auto-reload off.
+    unsafe:
+      enabled: true
+  # Joe's gloves off (HOME-938, Joe 2026-11-28): his tags only, 30 min by
+  # default, 4 h at most.
+  unsafe:
+    enabled: true
+  # Bosun's artifact tools at artifact.jomcgi.dev (HOME-917).
+  artifacts:
+    enabled: true
+  # Bosun's verbatim message archive and history tools (HOME-909).
+  archive:
+    enabled: true
 
 semgrepSync:
   enabled: false

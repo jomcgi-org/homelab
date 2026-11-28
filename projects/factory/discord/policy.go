@@ -3,7 +3,11 @@ package discord
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
 
 // policyFile is the bridge's policy as values render it.
@@ -15,7 +19,68 @@ type policyFile struct {
 	GlobalLimit          limitFile         `json:"globalLimit"`
 	QueueDepth           int               `json:"queueDepth"`
 	Operator             *operatorFile     `json:"operator"`
+	// ServerAgents maps a guild ID to its agent, "namespace/name" (HOME-909).
+	ServerAgents map[string]string `json:"serverAgents"`
+	// Users is who may start a turn: "all" (or absent) or "operator", Joe
+	// alone (HOME-909).
+	Users string `json:"users"`
+	// Explore turns on research of public GitHub repositories (HOME-909).
+	Explore *exploreFile `json:"explore"`
+	// SessionEpoch, when set, is part of every server agent channel
+	// session's request ID; a new value starts new sessions (HOME-915).
+	SessionEpoch string `json:"sessionEpoch"`
+	// Unsafe turns on Joe's unsafe mode (HOME-938, unsafe.go).
+	Unsafe *unsafeFile `json:"unsafe"`
 }
+
+// unsafeFile places unsafe mode. Both fields are required.
+type unsafeFile struct {
+	// Agent is the tool-free agent, "namespace/name".
+	Agent string `json:"agent"`
+	// Duration is how long gloves off lasts when Joe names no time, and
+	// MaxDuration caps a time he names: each 1m to 24h.
+	Duration    string `json:"duration"`
+	MaxDuration string `json:"maxDuration"`
+}
+
+// exploreFile bounds research (explore.go). Every field is required.
+type exploreFile struct {
+	Agent       string    `json:"agent"`
+	Limit       limitFile `json:"limit"`
+	Concurrency int       `json:"concurrency"`
+	Timeout     string    `json:"timeout"`
+	MaxSessions int       `json:"maxSessions"`
+	TTL         string    `json:"ttl"`
+	MaxRepoMB   int64     `json:"maxRepoMB"`
+}
+
+func (e exploreFile) config() (ExploreConfig, error) {
+	ns, name, ok := strings.Cut(e.Agent, "/")
+	if !ok || ns == "" || name == "" || strings.Contains(name, "/") {
+		return ExploreConfig{}, fmt.Errorf("explore: agent %q is not namespace/name", e.Agent)
+	}
+	lim, err := e.Limit.limit("explore.limit")
+	if err != nil {
+		return ExploreConfig{}, err
+	}
+	timeout, err := time.ParseDuration(e.Timeout)
+	if err != nil || timeout < time.Minute || timeout > time.Hour {
+		return ExploreConfig{}, fmt.Errorf("explore: timeout %q is not 1m to 1h", e.Timeout)
+	}
+	ttl, err := time.ParseDuration(e.TTL)
+	if err != nil || ttl < time.Hour {
+		return ExploreConfig{}, fmt.Errorf("explore: ttl %q is under 1h", e.TTL)
+	}
+	if e.Concurrency < 1 || e.MaxSessions < 1 || e.MaxRepoMB < 1 {
+		return ExploreConfig{}, fmt.Errorf("explore: concurrency, maxSessions and maxRepoMB must be positive")
+	}
+	return ExploreConfig{
+		Agent: kagent.AgentRef{Namespace: ns, Name: name}, Limit: lim, Concurrency: e.Concurrency,
+		Timeout: timeout, MaxSessions: e.MaxSessions, TTL: ttl, MaxRepoKB: e.MaxRepoMB * 1024,
+	}, nil
+}
+
+var sessionEpoch = regexp.MustCompile(`^[a-z0-9]{0,16}$`)
 
 // operatorFile is the operator session's place (HOME-314). Joe's user ID is
 // not in the policy: it comes from a Secret file.
@@ -60,6 +125,14 @@ func ParsePolicy(data []byte) (Config, error) {
 	}
 	c.NotificationChannels = p.NotificationChannels
 	c.Guilds = p.Guilds
+	for id, g := range c.Guilds {
+		if g.IngestSince == "" {
+			continue
+		}
+		if _, err := time.Parse(time.DateOnly, g.IngestSince); err != nil {
+			return Config{}, fmt.Errorf("guild %s: ingestSince %q is not YYYY-MM-DD", id, g.IngestSince)
+		}
+	}
 	if c.Guilds == nil {
 		c.Guilds = map[string]Guild{}
 	}
@@ -77,6 +150,55 @@ func ParsePolicy(data []byte) (Config, error) {
 			}
 		}
 		c.Operator = Operator{Guild: o.Guild, Channels: o.Channels}
+	}
+	for guild, ref := range p.ServerAgents {
+		if _, ok := c.Guilds[guild]; !ok {
+			return Config{}, fmt.Errorf("serverAgents: guild %s is not allowlisted", guild)
+		}
+		ns, name, ok := strings.Cut(ref, "/")
+		if !ok || ns == "" || name == "" || strings.Contains(name, "/") {
+			return Config{}, fmt.Errorf("serverAgents: guild %s: %q is not namespace/name", guild, ref)
+		}
+		if c.ServerAgents == nil {
+			c.ServerAgents = map[string]kagent.AgentRef{}
+		}
+		c.ServerAgents[guild] = kagent.AgentRef{Namespace: ns, Name: name}
+	}
+	if p.Explore != nil {
+		if c.Explore, err = p.Explore.config(); err != nil {
+			return Config{}, err
+		}
+	}
+	if !sessionEpoch.MatchString(p.SessionEpoch) {
+		return Config{}, fmt.Errorf("sessionEpoch: %q must be at most 16 lower-case letters and digits", p.SessionEpoch)
+	}
+	c.SessionEpoch = p.SessionEpoch
+	if u := p.Unsafe; u != nil {
+		ns, name, ok := strings.Cut(u.Agent, "/")
+		if !ok || ns == "" || name == "" || strings.Contains(name, "/") {
+			return Config{}, fmt.Errorf("unsafe: agent %q is not namespace/name", u.Agent)
+		}
+		d, err := time.ParseDuration(u.Duration)
+		if err != nil || d < time.Minute || d > 24*time.Hour {
+			return Config{}, fmt.Errorf("unsafe: duration %q is not 1m to 24h", u.Duration)
+		}
+		for _, ref := range c.ServerAgents {
+			if ref.Namespace == ns && ref.Name == name {
+				return Config{}, fmt.Errorf("unsafe: agent %s also answers normal turns", u.Agent)
+			}
+		}
+		limit, err := time.ParseDuration(u.MaxDuration)
+		if err != nil || limit < d || limit > 24*time.Hour {
+			return Config{}, fmt.Errorf("unsafe: maxDuration %q is not duration to 24h", u.MaxDuration)
+		}
+		c.Unsafe = UnsafeConfig{Agent: kagent.AgentRef{Namespace: ns, Name: name}, Duration: d, MaxDuration: limit}
+	}
+	switch p.Users {
+	case "", "all":
+	case "operator":
+		c.OperatorOnly = true
+	default:
+		return Config{}, fmt.Errorf("users: %q is not all or operator", p.Users)
 	}
 	return c, nil
 }

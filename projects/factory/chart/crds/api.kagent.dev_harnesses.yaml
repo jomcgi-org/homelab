@@ -76,6 +76,116 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              hermes:
+                description: |-
+                  HermesHarness selects the Hermes Agent runtime adapter. Kagent publishes no
+                  built-in Hermes image, so workload.image must name one that contains Hermes
+                  Agent and the kagent-hermes adapter.
+                properties:
+                  compression:
+                    description: |-
+                      Compression tunes Hermes context compression. Unset keeps Hermes's
+                      defaults: compress at half the model window, summarised by the main model.
+                    properties:
+                      minTailUserMessages:
+                        description: |-
+                          MinTailUserMessages is how many of the newest user messages a
+                          compression keeps verbatim. Unset keeps Hermes's default of 1.
+                        format: int32
+                        maximum: 20
+                        minimum: 1
+                        type: integer
+                      model:
+                        description: |-
+                          Model is the model ID that writes the summary. Hermes calls it through
+                          the ModelConfig's endpoint and credential, like the main model. Unset
+                          means the main model.
+                        maxLength: 256
+                        minLength: 1
+                        pattern: ^[^[:space:]]+$
+                        type: string
+                      thresholdTokens:
+                        description: |-
+                          ThresholdTokens compresses the session when its prompt reaches this many
+                          tokens, or the default half-window ratio, whichever is lower.
+                        format: int32
+                        minimum: 8192
+                        type: integer
+                    type: object
+                  memory:
+                    description: |-
+                      Memory turns on Hermes's built-in memory, MEMORY.md and USER.md, and
+                      keeps both files in an MCP server instead of only on the Actor's
+                      volume. The model gets Hermes's memory tool. Unset keeps memory off.
+                    properties:
+                      remoteMCPServer:
+                        description: |-
+                          RemoteMCPServer names a RemoteMCPServer bound to the agent. The adapter
+                          reads each file with its memory_read tool before a turn and writes a
+                          changed file back with memory_write after it, through the same egress
+                          credential as the binding. The binding must not list memory_read or
+                          memory_write, so the model cannot call them.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - remoteMCPServer
+                    type: object
+                  serverTools:
+                    description: |-
+                      ServerTools adds Anthropic server tools to each Messages API request of
+                      a turn. Anthropic runs them; the Actor makes no request to the tool's
+                      target. It requires a ModelConfig with the Anthropic provider.
+                    properties:
+                      codeExecution:
+                        description: |-
+                          CodeExecution adds code_execution (type code_execution_20260521). Code
+                          runs in Anthropic's sandbox, which has no network access.
+                        type: boolean
+                      webFetch:
+                        description: |-
+                          WebFetch adds web_fetch (web_fetch_20250910, direct calls). It fetches
+                          only URLs that are already in the conversation.
+                        properties:
+                          maxUses:
+                            description: |-
+                              MaxUses is the tool's max_uses: the most calls in one Messages API
+                              request. A turn that calls MCP tools makes one request per model step.
+                            format: int32
+                            maximum: 20
+                            minimum: 1
+                            type: integer
+                        required:
+                        - maxUses
+                        type: object
+                      webSearch:
+                        description: WebSearch adds web_search (web_search_20250305,
+                          direct calls).
+                        properties:
+                          maxUses:
+                            description: |-
+                              MaxUses is the tool's max_uses: the most calls in one Messages API
+                              request. A turn that calls MCP tools makes one request per model step.
+                            format: int32
+                            maximum: 20
+                            minimum: 1
+                            type: integer
+                        required:
+                        - maxUses
+                        type: object
+                    type: object
+                type: object
+              idleSuspendDelay:
+                description: |-
+                  IdleSuspendDelay keeps a Session's runtime running for this long after
+                  its last turn settles, so follow-up turns skip restore and harness
+                  startup. A new turn restarts the delay, and a checkpoint of the held
+                  turn ends it. Suspension can follow up to one quiescence recovery
+                  interval after the delay. Unset or zero suspends at once.
+                type: string
+                x-kubernetes-validations:
+                - message: idleSuspendDelay must be between 0s and 1h
+                  rule: duration(self) >= duration('0s') && duration(self) <= duration('1h')
               kagent:
                 description: KagentHarness configures the kagent runtime adapter.
                 properties:
@@ -227,7 +337,7 @@ spec:
                   rule: self.workerPoolRef.name.size() > 0
               workload:
                 description: Workload overrides the built-in runtime image and its
-                  command. BYO requires it.
+                  command. BYO and Hermes require it.
                 properties:
                   args:
                     description: Args overrides the image command arguments when set.
@@ -243,7 +353,7 @@ spec:
                     type: array
                   image:
                     description: |-
-                      Image overrides the release's built-in runtime image. BYO requires an image.
+                      Image overrides the release's built-in runtime image. BYO and Hermes require an image.
                       When set, it must be an OCI image reference pinned by sha256 digest.
                     pattern: ^[^[:space:]@]+@sha256:[a-f0-9]{64}$
                     type: string
@@ -257,9 +367,11 @@ spec:
                 && size(self.workload.command) > 0)'
             - message: BYO harnesses must specify workload.image
               rule: '!has(self.byo) || (has(self.workload) && has(self.workload.image))'
-            - message: exactly one of the fields in [kagent codex claude byo] must
-                be set
-              rule: (has(self.kagent)?1:0)+(has(self.codex)?1:0)+(has(self.claude)?1:0)+(has(self.byo)?1:0)
+            - message: Hermes harnesses must specify workload.image
+              rule: '!has(self.hermes) || (has(self.workload) && has(self.workload.image))'
+            - message: exactly one of the fields in [kagent codex claude hermes byo]
+                must be set
+              rule: (has(self.kagent)?1:0)+(has(self.codex)?1:0)+(has(self.claude)?1:0)+(has(self.hermes)?1:0)+(has(self.byo)?1:0)
                 == 1
         required:
         - spec

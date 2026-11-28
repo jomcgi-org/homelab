@@ -32,7 +32,7 @@ flowchart LR
 | itsaplan-web | Renders the native issue and Agent runs UI | `itsaplan-web/` | Community 1.10.0 with the factory patch | Authorized issue and run responses | Browser session cookie |
 | connector | Claims runs and reconciles delivery | `connector/` | Built from this repo | Issue text, agent output and PR state | itsaplan agent keys, projected tokens and short-lived author App token |
 | taskpin | Returns the assigned main commit for an active coder or review task | `taskpin/` | Built from this repo | Actor requests | Short-lived actor JWT in transit |
-| kagent | Owns agents and sessions | `chart/Chart.yaml`, `deploy/values.yaml` | Charts 1.0.1, controller fork e3d14ee3dd62 | Tasks and session messages | Controller ServiceAccount |
+| kagent | Owns agents and sessions | `chart/Chart.yaml`, `deploy/values.yaml` | Charts 1.0.1, controller fork ce4e068bc4a0 | Tasks and session messages | Controller ServiceAccount |
 | Agent Substrate | Isolates actors and injects credentials at egress | `../platform-factory/substrate/` | Fork charts 1.0.1, source `7ce6f439`; `ateapi`, `atecontroller`, `atelet` and the WorkerPool CRD from the fork at `1e7a877d0` | Workspace traffic | Actor identity and credentials scoped by policy |
 | browser-comparison | Compares CLI and MCP evidence on a loopback fixture | `browser-comparison/` | See package-lock.json | Fixture HTML | None |
 | toolchain | Installs local checks for the coding binding | `toolchain/` | Built from this repo | Tool downloads | None |
@@ -46,7 +46,7 @@ flowchart LR
 | Hindsight | Stores reusable coding lessons | `../platform-factory/hindsight/` | Image 1.2.1, embeddings `mongodb/voyage-4-large`, decision model `typesafe/jev-1.14` | Recalled and retained text | Database and model credentials |
 | discord | Routes mentions to Bosun | `discord/` | Built from this repo | Discord messages | Bot token and Discord memory access |
 | alert-relay | Forwards Alertmanager notifications to Discord | `alert-relay/` | Built from this repo | Alertmanager webhooks | Discord webhook URL |
-| harness | Private Codex and Claude harness images with Semgrep Mandoline | `harness/` | Built from this repo on the pinned Codex and Claude harness images | Task and checkout | Gateway placeholders |
+| harness | Private Codex and Claude harness images with Semgrep Mandoline; a slim Hermes Agent image with the kagent fork's runner, for the homelab Discord agent (HOME-907) | `harness/` | Built from this repo on the pinned Codex and Claude harness images, Hermes Agent 0.23.4 and the fork's hermes-runner | Task and checkout; Hermes gets A2A turn text | Gateway placeholders |
 | mandoline | Runs bounded analysis on a pinned, clean checkout | `mandoline/` | Static command in the private Codex and Claude harnesses only | Tool output and checkout | None |
 
 ## Current state
@@ -538,7 +538,29 @@ the boundary and rollout checks.
 
 ### Discord bot
 
-Bosun answers mentions in the configured Discord servers. The bridge scopes memory to the guild and channel and passes messages to a separate kagent agent. The agent uses a dedicated model credential and has no coding tools. [Isolation decision](https://github.com/jomcgi-org/homelab/pull/8188#issuecomment-6960669519)
+Bosun answers mentions in the configured Discord servers. The bridge passes messages to a separate kagent agent. The agent uses a dedicated model credential and has no coding tools. [Isolation decision](https://github.com/jomcgi-org/homelab/pull/8188#issuecomment-6960669519)
+
+Each server has its own Hindsight bank. A recall reads the whole bank, every
+channel of the server, with no tag filter. A retain keeps the channel's tag
+and observation scope. The turn's JSON prompt names the server, its
+description and member count, and the channel, from the gateway's
+`GUILD_CREATE` and channel events. The model has no `:online` web search.
+Joe chose server-wide recall and no web search for faster turns
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-162#comment-12817)).
+
+The bridge backfills the history of each server with `history: true`
+(`discord/backfill.go`, HOME-836). It runs one pass after the gateway is
+ready, then one pass 6 hours after each pass ends (`discord.backfill`). A
+pass stores one document per channel and UTC day. It skips days already
+stored and today. It also skips a day with a live document on or after the
+server's `ingestSince`, because the ingestor stored that day. One channel imports at a
+time, and a limiter spaces every Discord read and Hindsight call (2 each
+second), so live turns and ingest keep their share. A failed server logs and
+waits for the next pass. The bridge serves `factory_discord_backfill_*` on
+`/metrics`. Joe replaced the one-shot import Job with this loop because the
+Job stopped the factory sync three times on 2026-11-26.
+
+[Per-server agents](discord/server-agents.md) designs one persistent Hermes agent per server on ATE, with server-locked memory and per-server tools (HOME-905).
 
 ### itsaplan
 
@@ -586,7 +608,9 @@ The connector uses separate identities to claim coding work and coordinate issue
   creates team `factory`, project `HOME` and the external agents
   `task-agent` (claims runs, assignment and mention triggers; the delegate
   for coder work, whatever the provider), `homelab-codex` (retired:
-  both triggers off, kept for run history, HOME-898) and
+  both triggers off, kept for run history, HOME-898; a `drain` connector
+  agent, so it claims nothing but its held runs can still heartbeat, report
+  and close) and
   `factory-coordinator` (coordinates issue updates). The `readOnly` agents
   `factory-reviewer` and `factory-storyboard` get no triggers and only
   `work_items read` in HOME. The bootstrap proves that access with each
@@ -1335,6 +1359,7 @@ version write-back.
 | Verify the factory App author when adopting a PR. | [#7920](https://github.com/jomcgi-org/homelab/issues/7920) | live |
 | Remove third-party Apps from the merge trust path. | [#7921](https://github.com/jomcgi-org/homelab/issues/7921) | designed |
 | Move CI and the registry into the cluster and scope the chart write-back identity. | [#7922](https://github.com/jomcgi-org/homelab/issues/7922) | designed |
+| Give each Discord server its own persistent Hermes agent with server-locked memory ([design](discord/server-agents.md)). | [HOME-905](https://factory-plan.jomcgi.dev/factory/issue/HOME-905) | designed |
 | Isolate fork PRs. Agents preview pages locally (HOME-877), so no public preview host is planned. | [#7923](https://github.com/jomcgi-org/homelab/issues/7923) | designed |
 
 ### Discord operator session

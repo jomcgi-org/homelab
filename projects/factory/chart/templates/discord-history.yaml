@@ -1,0 +1,182 @@
+{{- /*
+Bosun's history tools (HOME-909, projects/factory/discord/archive): an MCP
+server that searches and reads the verbatim message archive the bridge
+writes to factory-db's factory_discord_archive database.
+
+Callers are the routed server agents' actors only. Substrate's egress gateway
+injects an actor JWT with audience bosun-history; the service verifies it
+against the issuer's keys and admits only the atespaces of routed
+discord.serverAgents. It reads with factory_discord_archive_reader, a login
+that may only SELECT the archive table (discord-archive-reader-db, filled by
+factory-db-setup). history_sql runs on the server's own login
+(discord-sql-<guild>-db), which row security limits to that server's rows.
+Each call names one server of bridge.policy.guilds.
+*/}}
+{{- $d := .Values.discord }}
+{{- $arc := $d.archive }}
+{{- if and $arc.enabled $d.bridge.enabled }}
+{{- $ns := $d.bridge.namespace }}
+{{- $name := "bosun-history" }}
+{{- $atespaces := list }}
+{{- range $key := keys $d.serverAgents | sortAlpha }}
+{{- $a := index $d.serverAgents $key }}
+{{- if and $a.enabled $a.route }}
+{{- $atespaces = append $atespaces (printf "discord-%s" $a.guild) }}
+{{- end }}
+{{- end }}
+{{- $servers := keys ($d.bridge.policy.guilds | default dict) | sortAlpha }}
+{{- /* With no routed server agent no actor could call it, so it renders nothing. */}}
+{{- if $atespaces }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          image: {{ include "factory.connectorImage" . | quote }}
+          imagePullPolicy: {{ .Values.connector.image.pullPolicy }}
+          command: [/usr/local/bin/bosun-history]
+          env:
+            - name: ADDR
+              value: ":8080"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: discord-archive-reader-db
+                  key: DATABASE_URL
+            - name: HISTORY_SERVERS
+              value: {{ join "," $servers | quote }}
+            {{- range $servers }}
+            - name: HISTORY_SQL_URL_{{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: discord-sql-{{ . }}-db
+                  key: DATABASE_URL
+            {{- end }}
+            - name: ACTOR_JWT_ISSUER
+              value: {{ .Values.kagent.config.substrate.actorJwtIssuer | quote }}
+            - name: ACTOR_JWT_AUDIENCE
+              value: {{ $name }}
+            - name: ACTOR_JWT_CA_FILE
+              value: /run/substrate-servicedns/trust-bundle.pem
+            - name: ACTOR_JWT_ATESPACES
+              value: {{ join "," $atespaces | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml $arc.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: substrate-servicedns
+              mountPath: /run/substrate-servicedns
+              readOnly: true
+      volumes:
+        # Substrate's service-DNS trust bundle, to verify the actor JWT
+        # issuer (idp.<substrate>.svc), as the broker does.
+        - name: substrate-servicedns
+          projected:
+            sources:
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+{{- if .Values.networkPolicy.cilium }}
+---
+# Only Substrate's egress gateway connects in. Out: factory-db and the actor
+# JWT issuer. DNS is the cluster baseline's.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-db
+            cnpg.io/cluster: factory-db
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: ate-idp-server
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+{{- end }}
+{{- end }}
+{{- end }}

@@ -51,6 +51,11 @@ entries:
     id: social-login
     identifiers:
       name: factory-social-login
+    attrs:
+      # The session ends after a day; the next sign-in syncs Discord server
+      # groups again. The edge token lasts 10 minutes (factory-auth.yaml), so
+      # someone who leaves a server keeps its folder for at most 24 h 10 min.
+      session_duration: hours=24
   - model: authentik_policies_expression.expressionpolicy
     id: enrollment-return
     identifiers:
@@ -181,7 +186,8 @@ entries:
         direct = request.context.get("redirect") == "authentik_core:if-user"
         if request.context["source"].slug == "discord" and direct and request.http_request.session.get("bosun_apply_until", 0) > time():
             return True
-        if user.groups.exists() or any(devices_for_user(user)):
+        # Source groups sync after this check, at the end of the flow.
+        if user.groups.exists() or request.context.get("source_groups") or any(devices_for_user(user)):
             return True
         ak_message("Your account is registered. Factory access is pending a group grant.")
         return False
@@ -295,7 +301,30 @@ entries:
       name: factory-discord-properties
     attrs:
       expression: |
-        return {"username": "discord-" + str(info["id"])}
+        from authentik.core.models import Group
+        # Discord server memberships (scope guilds) become the
+        # discord-<server-id> groups of factory-auth.yaml, for the servers
+        # that have one. Authentik's source group sync then sets the user's
+        # source groups to exactly this list at every Discord sign-in. A
+        # failed lookup gives no groups: access fails closed until the next
+        # sign-in.
+        servers = {
+            group.attributes["discord_server_id"]: group.name
+            for group in Group.objects.filter(attributes__has_key="discord_server_id")
+        }
+        groups = []
+        try:
+            response = client.session.get(
+                "https://discord.com/api/users/@me/guilds",
+                headers={"Authorization": "Bearer " + token["access_token"]},
+                timeout=10,
+            )
+            if response.status_code == 200:
+                ids = {str(guild.get("id")) for guild in response.json()}
+                groups = sorted(name for server, name in servers.items() if server in ids)
+        except Exception:
+            groups = []
+        return {"username": "discord-" + str(info["id"]), "groups": groups}
   - model: authentik_sources_oauth.oauthsource
     id: discord
     identifiers:
@@ -306,6 +335,11 @@ entries:
       consumer_key: !File /run/factory-social/discord/client-id
       consumer_secret: !File /run/factory-social/discord/client-secret
       user_matching_mode: identifier
+      # Read the user's server list for discord-properties.
+      additional_scopes: guilds
+      # Link each discord-<server-id> group by name; the mapping returns only
+      # groups that factory-auth.yaml created.
+      group_matching_mode: name_link
       user_path_template: factory/social
       authentication_flow: !KeyOf social-authentication
       enrollment_flow: !KeyOf social-enrollment

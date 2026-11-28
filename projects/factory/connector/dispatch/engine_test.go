@@ -3862,3 +3862,29 @@ func TestQueuedResultAcrossLeaseRedelivery(t *testing.T) {
 		})
 	}
 }
+
+// A retired agent drains: it claims no new run, but the run it already holds
+// keeps its heartbeat, because the connector still has its key (HOME-898).
+func TestDrainAgentClaimsNothingButHeartbeatsHeldRuns(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder-b", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	if r := v.run(1); r.State != store.RunDispatched {
+		t.Fatalf("run 1 = %s, want dispatched", r.State)
+	}
+	beats := v.its.Run(1).beats
+
+	v.cfg.Agents = []dispatch.Agent{{Key: "coder", Concurrency: 2}, {Key: "coder-b", Concurrency: 1, Drain: true}}
+	v.e.Release()
+	v.e = v.engine("connector-a2")
+	v.its.add(2, "coder-b", 102, "HL-2", "New work.")
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+
+	if got := v.its.Run(2).attempts; got != 0 {
+		t.Fatalf("drain agent claimed run 2 (%d attempts)", got)
+	}
+	if got := v.its.Run(1).beats; got <= beats {
+		t.Fatalf("held run beats = %d, want more than %d", got, beats)
+	}
+}

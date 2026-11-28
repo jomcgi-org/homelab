@@ -30,6 +30,7 @@ py_test(
         "//projects/platform-factory/grimoire-data/resources:manifests",
         "//projects/platform-factory/hindsight-discord/resources:audit_manifests",
         "//projects/platform-factory/hindsight/resources:audit_manifests",
+        "//projects/platform-factory/home-assistant/resources:audit_manifests",
         "//projects/platform-factory/kagent-postgres/resources:audit_manifests",
         "//projects/platform-factory/kagent-postgres/resources:cluster.yaml",
         "//projects/platform-factory/onepassword:application.yaml",

@@ -2,6 +2,12 @@
 
 [Architecture](ARCHITECTURE.md)
 
+**Status: not deployed** (Joe, 2026-11-26). The factory cluster does not
+sync this app: the hub it migrated from is retired. The data is kept: the
+`factory_trips` database (retain policy), its Garage buckets, and the hub's
+final backups in `gs://h0melab-cnpg-backups`. To deploy it again, add
+`../trips/deploy` back to `projects/platform-factory/kustomization.yaml`.
+
 Bazel builds both Go commands in `//projects/trips/image:image`. The published
 chart pins the image digest. Set `workloadsEnabled` to start the ingest service
 and create the suspended daily export after preparing private storage.

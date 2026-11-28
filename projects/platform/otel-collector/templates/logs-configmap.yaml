@@ -337,19 +337,23 @@ data:
               - from: resource_attribute
                 name: k8s.pod.uid
 
-      # service.name from the app label, else the owning workload, else the
-      # container. Only set when absent. Everything lands in one dataset, so
-      # this is a grouping column, not a routing key.
+      # The Honeycomb environment makes one dataset per service.name, and
+      # caps an environment at 100 datasets. A per-pod service.name made a
+      # new dataset for every one-off Job or debug pod, and filled the cap.
+      # So all pod logs share one service.name (the logs dataset name), and
+      # k8s.workload.name holds the grouping: the app label, else the owning
+      # workload, else the container. Both are set only when absent.
       transform/service:
         error_mode: ignore
         log_statements:
           - context: resource
             statements:
-              - set(resource.attributes["service.name"], resource.attributes["k8s.pod.labels.app.kubernetes.io/name"]) where resource.attributes["service.name"] == nil and resource.attributes["k8s.pod.labels.app.kubernetes.io/name"] != nil
-              - set(resource.attributes["service.name"], resource.attributes["k8s.deployment.name"]) where resource.attributes["service.name"] == nil and resource.attributes["k8s.deployment.name"] != nil
-              - set(resource.attributes["service.name"], resource.attributes["k8s.statefulset.name"]) where resource.attributes["service.name"] == nil and resource.attributes["k8s.statefulset.name"] != nil
-              - set(resource.attributes["service.name"], resource.attributes["k8s.daemonset.name"]) where resource.attributes["service.name"] == nil and resource.attributes["k8s.daemonset.name"] != nil
-              - set(resource.attributes["service.name"], resource.attributes["k8s.container.name"]) where resource.attributes["service.name"] == nil and resource.attributes["k8s.container.name"] != nil
+              - set(resource.attributes["k8s.workload.name"], resource.attributes["k8s.pod.labels.app.kubernetes.io/name"]) where resource.attributes["k8s.workload.name"] == nil and resource.attributes["k8s.pod.labels.app.kubernetes.io/name"] != nil
+              - set(resource.attributes["k8s.workload.name"], resource.attributes["k8s.deployment.name"]) where resource.attributes["k8s.workload.name"] == nil and resource.attributes["k8s.deployment.name"] != nil
+              - set(resource.attributes["k8s.workload.name"], resource.attributes["k8s.statefulset.name"]) where resource.attributes["k8s.workload.name"] == nil and resource.attributes["k8s.statefulset.name"] != nil
+              - set(resource.attributes["k8s.workload.name"], resource.attributes["k8s.daemonset.name"]) where resource.attributes["k8s.workload.name"] == nil and resource.attributes["k8s.daemonset.name"] != nil
+              - set(resource.attributes["k8s.workload.name"], resource.attributes["k8s.container.name"]) where resource.attributes["k8s.workload.name"] == nil and resource.attributes["k8s.container.name"] != nil
+              - set(resource.attributes["service.name"], {{ .Values.logs.dataset | quote }}) where resource.attributes["service.name"] == nil
       {{- if .Values.environment }}
       resource/environment:
         attributes:

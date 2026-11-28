@@ -79,7 +79,7 @@ func (f *fakeOperator) Session(_ context.Context, thread string) (OperatorSessio
 	return OperatorSession{ContextID: id, Fresh: f.turns[id] == 0}, nil
 }
 
-func (f *fakeOperator) Turn(_ context.Context, thread, _, prompt string) (string, error) {
+func (f *fakeOperator) Turn(_ context.Context, thread, _, prompt string, _ ...TurnImage) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id := f.sessions[thread]
@@ -400,7 +400,7 @@ func TestNoOperatorLeavesThePublicPathAsItWas(t *testing.T) {
 	}
 	cancel()
 	b.Wait()
-	if want := Prompt(m, "plan the move", []string{"Earlier: the code word is heron."}); agent.prompts[0] != want {
+	if want := Prompt(m, Place{}, "plan the move", []string{"Earlier: the code word is heron."}, nil, bot); agent.prompts[0] != want {
 		t.Errorf("prompt = %q, want %q", agent.prompts[0], want)
 	}
 	if len(op.prompts) != 0 || len(chans.reads) != 0 || len(mem.recalls) != 1 || len(mem.retained) != 1 {
@@ -469,6 +469,8 @@ type a2aServer struct {
 	mu    sync.Mutex
 	tasks map[string]int // context ID -> tasks
 	sends []kagent.Message
+	// fail, when set, fails each task with this status message.
+	fail string
 }
 
 func (s *a2aServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -496,8 +498,12 @@ func (s *a2aServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(req.Params, &p)
 		s.sends = append(s.sends, p.Message)
 		s.tasks[p.Message.ContextID]++
+		state, text := kagent.StateCompleted, "ok"
+		if s.fail != "" {
+			state, text = kagent.StateFailed, s.fail
+		}
 		result = map[string]any{"task": map[string]any{"id": p.Message.MessageID, "contextId": p.Message.ContextID, "status": map[string]any{
-			"state": kagent.StateCompleted, "message": map[string]any{"messageId": "a", "role": "ROLE_AGENT", "parts": []any{map[string]any{"text": "ok"}}},
+			"state": state, "message": map[string]any{"messageId": "a", "role": "ROLE_AGENT", "parts": []any{map[string]any{"text": text}}},
 		}}}
 	case "ListTasks":
 		var p struct {

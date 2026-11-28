@@ -1,9 +1,10 @@
 # Factory home cluster. Everything goes to the hub's Honeycomb environment (homelab) with
 # deployment.environment=factory and k8s.cluster.name=factory on every event;
 # those two attributes, not dataset names, separate the clusters. The
-# environment puts every metric in its `metrics` dataset and routes logs by
-# service.name, so the dataset values below only name the fallback for data
-# without a service.name. The README lists where each kind of data lands.
+# environment puts every metric in its `metrics` dataset and routes other
+# data by service.name. Pod logs get logs.dataset as their service.name, so
+# they land in that one dataset. The README lists where each kind of data
+# lands.
 #
 # Volume. The team shares one monthly event budget with the hub, so every
 # source is cut to an allowlist and scraped every 120s. Measured on
@@ -98,6 +99,7 @@ logs:
     - factory-r-homelab-review
     - factory-discord-agent
     - factory-discord
+    - discord-1501965852042330302
   # Kyverno logs coloured zerolog console lines; sanitize makes them parse.
   sanitize: true
   redact: true

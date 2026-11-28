@@ -23,7 +23,7 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: factory
-      targetRevision: 0.157.20
+      targetRevision: 0.207.3
       helm:
         releaseName: factory
         # The chart's PreSync hook is the CRDs' only applier, so ArgoCD never
@@ -98,10 +98,6 @@ spec:
       namespace: factory
       name: factory-itsaplan-agent-intsec-sync
       jsonPointers: [/data]
-    # No entry for the Discord import Job: with RespectIgnoreDifferences an
-    # ignored /spec makes a sync apply the live spec, so ArgoCD takes the
-    # apiserver's selector and every later dry run fails. The chart renders
-    # the Job the same in every release instead (templates/discord.yaml).
     # The coder pool's HorizontalPodAutoscaler owns its replicas
     # (agents.codex.autoscaling in values.yaml). The chart keeps spec.replicas
     # as the first value, and a sync with self-heal would reset the HPA's.

@@ -20,9 +20,11 @@ import (
 
 func key() (string, error) { return "tenant", nil }
 
-// The recall carries only the channel's tag, strictly, in the server's bank;
-// the retain carries the same tag, the day's document and the channel scope.
-func TestHindsightRequestsStayInTheChannelScope(t *testing.T) {
+// The recall reads the server's whole bank with no tag filter, so it returns
+// memories and observations from every channel (Joe, HOME-162 comment
+// 12817). The retain carries the channel's tag, the day's document and the
+// channel's observation scope.
+func TestHindsightRecallsTheServerAndRetainsInTheChannel(t *testing.T) {
 	var mu sync.Mutex
 	var calls []string
 	bodies := map[string]map[string]any{}
@@ -46,7 +48,7 @@ func TestHindsightRequestsStayInTheChannelScope(t *testing.T) {
 	defer srv.Close()
 	h := &Hindsight{BaseURL: srv.URL, Key: key, RecallTokens: 2000}
 	ctx := context.Background()
-	got, err := h.Recall(ctx, "g1", "c1", "code word?")
+	got, err := h.Recall(ctx, "g1", "code word?")
 	if err != nil || len(got) != 1 || got[0] != "heron" {
 		t.Fatalf("recall = %v, %v", got, err)
 	}
@@ -59,7 +61,7 @@ func TestHindsightRequestsStayInTheChannelScope(t *testing.T) {
 		t.Fatalf("calls = %v, want %v (the bank is created once)", calls, want)
 	}
 	recall, _ := json.Marshal(bodies["/v1/default/banks/discord-g1/memories/recall"])
-	if string(recall) != `{"max_tokens":2000,"query":"code word?","tags":["channel:c1"],"tags_match":"all_strict"}` {
+	if string(recall) != `{"max_tokens":2000,"query":"code word?"}` {
 		t.Errorf("recall body = %s", recall)
 	}
 	if bodies["/v1/default/banks/discord-g1/memories"]["async"] != false {
@@ -69,6 +71,18 @@ func TestHindsightRequestsStayInTheChannelScope(t *testing.T) {
 	item, _ := json.Marshal(items[0])
 	if string(item) != `{"content":"ann: hi","context":"Discord channel c1","document_id":"discord:c1:2026-11-17","observation_scopes":[["channel:c1"]],"tags":["channel:c1"],"timestamp":"2026-11-17T23:30:00Z","update_mode":"append"}` {
 		t.Errorf("retain item = %s", item)
+	}
+	// A remembered fact (HOME-919) is its own document in the same bank,
+	// tagged with its channel and kind:remembered.
+	if err := h.RetainFact(ctx, "g1", "c1", "m9", at, "[kind=remembered] fact"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(calls); n != 4 || calls[3] != "POST /v1/default/banks/discord-g1/memories" {
+		t.Fatalf("calls = %v", calls)
+	}
+	fact, _ := json.Marshal(bodies["/v1/default/banks/discord-g1/memories"]["items"].([]any)[0])
+	if string(fact) != `{"content":"[kind=remembered] fact","context":"Joe asked Bosun to remember this, in Discord channel c1","document_id":"discord:c1:remembered:m9","observation_scopes":[["channel:c1"]],"tags":["channel:c1","kind:remembered"],"timestamp":"2026-11-17T23:30:00Z","update_mode":"replace"}` {
+		t.Errorf("fact item = %s", fact)
 	}
 }
 
@@ -103,7 +117,9 @@ func TestGatewayIdentifiesDispatchesAndStopsOnAFatalCode(t *testing.T) {
 		_ = json.Unmarshal(data, &p)
 		identified <- p.D
 		send(`{"op":0,"s":1,"t":"READY","d":{"session_id":"s1","resume_gateway_url":"ws://` + r.Host + `/ws","user":{"id":"100"}}}`)
-		send(`{"op":0,"s":2,"t":"MESSAGE_CREATE","d":{"id":"m1","channel_id":"c1","guild_id":"g1","content":"<@100> hi","author":{"id":"u1"},"mentions":[{"id":"100"}]}}`)
+		send(`{"op":0,"s":2,"t":"GUILD_CREATE","d":{"id":"g1","name":"homelab","description":null,"member_count":3,"channels":[{"id":"c1","name":"general","type":0}],"threads":[]}}`)
+		send(`{"op":0,"s":3,"t":"GUILD_CREATE","d":{"id":"g2","name":"not allowlisted","member_count":9}}`)
+		send(`{"op":0,"s":4,"t":"MESSAGE_CREATE","d":{"id":"m1","channel_id":"c1","guild_id":"g1","content":"<@100> hi","author":{"id":"u1"},"mentions":[{"id":"100"}]}}`)
 		time.Sleep(100 * time.Millisecond)
 		c.Close(4004, "authentication failed")
 	}))
@@ -116,6 +132,7 @@ func TestGatewayIdentifiesDispatchesAndStopsOnAFatalCode(t *testing.T) {
 		Token:     func() (string, error) { return "bot-token", nil },
 		OnReady:   func(u User) { mu.Lock(); ready = u; mu.Unlock() },
 		OnMessage: func(m Message) { mu.Lock(); msgs = append(msgs, m); mu.Unlock() },
+		Places:    &Places{Keep: func(id string) bool { return id == "g1" }},
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -128,6 +145,12 @@ func TestGatewayIdentifiesDispatchesAndStopsOnAFatalCode(t *testing.T) {
 	id := <-identified
 	if id["token"] != "bot-token" || id["intents"] != float64(Intents) || Intents != 513 {
 		t.Errorf("identify = %v", id)
+	}
+	if got := g.Places.Lookup("g1", "c1"); got != (Place{Server: Server{Name: "homelab", MemberCount: 3}, Channel: ChannelPlace{Name: "general"}}) {
+		t.Errorf("place = %+v", got)
+	}
+	if got := g.Places.Lookup("g2", ""); got != (Place{}) {
+		t.Errorf("a server outside Keep was cached: %+v", got)
 	}
 	mu.Lock()
 	defer mu.Unlock()

@@ -1,0 +1,151 @@
+{{- /*
+Bosun's public GitHub tools (HOME-915): GitHub's own MCP server
+(github/github-mcp-server) in HTTP mode, read-only, with only the listed
+tools. It holds no credential: it uses the Authorization header of each
+request, which Substrate's egress gateway injects from the routed agent's
+discord-github Secret, a fine-grained token with public repositories
+read-only and no permissions. The actor holds a placeholder. Out: only
+api.github.com.
+*/}}
+{{- $d := .Values.discord }}
+{{- $gh := $d.github }}
+{{- if and $gh.enabled $d.bridge.enabled }}
+{{- $ns := $d.bridge.namespace }}
+{{- $name := "github-mcp" }}
+{{- $routed := list }}
+{{- range $key := keys $d.serverAgents | sortAlpha }}
+{{- $a := index $d.serverAgents $key }}
+{{- if and $a.enabled $a.route }}
+{{- $routed = append $routed (printf "discord-%s" $a.guild) }}
+{{- end }}
+{{- end }}
+{{- if empty $gh.tools }}
+{{- fail "discord.github.tools must list the read tools: Hermes and the server register only those" }}
+{{- end }}
+{{- if $routed }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - name: http
+      port: 8082
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          image: {{ $gh.image | quote }}
+          # --read-only drops every write tool; --tools registers only these.
+          args:
+            - http
+            - --port=8082
+            - --read-only
+            - {{ printf "--tools=%s" (join "," $gh.tools) | quote }}
+          ports:
+            - name: http
+              containerPort: 8082
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml $gh.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+{{- if .Values.networkPolicy.cilium }}
+---
+# Only Substrate's egress gateway connects in; out only api.github.com. DNS
+# is the cluster baseline's.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8082"
+              protocol: TCP
+  egress:
+    - toFQDNs:
+        - matchName: api.github.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+{{- end }}
+{{- range $agentNs := $routed }}
+---
+# The token for this agent's GitHub calls. The label lets Substrate's
+# credential provider inject its `token` field (Bearer and the token) as
+# Authorization for this atespace only.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: discord-github
+  namespace: {{ $agentNs }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    substrate.ate.dev/injectable: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ $gh.itemPath | quote }}
+{{- end }}
+{{- end }}
+{{- end }}

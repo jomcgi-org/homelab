@@ -1,0 +1,54 @@
+# Mounted read-only over /config/configuration.yaml. Home Assistant keeps
+# its UI-made state in /config/.storage. Add the MQTT integration once in
+# the UI, with broker mosquitto and port 1883, to see Zigbee2MQTT devices.
+#
+# No http: block. Since 2026.8 Home Assistant keeps HTTP settings in
+# .storage/http and reverts a YAML import after 5 minutes unless someone
+# promotes it in the UI. The init container writes http-storage.json there.
+default_config:
+
+# Routines kept in git. Each package is a file in this directory, mounted
+# read-only under /config/packages. See bedroom-package.yaml.
+homeassistant:
+  packages:
+    bedroom: !include packages/bedroom.yaml
+
+# The family dashboard. Every signed-in user sees it; Settings stays
+# admin-only. The file is mounted read-only from heating-dashboard.yaml.
+lovelace:
+  dashboards:
+    family-heating:
+      mode: yaml
+      filename: dashboards/heating.yaml
+      title: Heating
+      icon: mdi:radiator
+      show_in_sidebar: true
+      require_admin: false
+    family-bedroom:
+      mode: yaml
+      filename: dashboards/bedroom.yaml
+      title: Bedroom
+      icon: mdi:bed
+      show_in_sidebar: true
+      require_admin: false
+
+# Sign-in through Authentik (hass-oidc-auth, installed by the auth-oidc init
+# container). Authentik Admins become admins and household become users;
+# Authentik refuses everyone else. The first sign-in creates the HA user.
+# The owner's password login stays as a break-glass at
+# https://home.jomcgi.dev/?skip_oidc_redirect=true.
+auth_oidc:
+  client_id: factory-home-assistant
+  discovery_url: https://factory-auth.jomcgi.dev/application/o/factory-home-assistant/.well-known/openid-configuration
+  display_name: Authentik
+  roles:
+    admin: authentik Admins
+    user: household
+  features:
+    # Authentik has no groups scope; the profile scope carries the claim.
+    include_groups_scope: false
+    # Skip the welcome screen. The browser already holds an Authentik
+    # session from the edge, so sign-in needs no input.
+    default_redirect: true
+    # Cloudflare ends TLS, so the request reaches HA as http.
+    force_https: true

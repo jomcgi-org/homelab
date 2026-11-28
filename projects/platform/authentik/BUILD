@@ -184,6 +184,23 @@ py_test(
 # pytest collects every test in the file
 # (decision: https://factory-plan.jomcgi.dev/factory/issue/HOME-351#comment-3948).
 py_test(
+    name = "discord_server_groups_test",
+    srcs = ["discord_server_groups_test.py"],
+    data = glob(["factory-blueprints/*.yaml"]) + [
+        "//projects/factory/deploy:deploy_values",
+        "//projects/platform-factory/edge/chart:values.yaml",
+    ],
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
+        "EDGE_VALUES": "$(rootpath //projects/platform-factory/edge/chart:values.yaml)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "factory_group_binding_test",
     srcs = ["factory_group_binding_test.py"],
     data = glob(["factory-blueprints/*.yaml"]),

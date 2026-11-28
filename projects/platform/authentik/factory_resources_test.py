@@ -163,6 +163,7 @@ def test_factory_social_flows_and_application_grants():
 
     admins = ["authentik_core.group", ["name", "authentik Admins"]]
     operators = ["authentik_core.group", ["name", "factory-operators"]]
+    household = ["authentik_core.group", ["name", "household"]]
     (group,) = (
         e
         for e in entries("factory-auth.yaml")
@@ -171,7 +172,20 @@ def test_factory_social_flows_and_application_grants():
     )
     assert group["attrs"]["is_superuser"] == "false"
     for file, app, allowed in [
-        ("factory-auth.yaml", "edge-app", [admins, operators]),
+        (
+            "factory-auth.yaml",
+            "edge-app",
+            [admins, operators, household]
+            + [
+                ["authentik_core.group", ["name", "discord-" + server]]
+                for server in (
+                    "185442367703220224",
+                    "1290668195249917964",
+                    "1501965852042330302",
+                    "1512814732392927463",
+                )
+            ],
+        ),
         ("factory-auth.yaml", "argocd-app", [admins, operators]),
         ("factory-grafana.yaml", "grafana-app", [admins, operators]),
         ("factory-itsaplan.yaml", "itsaplan-app", [admins, operators]),

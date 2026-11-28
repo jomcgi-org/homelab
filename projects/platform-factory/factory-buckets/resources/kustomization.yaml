@@ -3,5 +3,6 @@ kind: Kustomization
 
 resources:
   - authentik.yaml
+  - discord.yaml
   - keys.yaml
   - oidc.yaml

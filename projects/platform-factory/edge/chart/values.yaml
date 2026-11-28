@@ -88,6 +88,57 @@ authentik:
     # Written by the authentik secret-init Job (projects/platform-factory/authentik/resources/).
     clientSecretName: edge-oidc-client
 
+# Bosun's artifacts (templates/artifact-route.yaml): Garage's website
+# endpoint, which picks the bucket from the rewritten Host.
+artifacts:
+  hostname: artifact.jomcgi.dev
+  garageHost: bosun-artifacts.web.garage.internal
+  # Discord servers with a folder at /<server-id>/, for members of Authentik
+  # group discord-<server-id> and authentik Admins. The same list as
+  # projects/factory/deploy/values.yaml discord.bridge.policy.guilds and the
+  # groups in projects/platform/authentik/factory-blueprints/factory-auth.yaml
+  # (discord_server_groups_test.py checks all three). Every other path,
+  # private/ included, is for authentik Admins only. The notes viewer
+  # (notes) uses the same list.
+  servers:
+    - "185442367703220224" # NOT DEM BOYZ
+    - "1290668195249917964" # The gang...
+    - "1501965852042330302" # homelab
+    - "1512814732392927463" # Loom
+  # The sandbox, without allow-same-origin, allow-forms or
+  # allow-top-navigation, gives a page an opaque origin. The fetch
+  # directives allow inline and data: content only, so a page cannot send
+  # what it holds to another origin past the egress gateway's scanner.
+  # Residual: a page can still navigate itself.
+  # Scripts, styles and fonts may also load from libsPath on this host: the
+  # pinned libraries and the house design system
+  # (projects/factory/discord/libs). 'unsafe-eval' is for
+  # Vega's expression compiler; inline scripts already run, so it adds no
+  # reach.
+  contentSecurityPolicy: "sandbox allow-scripts allow-popups; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' https://artifact.jomcgi.dev/_lib/; style-src 'unsafe-inline' https://artifact.jomcgi.dev/_lib/; img-src data: blob:; font-src data: https://artifact.jomcgi.dev/_lib/; media-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'"
+  # The bosun-libs bucket (templates/artifact-route.yaml, route
+  # artifact-lib): public, read-only, uploaded by the factory chart's
+  # bosun-libs Job.
+  libsPath: /_lib/
+  libsGarageHost: bosun-libs.web.garage.internal
+  # Signed, expiring share links (HOME-917, templates/artifact-route.yaml
+  # route artifact-share): sharePath/<key> goes to Garage's S3 API as
+  # /<shareBucket>/<key> with Host kept, so the presigned signature checks.
+  sharePath: /s
+  shareBucket: bosun-artifacts
+
+# The members' read-only notes viewer (templates/notes-route.yaml, HOME-920):
+# the factory chart's bosun-notes-view Service. Its server folders are
+# artifacts.servers.
+notes:
+  hostname: notes.jomcgi.dev
+  namespace: factory-discord
+  service: bosun-notes-view
+  # The viewer's own policy (projects/factory/discord/notesview CSP): scripts,
+  # styles, images and fonts from this host only, forms only to this host
+  # (search), no connections, no frames.
+  contentSecurityPolicy: "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+
 # kubectl at factory-kube.jomcgi.dev (templates/kube-api-route.yaml).
 kubeAPI:
   hostname: factory-kube.jomcgi.dev

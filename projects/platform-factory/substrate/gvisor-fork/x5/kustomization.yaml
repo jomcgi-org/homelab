@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Gate X5 for fork children (HOME-924): the Job, its network policies and its
+# script, template, policy and probe. ../kustomization.yaml lists this
+# directory.
+resources:
+  - job.yaml
+
+configMapGenerator:
+  - name: gvisor-fork-x5
+    namespace: ate-system
+    files:
+      - x5.py
+      - probe.py
+      - template.yaml
+      - policy.yaml

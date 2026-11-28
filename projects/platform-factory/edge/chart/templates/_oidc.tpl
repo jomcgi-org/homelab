@@ -78,4 +78,17 @@ authorization:
                 {{- if not .adminOnly }}
                 - factory-operators
                 {{- end }}
+    {{- with .extraGroups }}
+    # Groups this route alone admits. The gateway-wide policy never lists them.
+    - name: allow-route-groups
+      action: Allow
+      principal:
+        jwt:
+          provider: authentik
+          claims:
+            - name: groups
+              valueType: StringArray
+              values:
+                {{- toYaml . | nindent 16 }}
+    {{- end }}
 {{- end -}}

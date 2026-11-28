@@ -146,12 +146,14 @@
 .stars-credits {
   margin-block: 2rem;
 }
-.stars-map .maplibregl-ctrl-attrib {
+/* MapLibre's own CSS loads after this file and sets a translucent white
+ * box with dark links. The extra class outranks it in both schemes. */
+.stars-map .maplibregl-ctrl.maplibregl-ctrl-attrib {
   color: var(--color-text-primary);
   background: var(--color-background-surface);
 }
-.stars-map .maplibregl-ctrl-attrib a {
-  color: var(--color-text-primary);
+.stars-map .maplibregl-ctrl.maplibregl-ctrl-attrib a {
+  color: inherit;
 }
 
 /* The snapshot card is supporting detail: small and secondary. Its list of

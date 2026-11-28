@@ -476,7 +476,9 @@ def test_kvm_pool_namespace_allows_only_the_router_and_the_gateway() -> None:
     docs = _docs()
     namespace = _one(docs, "Namespace", _NS)
     assert namespace["metadata"]["labels"] == {
-        "factory.jomcgi.dev/substrate-workers": "true"
+        "factory.jomcgi.dev/substrate-workers": "true",
+        # The cluster default is baseline; a gVisor worker cannot meet it.
+        "pod-security.kubernetes.io/enforce": "privileged",
     }
     account = _one(docs, "ServiceAccount", "fork-worker")
     assert account["automountServiceAccountToken"] is False
@@ -513,7 +515,7 @@ _TEMPLATE = _HERE / "conformance" / "template.yaml"
 
 
 def _conformance_job() -> dict:
-    return _one(_docs(), "Job", "gvisor-fork-conformance-6")
+    return _one(_docs(), "Job", "gvisor-fork-conformance-7")
 
 
 def test_conformance_job_runs_once_as_ate_client() -> None:
@@ -732,7 +734,7 @@ def _fork_template_errors(tmpl: dict) -> list[str]:
     )
     need(
         fork.get("egress", "FORK_EGRESS_UNSPECIFIED")
-        in ("FORK_EGRESS_UNSPECIFIED", "FORK_EGRESS_NONE"),
+        in ("FORK_EGRESS_UNSPECIFIED", "FORK_EGRESS_NONE", "FORK_EGRESS_GATEWAY"),
         "fork_config.egress",
     )
 
@@ -824,7 +826,6 @@ def test_each_conformance_variant_breaks_exactly_its_own_rule() -> None:
     expected = {
         "secret_env": "containers[0].env[0].name",
         "single_use_false": "fork_config.single_use",
-        "egress_gateway": "fork_config.egress",
     }
     variants = module.variants(_TEMPLATE.read_text())
     assert set(variants) == set(expected)
@@ -1035,7 +1036,7 @@ def test_conformance_passes_all_eight_checks(tmp_path: Path) -> None:
     assert run.returncode == 0, run.stdout + run.stderr
     for check in ("C1", "C3", "C4", "C5", "C7", "C8"):
         assert f"check={check} result=pass" in run.stdout, check
-    assert run.stdout.count("check=C2 result=pass") == 3
+    assert run.stdout.count("check=C2 result=pass") == 2
     assert run.stdout.count("check=C6 result=pass") == 2
     # The log carries the API's reason for each refusal.
     assert "InvalidArgument" in run.stdout and "PermissionDenied" in run.stdout
@@ -1142,11 +1143,11 @@ def test_staged_images_name_the_published_fork_digests() -> None:
         + "engine-oss:1.186.0-946d07e5597c@sha256:"
         + "dbffb4d73f072b2a71a05356a657a595bd147357bc85a538139f2634be47b238",
         "cli": _FORK_IMAGES
-        + "kubectl-ate:fork-8cf248b96e08@sha256:"
-        + "bfb9cf01712dd691232298cc19767a7536c00f2cfe0c76b41ac6945f2d2885f7",
+        + "kubectl-ate:fork-c7f37a993862@sha256:"
+        + "7e9c7b9d285a5c3bfd897da797acf88521c526ed478af618d5d8958c3241e7a6",
         "worker": _FORK_IMAGES
-        + "ateworker-gvisor:fork-8cf248b96e08@sha256:"
-        + "779fb7dd9e036adfd22cb4642d91d3a1283cb03c37ce57cc0d39957497ad80f8",
+        + "ateworker-gvisor:fork-c7f37a993862@sha256:"
+        + "e6d5716a890a7ce202aef1a4d18656a85e853bfa6eedfdf93a4847040b59e4c1",
     }
 
 
@@ -1221,7 +1222,7 @@ def test_latency_jobs_grant_nothing_new() -> None:
 
 def test_latency_jobs_use_the_conformance_cli_by_digest() -> None:
     reference = {}
-    for name in [*_LATENCY_JOBS, "gvisor-fork-conformance-6"]:
+    for name in [*_LATENCY_JOBS, "gvisor-fork-conformance-7"]:
         pod = (_latency_job(name) if name in _LATENCY_JOBS else _conformance_job())[
             "spec"
         ]["template"]["spec"]
@@ -1657,3 +1658,95 @@ def test_latency_pools_the_rounds_of_a_concurrent_burst(tmp_path: Path) -> None:
     assert found[("cold_k2", "cold", "total_ms")]["n"] == "6"
     assert run.stdout.count("event=burst k=2 round=") == 3
     assert not _left(state)
+
+
+# Gate X5 (x5/): fork children with gateway egress, through the router.
+
+_X5 = _HERE / "x5"
+
+
+def _x5_module():
+    spec = importlib.util.spec_from_file_location("x5", _X5 / "x5.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_x5_template_forks_with_gateway_egress_and_a_pinned_image() -> None:
+    template = yaml.safe_load(
+        _x5_module().template_text("print(1)\n", (_X5 / "template.yaml").read_text())
+    )
+    fork = template["forkConfig"]
+    assert fork["egress"] == "FORK_EGRESS_GATEWAY"
+    assert fork["singleUse"] is True and fork["mode"] == "FORK_MODE_SEED_AND_FORK"
+    (container,) = template["containers"]
+    assert container["command"] == ["python3", "-I", "-c", "print(1)"]
+    assert "@sha256:" in container["image"]
+    assert not container.get("env"), "template env is public: every child inherits it"
+    assert _fork_template_errors(template) == []
+
+
+def test_x5_policy_admits_only_mcp_grafana() -> None:
+    policy = yaml.safe_load((_X5 / "policy.yaml").read_text())
+    assert policy == {
+        "rules": [
+            {
+                "http": {
+                    "hostnames": ["mcp-grafana.grafana.svc.cluster.local"],
+                    "ports": {"numbers": [8000]},
+                }
+            }
+        ]
+    }
+
+
+def test_x5_probe_checkpoints_before_it_binds() -> None:
+    source = (_X5 / "probe.py").read_text()
+    main = source[source.index("def main()") :]
+    assert main.index("checkpoint()") < main.index("HTTPServer(")
+    # The denied host must not be one the policy admits.
+    assert "hindsight-api.hindsight.svc.cluster.local:8888" in source
+
+
+def test_x5_verdict() -> None:
+    verdict = _x5_module().verdict
+    good = {
+        "allowed": {"status": 401},
+        "denied": {"status": 403},
+        "dns": {"error": "gaierror"},
+    }
+    assert verdict(good) == {"allowed": True, "denied": True, "dns": True}
+    assert verdict({**good, "denied": {"error": "ConnectionResetError"}})["denied"]
+    assert not verdict({**good, "allowed": {"status": 403}})["allowed"]
+    assert not verdict({**good, "allowed": {"error": "timeout"}})["allowed"]
+    assert not verdict({**good, "denied": {"status": 401}})["denied"]
+    assert not verdict({**good, "dns": {"addresses": ["93.184.215.14"]}})["dns"]
+
+
+def test_x5_job_runs_once_as_ate_client_with_the_fork_cli() -> None:
+    docs = list(yaml.safe_load_all((_X5 / "job.yaml").read_text()))
+    (job,) = [d for d in docs if d["kind"] == "Job"]
+    assert job["metadata"]["name"] == "gvisor-fork-x5-3"
+    assert job["spec"]["suspend"] is False and job["spec"]["backoffLimit"] == 0
+    pod = job["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "ate-client"
+    (cli,) = [v for v in pod["volumes"] if v["name"] == "cli"]
+    assert (
+        cli["image"]["reference"]
+        == _conformance_job()["spec"]["template"]["spec"]["volumes"][
+            [
+                v["name"]
+                for v in _conformance_job()["spec"]["template"]["spec"]["volumes"]
+            ].index("cli")
+        ]["image"]["reference"]
+    )
+
+
+def test_x5_probe_fits_one_container_argument() -> None:
+    # The API refuses a container argument over 4096 characters (run -1 failed
+    # on it), so the template carries probe.py as code only.
+    module = _x5_module()
+    code = module.compact((_X5 / "probe.py").read_text())
+    assert len(code) <= module.ARG_LIMIT == 4096
+    assert code.index("checkpoint()\n") < code.index("HTTPServer(")
+    compile(code, "probe.py", "exec")

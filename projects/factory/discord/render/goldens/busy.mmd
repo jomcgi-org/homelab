@@ -1,0 +1,18 @@
+flowchart TD
+  U[Joe posts in Discord] --> B[Bridge receives message]
+  B --> R{Mentions Bosun?}
+  R -- no --> I[Ingest to Hindsight]
+  R -- yes --> H[Hermes runner]
+  H --> M[Recall memories]
+  M --> P[Build prompt]
+  P --> L[Model call 🤖]
+  L --> T{Needs a tool?}
+  T -- yes --> X[Run tool]
+  X --> L
+  T -- no --> A[Draft answer]
+  A --> F[Extract fenced blocks]
+  F --> G[Render PNGs]
+  G --> D[Post reply]
+  I --> M
+  D --> I
+  G -. failure .-> A

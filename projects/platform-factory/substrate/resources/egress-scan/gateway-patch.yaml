@@ -90,6 +90,24 @@ data:
                       cert: /run/podidentity.podcert.ate.dev/credential-bundle.pem
                       key: /run/podidentity.podcert.ate.dev/credential-bundle.pem
                       root: /run/servicedns.podcert.ate.dev/trust-bundle.pem
+            extAuthz:
+              conditional:
+              - condition: destination.hostname == "api.abliteration.ai" && destination.port == 443
+                host: egress-scan.ate-system.svc:8080
+                protocol:
+                  grpc:
+                    context:
+                      route: abliteration
+                    metadata:
+                      actor: '{"spiffe": source.spiffeId}'
+                failureMode: deny
+                includeRequestBody:
+                  maxRequestBytes: 524288
+                  allowPartialMessage: false
+                  packAsBytes: true
+                policies:
+                  http:
+                    requestTimeout: 80ms
       - protocol: HTTP
         routes:
         - backends:
@@ -120,6 +138,22 @@ data:
                   grpc:
                     context:
                       route: hindsight
+                    metadata:
+                      actor: '{"spiffe": source.spiffeId}'
+                failureMode: deny
+                includeRequestBody:
+                  maxRequestBytes: 524288
+                  allowPartialMessage: false
+                  packAsBytes: true
+                policies:
+                  http:
+                    requestTimeout: 80ms
+              - condition: destination.hostname == "browser-mcp.factory-discord.svc.cluster.local" && destination.port == 8080
+                host: egress-scan.ate-system.svc:8080
+                protocol:
+                  grpc:
+                    context:
+                      route: browser
                     metadata:
                       actor: '{"spiffe": source.spiffeId}'
                 failureMode: deny

@@ -49,7 +49,9 @@ def test_default_render_selects_gitleaks_with_the_documented_limits() -> None:
         "--detector-failure-mode=deny",
         "--detector-deadline=75ms",
         "--detector-max-input-bytes=524288",
-        "--metrics-routes=hindsight-api.hindsight.svc.cluster.local:8888",
+        "--metrics-routes=hindsight-api.hindsight.svc.cluster.local:8888,"
+        "browser-mcp.factory-discord.svc.cluster.local:8080,"
+        "api.abliteration.ai:443",
         "--metrics-max-label-values=32",
     ]
 
@@ -68,7 +70,9 @@ def test_the_detector_name_and_limits_follow_the_values() -> None:
         "--detector-failure-mode=allow",
         "--detector-deadline=60ms",
         "--detector-max-input-bytes=65536",
-        "--metrics-routes=hindsight-api.hindsight.svc.cluster.local:8888",
+        "--metrics-routes=hindsight-api.hindsight.svc.cluster.local:8888,"
+        "browser-mcp.factory-discord.svc.cluster.local:8080,"
+        "api.abliteration.ai:443",
         "--metrics-max-label-values=32",
     ]
 

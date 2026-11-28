@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 chart=../../chart
 [[ $(kubectl config current-context) == kind-edge-oidc ]]
 projects=../../../..
-namespaces=(edge kagent t3 factory-landing argocd factory grafana)
+namespaces=(edge kagent t3 factory-landing argocd factory grafana garage factory-discord)
 for ns in "${namespaces[@]}"; do kubectl create namespace "$ns"; done
 
 # Use the CRDs and controller shipped with the edge chart.
@@ -42,6 +42,44 @@ kubectl -n edge expose deployment fixture --name issuer --port 443 --target-port
 kubectl -n kagent expose deployment fixture --name kagent-ui --port 8080
 kubectl -n t3 expose deployment fixture --name t3-relay --port 8080
 kubectl -n t3 apply -f "$projects/platform-factory/t3/resources/reference-grant.yaml"
+# Garage's website endpoint for artifact.jomcgi.dev; the echo backend
+# answers every path.
+kubectl -n garage expose deployment fixture --name garage-web --port 3902 --target-port 8080
+kubectl -n garage apply -f "$projects/platform-factory/garage/resources/reference-grant.yaml"
+# A real one-node Garage S3 API for signed share links (route
+# artifact-share): a read-write key uploads, a read-only key signs.
+kubectl -n garage create configmap garage-config --from-file=garage.toml
+kubectl -n garage apply -f garage.yaml
+kubectl -n garage rollout status deploy/garage --timeout=180s
+garage() { kubectl -n garage exec deploy/garage -- /garage -c /etc/garage/garage.toml "$@"; }
+node=$(garage node id -q | cut -d@ -f1)
+garage layout assign -z kind -c 1G "$node"
+garage layout apply --version 1
+garage bucket create bosun-artifacts
+export SHARE_RW_ID=GK000000000000000000000001 SHARE_RW_SECRET=$(openssl rand -hex 32)
+export SHARE_RO_ID=GK000000000000000000000002 SHARE_RO_SECRET=$(openssl rand -hex 32)
+garage key import --yes -n rw "$SHARE_RW_ID" "$SHARE_RW_SECRET"
+garage key import --yes -n share "$SHARE_RO_ID" "$SHARE_RO_SECRET"
+garage bucket allow --read --write bosun-artifacts --key rw
+garage bucket allow --read bosun-artifacts --key share
+# The notes viewer for notes.jomcgi.dev, with the grant the factory chart
+# renders (templates/discord-notes-view.yaml).
+kubectl -n factory-discord expose deployment fixture --name bosun-notes-view --port 8080
+kubectl -n factory-discord apply -f - <<'YAML'
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: edge-bosun-notes-view
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: edge
+  to:
+    - group: ""
+      kind: Service
+      name: bosun-notes-view
+YAML
 
 # Use the production HTTPRoutes with fixture services at their backend ports.
 kubectl -n factory-landing expose deployment fixture --name factory-landing --port 8080
@@ -58,7 +96,7 @@ kubectl apply -f "$projects/platform-factory/grafana/resources/route.yaml"
 kubectl apply -f "$projects/platform-factory/grafana/resources/runbooks-route.yaml"
 
 templates=()
-for template in gateway security-policy kagent-route t3-route oidc-client-secret oidc-sentinel; do
+for template in gateway security-policy kagent-route t3-route artifact-route notes-route oidc-client-secret oidc-sentinel; do
 	templates+=(-s "templates/$template.yaml")
 done
 # Install the test CA in the initial proxy revision. A later patch can roll
@@ -92,6 +130,15 @@ kubectl apply -k "$tmp"
 kubectl -n edge wait gateway/edge --for=condition=Programmed --timeout=180s
 kubectl -n edge rollout status deployment -l gateway.envoyproxy.io/owning-gateway-name=edge
 kubectl -n edge port-forward svc/edge-proxy 18080:80 >"$tmp/forward.log" 2>&1 &
+kubectl -n garage port-forward svc/garage 13900:3900 >"$tmp/garage-forward.log" 2>&1 &
+for _ in {1..30}; do
+	if curl -fsS -o /dev/null --aws-sigv4 aws:amz:garage:s3 --user "$SHARE_RW_ID:$SHARE_RW_SECRET" \
+		-X PUT -H 'Content-Type: text/html; charset=utf-8' --data-binary '<h1>shared</h1>' \
+		http://127.0.0.1:13900/bosun-artifacts/1501965852042330302/1501965852042330999/report.html; then
+		break
+	fi
+	sleep 1
+done
 python3 session.py
 
 # Admission evaluates the production socket guard against the API server.

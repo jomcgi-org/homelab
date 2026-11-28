@@ -79,9 +79,15 @@ def _helm(
         "--set",
         "discord.bridge.enabled=false",
         "--set",
-        "discord.import.enabled=false",
+        "discord.backfill.enabled=false",
         "--set",
         "discord.operator.enabled=false",
+        "--set",
+        "discord.serverAgents.homelab.enabled=false",
+        "--set",
+        "discord.serverAgents.unsafe.enabled=false",
+        "--set",
+        "discord.unsafe.enabled=false",
         # Goal reasons need the connector, which many renders turn off; the
         # tests that cover them opt in with an override.
         "--set",
@@ -98,6 +104,8 @@ def _helm(
         "planner.enabled=false",
         "--set",
         "broker.claude.enabled=false",
+        "--set",
+        "discord.explorer.enabled=false",
     ]
     if enable:
         args += [

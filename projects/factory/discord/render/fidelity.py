@@ -22,12 +22,17 @@ def post(route, body):
 
 class Renderer(unittest.TestCase):
     def test_goldens(self):
-        for name in ("bar", "flowchart", "sequence", "class", "state", "gantt", "pie"):
-            png = GOLDENS / f"{name}.png"
+        specs = sorted(GOLDENS.glob("*.mmd")) + sorted(GOLDENS.glob("*.json"))
+        self.assertGreater(len(specs), 0)
+        for path in specs:
+            png = path.with_suffix(".png")
             with self.subTest(png=png.name):
-                vega = png.stem == "bar"
-                spec = png.with_suffix(".json" if vega else ".mmd").read_bytes()
-                status, result = post("/vega-lite" if vega else "/mermaid", spec)
+                if path.name.endswith(".table.json"):
+                    route = "/table"
+                else:
+                    route = "/vega-lite" if path.suffix == ".json" else "/mermaid"
+                spec = path.read_bytes()
+                status, result = post(route, spec)
                 self.assertEqual(status, 200, result[:80])
                 self.assertTrue(result == png.read_bytes(), f"{png.name} changed")
 
@@ -43,6 +48,8 @@ class Renderer(unittest.TestCase):
             ("/vega-lite", b" " * 65537, 413),
             ("/mermaid", b" " * 65537, 413),
             ("/vega-lite", b'{"width":4097,"height":10,"mark":"point"}', 422),
+            ("/table", b'{"columns":["a"],"rows":[["1","2"]]}', 422),
+            ("/mermaid", b"%%{init: {'theme': 'dark'}}%%\nflowchart LR\nA-->B", 422),
         ]
         for route, body, expected in cases:
             with self.subTest(route=route, size=len(body)):

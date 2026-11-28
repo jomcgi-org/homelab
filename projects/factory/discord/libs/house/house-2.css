@@ -1,0 +1,844 @@
+/* Bosun house design system, version 2 (projects/factory/discord/libs).
+   Served at /_lib/house-2.css. Published pages load it with an integrity
+   hash, so never edit it: copy it to house-3.css for any change.
+   libs/sri_test.py pins its hash. house-1.css stays served for older pages.
+
+   Changes from version 1: controls for pages to try (.stage, .controls,
+   .btn, .seg, .toggle, .readout); diagrams keep a 36rem minimum width and
+   scroll sideways; steps wrap in auto-fit columns; the dark readout tile
+   has a visible edge; filled accent grounds use --accent-strong for
+   contrast; only the hero animates on load.
+
+   The look is jomcgi.dev's (projects/jomcgi-site/web/src/palette.css and
+   home.css), copied as values: a near-white or near-black page, hairlines,
+   ink text, one blue accent, green for good states, Schibsted Grotesk for
+   display and Inter for text, and "housing" panels with a solid offset
+   shadow. Restraint by default; .statement is the one bold moment. */
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/_lib/inter-5.3.0-latin-wght-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Schibsted Grotesk";
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url("/_lib/schibsted-grotesk-5.3.0-latin-wght-normal.woff2")
+    format("woff2");
+}
+
+:root {
+  color-scheme: light dark;
+  --font: "Inter", system-ui, "Segoe UI", "Noto Color Emoji", sans-serif;
+  --display:
+    "Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", monospace;
+
+  --bg: light-dark(#fbfbfa, #101012);
+  --surface: light-dark(#ffffff, #17171a);
+  --muted-bg: light-dark(#f2f2ef, #1d1d21);
+  --housing: light-dark(#f4f4f4, #22242a);
+  --panel-muted: light-dark(#fbfaf6, #1c1e26);
+  --text: light-dark(#16161a, #ededf0);
+  --muted: light-dark(#63636b, #a3a3ab);
+  --border: light-dark(#e4e4e0, #2a2a2f);
+  --border-strong: light-dark(#86868c, #7c7c84);
+  --edge: light-dark(#c2c1bf, #525359);
+  --line: light-dark(#e6e5e3, #313238);
+
+  /* One accent. Green marks a good state, as the site's lights do. */
+  --accent: light-dark(#2f6bff, #5b8cff);
+  /* A filled accent ground under small text: 6:1 on --on-accent. */
+  --accent-strong: light-dark(#2257d6, #5b8cff);
+  --on-accent: light-dark(#ffffff, #101012);
+  --good: light-dark(#24613e, #8dd5a6);
+  --green: light-dark(#3d8f5f, #6fbf8d);
+  --warn: light-dark(#904218, #efb68f);
+  --bad: light-dark(#ad2424, #ff9999);
+
+  /* The readout glass is dark in both schemes. */
+  --glass: #0e100e;
+  --glass-text: #dfe3d2;
+  --glass-dim: #8f957f;
+  /* The glass sits on a near-black page in dark, so it needs an edge. */
+  --glass-edge: light-dark(#c2c1bf, #7c7c84);
+
+  /* Diagram and chart tokens (house-2.js reads them). */
+  --node: light-dark(#ffffff, #1d1d21);
+  --node-border: light-dark(#86868c, #7c7c84);
+  --diagram-line: light-dark(#63636b, #a3a3ab);
+  --group: light-dark(#f4f4f4, #22242a);
+  --s1: light-dark(#2a78d6, #3987e5);
+  --s2: light-dark(#c74d20, #df693c);
+  --s3: light-dark(#11845b, #199e70);
+  --s4: light-dark(#9c6900, #c98500);
+  --s5: light-dark(#b94b79, #df6594);
+  --s6: light-dark(#008300, #21a521);
+  --s7: light-dark(#4a3aa7, #9085e9);
+  --s8: light-dark(#c43939, #e66767);
+
+  --radius: 10px;
+  --radius-sm: 6px;
+  --lift: 0 3px 0 var(--edge);
+}
+
+* {
+  box-sizing: border-box;
+}
+html {
+  -webkit-text-size-adjust: 100%;
+  font-size: clamp(16px, 0.5vw + 11px, 18px);
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 1rem/1.6 var(--font);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  /* A long URL or identifier wraps instead of widening a card. */
+  overflow-wrap: break-word;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--edge);
+}
+a:hover {
+  border-bottom-color: var(--text);
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* Layout */
+.page {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 0 clamp(1rem, 4vw, 3rem) 4rem;
+}
+.section {
+  margin-top: 3.5rem;
+}
+.section-head {
+  margin-bottom: 1.25rem;
+  max-width: 62ch;
+}
+.section-head h2 {
+  margin: 0 0 0.3rem;
+}
+.section-head p {
+  margin: 0;
+  color: var(--muted);
+}
+.grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+}
+.grid.two {
+  grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr));
+}
+.split {
+  display: grid;
+  gap: 2rem;
+  grid-template-columns: 1fr 1fr;
+  align-items: start;
+}
+
+/* Type */
+h1,
+h2,
+h3 {
+  font-family: var(--display);
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0 0 0.3rem;
+}
+.eyebrow,
+.plate {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font: 0.75rem/1 var(--mono);
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.eyebrow svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+.muted {
+  color: var(--muted);
+}
+
+/* Hero: the title carries the page; a hairline closes it. */
+.hero {
+  padding: 3.5rem 0 2rem;
+  border-bottom: 1px solid var(--line);
+}
+.hero h1 {
+  margin: 0.9rem 0 0.8rem;
+  font-size: clamp(2.1rem, 4.6vw, 3.3rem);
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  max-width: 20ch;
+}
+.hero .lede {
+  font-size: 1.15rem;
+  color: var(--muted);
+  max-width: 58ch;
+  margin: 0;
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.2rem;
+  margin-top: 1.4rem;
+}
+
+/* The one bold moment: a large statement, a number or a short line. */
+.statement {
+  margin: 0;
+  padding: 2.2rem 0;
+  border-top: 1px solid var(--text);
+  border-bottom: 1px solid var(--line);
+  font: 650 clamp(2rem, 6vw, 4.2rem) / 1.02 var(--display);
+  letter-spacing: -0.035em;
+  max-width: 22ch;
+}
+.statement em {
+  font-style: normal;
+  color: var(--accent);
+}
+.statement small {
+  display: block;
+  margin-top: 1rem;
+  font: 400 1rem/1.5 var(--font);
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+/* Small pieces */
+.chip,
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.chip svg,
+.badge svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+.badge {
+  color: var(--text);
+  font-weight: 500;
+}
+.badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.badge.good::before {
+  background: var(--green);
+}
+.badge.warn::before {
+  background: var(--warn);
+}
+.badge.bad::before {
+  background: var(--bad);
+}
+
+/* Housing panels: a 1px edge and a solid offset shadow. */
+.card,
+.stat,
+.figure,
+.option,
+.steps > li {
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  box-shadow: var(--lift);
+}
+.card {
+  padding: 1.15rem 1.25rem;
+  transition:
+    transform 0.16s ease,
+    box-shadow 0.16s ease,
+    border-color 0.16s ease;
+}
+.card:hover {
+  border-color: var(--text);
+}
+a.card:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 var(--edge);
+}
+.card p {
+  margin: 0;
+  color: var(--muted);
+}
+.icon {
+  display: inline-grid;
+  place-items: center;
+  width: 2.2rem;
+  height: 2.2rem;
+  margin-bottom: 0.8rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--muted-bg);
+  color: var(--text);
+}
+.icon svg {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+/* Stat tiles. The first, .accent, is the readout glass. */
+.stats {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr));
+}
+.stat {
+  padding: 1rem 1.15rem;
+}
+.stat .label {
+  font: 0.75rem/1.3 var(--mono);
+  color: var(--muted);
+}
+.stat .value {
+  display: block;
+  margin-top: 0.4rem;
+  font: 500 2rem/1.1 var(--display);
+  letter-spacing: -0.024em;
+}
+.stat .delta {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.delta.up {
+  color: var(--good);
+}
+.delta.down {
+  color: var(--bad);
+}
+.stat.accent {
+  background: var(--glass);
+  border-color: var(--glass-edge);
+  color: var(--glass-text);
+}
+.stat.accent .label,
+.stat.accent .delta {
+  color: var(--glass-dim);
+}
+
+/* Step flow: numbered keys joined by a hairline. */
+.steps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 1rem;
+  /* Columns of at least 13rem: six steps wrap to two rows of three. */
+  grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr));
+  counter-reset: step;
+}
+.steps > li {
+  position: relative;
+  padding: 1rem;
+  counter-increment: step;
+}
+.steps > li::before {
+  content: counter(step);
+  display: grid;
+  place-items: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  margin-bottom: 0.7rem;
+  border-radius: 50%;
+  font: 500 0.8rem/1 var(--mono);
+  border: 1px solid var(--edge);
+  background: var(--housing);
+  box-shadow: 0 2px 0 var(--edge);
+}
+.steps > li.now::before {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--on-accent);
+}
+.steps h3 {
+  font-size: 0.98rem;
+}
+.steps p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+/* Timeline */
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 1.5rem;
+  border-left: 1px solid var(--edge);
+}
+.timeline > li {
+  position: relative;
+  padding: 0 0 1.5rem 0.4rem;
+}
+.timeline > li::before {
+  content: "";
+  position: absolute;
+  left: -1.5rem;
+  top: 0.35rem;
+  width: 9px;
+  height: 9px;
+  margin-left: -5px;
+  border-radius: 50%;
+  background: var(--panel-muted);
+  box-shadow: 0 0 0 1px var(--edge) inset;
+}
+.timeline > li.done::before {
+  background: var(--green);
+  box-shadow: none;
+}
+.timeline > li.now::before {
+  background: var(--accent);
+  box-shadow: none;
+}
+.timeline time {
+  display: block;
+  font: 0.75rem/1.3 var(--mono);
+  color: var(--muted);
+}
+.timeline h3 {
+  margin: 0.15rem 0 0.2rem;
+  font-size: 1rem;
+}
+.timeline p {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* Callouts: a muted panel with a coloured rule. */
+.callout {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem;
+  align-items: start;
+  padding: 0.9rem 1.1rem;
+  border-radius: var(--radius-sm);
+  background: var(--panel-muted);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+}
+.callout svg {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-top: 0.2rem;
+  color: var(--accent);
+}
+.callout p {
+  margin: 0;
+}
+.callout strong {
+  display: block;
+  margin-bottom: 0.1rem;
+  font-family: var(--display);
+}
+.callout.good {
+  border-left-color: var(--green);
+}
+.callout.good svg {
+  color: var(--good);
+}
+.callout.warn {
+  border-left-color: var(--warn);
+}
+.callout.warn svg {
+  color: var(--warn);
+}
+.callout.bad {
+  border-left-color: var(--bad);
+}
+.callout.bad svg {
+  color: var(--bad);
+}
+
+/* Comparison: the pick gets the accent edge. */
+.compare {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
+}
+.option {
+  position: relative;
+  padding: 1.25rem;
+}
+.option.pick {
+  border-color: var(--accent);
+  box-shadow: 0 3px 0 var(--accent);
+}
+.option .badge {
+  position: absolute;
+  top: -0.75rem;
+  right: 1rem;
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.option .badge::before {
+  background: var(--on-accent);
+}
+.option ul {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+  border-top: 1px solid var(--line);
+}
+.option li {
+  display: grid;
+  grid-template-columns: 1.1rem 1fr;
+  gap: 0.5rem;
+  padding: 0.45rem 0;
+  font-size: 0.93rem;
+  border-bottom: 1px solid var(--line);
+}
+.option li svg {
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.2rem;
+}
+.option li.pro svg {
+  color: var(--good);
+}
+.option li.con svg {
+  color: var(--bad);
+}
+
+/* Figures: a diagram or chart with a caption. */
+.figure {
+  margin: 0;
+  padding: 1.25rem;
+  overflow-x: auto;
+}
+.figure figcaption {
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--line);
+  font: 0.75rem/1.4 var(--mono);
+  color: var(--muted);
+}
+pre.mermaid {
+  margin: 0;
+  text-align: center;
+  font-family: var(--font);
+  color: transparent;
+}
+/* Mermaid scales the SVG to the figure; on a phone that makes 4 px text.
+   Keep a readable width and let the figure scroll sideways. */
+pre.mermaid svg {
+  min-width: 36rem;
+}
+.chart {
+  width: 100%;
+}
+
+/* Code */
+code {
+  font: 0.88em var(--mono);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: var(--muted-bg);
+}
+pre.code {
+  margin: 0;
+  padding: 1rem 1.15rem;
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  background: var(--muted-bg);
+  border: 1px solid var(--line);
+  font: 0.85rem/1.6 var(--mono);
+}
+pre.code code {
+  padding: 0;
+  background: none;
+  font: inherit;
+}
+
+/* Tables: hairlines only. */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.93rem;
+}
+.table th,
+.table td {
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+.table th {
+  font: 0.75rem/1.3 var(--mono);
+  color: var(--muted);
+  border-bottom-color: var(--edge);
+}
+.table td.num,
+.table th.num {
+  text-align: right;
+}
+.table-wrap {
+  overflow-x: auto;
+}
+
+.page-foot {
+  margin-top: 4rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  font: 0.75rem/1.4 var(--mono);
+  color: var(--muted);
+}
+.error {
+  color: var(--bad);
+}
+
+/* Pages to try: one stage, a row of controls, a readout for the result. */
+.stage {
+  padding: 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  box-shadow: var(--lift);
+}
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 2.75rem;
+  padding: 0.5rem 1rem;
+  font: 500 0.95rem/1.2 var(--font);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 2px 0 var(--edge);
+  cursor: pointer;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease,
+    border-color 0.12s ease;
+}
+.btn:hover {
+  border-color: var(--text);
+}
+.btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 var(--edge);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+.btn svg {
+  width: 1rem;
+  height: 1rem;
+}
+.btn.primary {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.btn.primary:hover {
+  border-color: var(--text);
+}
+/* Segmented: div.seg[role=group] > button[aria-pressed]. One is pressed. */
+.seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  background: var(--muted-bg);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+}
+.seg button {
+  min-height: 2.6rem;
+  padding: 0.4rem 0.9rem;
+  font: 500 0.9rem/1.2 var(--font);
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  cursor: pointer;
+}
+.seg button:hover {
+  color: var(--text);
+}
+.seg button[aria-pressed="true"] {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow:
+    0 0 0 1px var(--edge),
+    0 1px 0 var(--edge);
+}
+/* Toggle: label.toggle > input[type=checkbox] + text. */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.75rem;
+  cursor: pointer;
+}
+.toggle input {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 2.5rem;
+  height: 1.5rem;
+  margin: 0;
+  background: var(--muted-bg);
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.toggle input::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: calc(1.5rem - 6px);
+  height: calc(1.5rem - 6px);
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--edge);
+  transition: transform 0.15s ease;
+}
+.toggle input:checked {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+.toggle input:checked::before {
+  transform: translateX(1rem);
+}
+/* Readout: the result in the dark glass. Give it aria-live="polite". */
+.readout {
+  margin-top: 1rem;
+  padding: 1rem 1.15rem;
+  background: var(--glass);
+  color: var(--glass-text);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius);
+  box-shadow: var(--lift);
+}
+.readout .label {
+  display: block;
+  font: 0.75rem/1.3 var(--mono);
+  color: var(--glass-dim);
+}
+.readout .value {
+  display: block;
+  margin-top: 0.3rem;
+  font: 500 1.6rem/1.15 var(--display);
+  letter-spacing: -0.02em;
+}
+.readout p {
+  margin: 0.3rem 0 0;
+}
+
+/* Motion: the hero fades in once. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.hero {
+  animation: rise 0.45s ease both;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Phones */
+@media (max-width: 640px) {
+  .hero {
+    padding: 2.5rem 0 1.5rem;
+  }
+  .section {
+    margin-top: 2.5rem;
+  }
+  .split {
+    grid-template-columns: 1fr;
+  }
+  .steps {
+    grid-template-columns: 1fr;
+  }
+  .steps > li {
+    display: grid;
+    grid-template-columns: 1.8rem 1fr;
+    column-gap: 0.85rem;
+  }
+  .steps > li::before {
+    grid-row: span 2;
+    margin: 0;
+  }
+  /* One column: a hairline joins each step to the next. */
+  .steps > li:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    bottom: -1.05rem;
+    left: 1.9rem;
+    width: 1px;
+    height: 1.05rem;
+    background: var(--edge);
+  }
+  .stat .value {
+    font-size: 1.75rem;
+  }
+}

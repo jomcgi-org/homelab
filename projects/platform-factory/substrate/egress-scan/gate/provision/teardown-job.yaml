@@ -100,7 +100,7 @@ spec:
         # The fork build of kubectl-ate, as in gvisor-fork/conformance-job.yaml.
         - name: cli
           image:
-            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-8cf248b96e08@sha256:bfb9cf01712dd691232298cc19767a7536c00f2cfe0c76b41ac6945f2d2885f7
+            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-c7f37a993862@sha256:7e9c7b9d285a5c3bfd897da797acf88521c526ed478af618d5d8958c3241e7a6
             pullPolicy: IfNotPresent
         # The ate API's JWT provider accepts this audience (api-server-config.yaml).
         - name: ate-token

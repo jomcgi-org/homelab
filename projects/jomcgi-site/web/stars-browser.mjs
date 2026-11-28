@@ -126,6 +126,7 @@ try {
   console.log(`Chromium ${browser.version()}`);
   for (const colorScheme of ["light", "dark"])
     for (const width of [1280, 390]) {
+      const other = colorScheme === "dark" ? "light" : "dark";
       const context = await browser.newContext({
         colorScheme,
         viewport: { width, height: 900 },
@@ -166,7 +167,8 @@ try {
         });
       });
       const tileOrigin = "https://tiles.openfreemap.org";
-      await context.route(tileOrigin + "/styles/liberty", (route) =>
+      // The light page uses "liberty" and the dark page uses "dark".
+      await context.route(tileOrigin + "/styles/{liberty,dark}", (route) =>
         route.fulfill({
           json: {
             version: 8,
@@ -174,6 +176,9 @@ try {
               base: {
                 type: "vector",
                 tiles: [tileOrigin + "/{z}/{x}/{y}.pbf"],
+                // Real styles credit with links; axe checks their contrast.
+                attribution:
+                  '<a href="https://openfreemap.org">OpenFreeMap</a> <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a>',
               },
             },
             layers: [
@@ -302,9 +307,10 @@ try {
           /\/assets\/maplibre-gl-worker-csp2-[\w-]+\.js$/.test(url),
         ),
       );
-      assert.ok(
-        requests.includes("https://tiles.openfreemap.org/styles/liberty"),
-      );
+      const style = (scheme) =>
+        `${tileOrigin}/styles/${scheme === "dark" ? "dark" : "liberty"}`;
+      assert.ok(requests.includes(style(colorScheme)));
+      assert.ok(!requests.includes(style(other)));
       await expect(async () => {
         await page.locator("canvas.maplibregl-canvas").press("Enter");
         await expect(
@@ -314,6 +320,18 @@ try {
       await expect.poll(() => servedTiles).toBeGreaterThan(0);
       await expect(page.getByText(/The map could not load/)).toBeHidden();
       await check("keyboard map selection");
+      // A scheme change loads the other base style and keeps the site cells.
+      await button("Close site card").click();
+      await page.emulateMedia({ colorScheme: other });
+      await expect.poll(() => requests.includes(style(other))).toBe(true);
+      await expect(async () => {
+        await page.locator("canvas.maplibregl-canvas").press("Enter");
+        await expect(
+          page.getByRole("region", { name: "Clear dark hours by month" }),
+        ).toBeVisible({ timeout: 100 });
+      }).toPass({ timeout: 15_000 });
+      await page.emulateMedia({ colorScheme });
+      await expect(page.getByText(/The map could not load/)).toBeHidden();
       for (let i = 0; i < 3; i++) await button("Next sites").click();
       await button("Site 95").click();
       await check("last historical site");

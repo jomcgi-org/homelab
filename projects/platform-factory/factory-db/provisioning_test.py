@@ -41,20 +41,63 @@ LOGINS = [
         "factory-storyboard-db",
     ),
     ("factory-db-reaper-login", "factory_reaper", "factory", "factory-reaper-db"),
-    ("factory-db-trips-login", "factory_trips", "trips", "trips-postgres"),
     (
         "factory-db-leaderboard-login",
         "factory_leaderboard",
         "factory",
         "factory-leaderboard-db",
     ),
+    # Bosun's message archive (HOME-909): the bridge's login and
+    # bosun-history's SELECT-only login.
+    (
+        "factory-db-discord-archive-login",
+        "factory_discord_archive",
+        "factory-discord",
+        "discord-archive-db",
+    ),
+    (
+        "factory-db-discord-archive-reader-login",
+        "factory_discord_archive_reader",
+        "factory-discord",
+        "discord-archive-reader-db",
+    ),
+    # history_sql (HOME-909): one login per Discord server.
+    (
+        "factory-db-discord-sql-185442367703220224-login",
+        "factory_discord_sql_185442367703220224",
+        "factory-discord",
+        "discord-sql-185442367703220224-db",
+    ),
+    (
+        "factory-db-discord-sql-1290668195249917964-login",
+        "factory_discord_sql_1290668195249917964",
+        "factory-discord",
+        "discord-sql-1290668195249917964-db",
+    ),
+    (
+        "factory-db-discord-sql-1501965852042330302-login",
+        "factory_discord_sql_1501965852042330302",
+        "factory-discord",
+        "discord-sql-1501965852042330302-db",
+    ),
+    (
+        "factory-db-discord-sql-1512814732392927463-login",
+        "factory_discord_sql_1512814732392927463",
+        "factory-discord",
+        "discord-sql-1512814732392927463-db",
+    ),
 ]
-# These logins share the connector database and own no database.
+# These logins share another login's database and own none.
 DATABASES = {
     "factory_broker_accounting": "factory_connector",
     "factory_storyboard": "factory_connector",
     "factory_reaper": "factory_connector",
     "factory_leaderboard": "factory_connector",
+    "factory_discord_archive_reader": "factory_discord_archive",
+    "factory_discord_sql_185442367703220224": "factory_discord_archive",
+    "factory_discord_sql_1290668195249917964": "factory_discord_archive",
+    "factory_discord_sql_1501965852042330302": "factory_discord_archive",
+    "factory_discord_sql_1512814732392927463": "factory_discord_archive",
 }
 REVIEWER_LOGIN = ("factory-db", "factory-db-reviewer-login")
 REVIEWER_CONNECTION = ("factory", "factory-reviewer-db")
@@ -63,7 +106,7 @@ CLIENT_SECRETS = [
     "factory/secrets.yaml",
     "../hindsight/resources/secrets.yaml",
     "../hindsight-discord/resources/secrets.yaml",
-    "../../trips/chart/templates/db-secret.yaml",
+    "discord/secrets.yaml",
 ]
 
 
@@ -285,6 +328,34 @@ def test_managed_roles_and_databases_use_the_provisioned_logins():
         ]
 
 
+def test_history_sql_logins_cover_the_discord_servers():
+    """One history_sql login per bridge.policy.guilds server, each only in the group."""
+    values = yaml.safe_load((ROOT / "../../factory/deploy/values.yaml").read_text())
+    guilds = set(values["discord"]["bridge"]["policy"]["guilds"])
+    prefix = "factory_discord_sql_"
+    logins = {login for _, login, _, _ in LOGINS if login.startswith(prefix)}
+    assert logins == {prefix + guild for guild in guilds}
+    cluster = next(
+        doc for doc in read("resources/cluster.yaml") if doc["kind"] == "Cluster"
+    )
+    roles = {role["name"]: role for role in cluster["spec"]["managed"]["roles"]}
+    group = roles["factory_discord_sql"]
+    assert group["login"] is False
+    assert not group.get("inRoles")
+    for login in logins:
+        role = roles[login]
+        assert role["inRoles"] == ["factory_discord_sql"]
+        assert DATABASES[login] == "factory_discord_archive"
+        for capability in (
+            "superuser",
+            "createdb",
+            "createrole",
+            "replication",
+            "bypassrls",
+        ):
+            assert role[capability] is False
+
+
 @pytest.mark.parametrize(
     "namespace,name,port,allowed",
     [
@@ -298,6 +369,10 @@ def test_managed_roles_and_databases_use_the_provisioned_logins():
         ("hindsight-discord", "hindsight", "5432", True),
         ("hindsight-discord", "hindsight-keys", "5432", False),
         ("factory-discord", "hindsight", "5432", False),
+        ("factory-discord", "factory-discord-bridge", "5432", True),
+        ("factory-discord", "bosun-history", "5432", True),
+        ("factory-discord", "bosun-artifacts", "5432", False),
+        ("factory", "bosun-history", "5432", False),
         ("other", "factory-reviewer", "5432", False),
         ("factory", "unrelated", "5432", False),
         ("factory", "factory-reviewer", "8000", False),

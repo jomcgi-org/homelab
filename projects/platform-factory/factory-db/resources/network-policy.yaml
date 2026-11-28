@@ -65,6 +65,14 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: trips
             app.kubernetes.io/name: trips
+        # Bosun's message archive (HOME-909): the bridge writes it and
+        # bosun-history reads it.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: factory-discord-bridge
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: bosun-history
         # Replication and pg_basebackup between instances.
         - matchLabels:
             cnpg.io/cluster: factory-db

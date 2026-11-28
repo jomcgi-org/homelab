@@ -1,0 +1,42 @@
+# The factory-discord namespace's share of factory-db (discord/secrets.yaml,
+# HOME-909): the message archive's connection strings and the setup Job's Role
+# for them. Separate from factory-db, whose namespace is factory-db, so
+# neither Application fails while the other's namespace is missing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: factory-db-discord-secrets
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/factory-db/discord
+  destination:
+    server: https://kubernetes.default.svc
+    # The factory chart and hindsight-discord-key also place objects there.
+    namespace: factory-discord
+  # factory-db-setup writes the connection strings.
+  ignoreDifferences:
+    - kind: Secret
+      jsonPointers: [/data]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

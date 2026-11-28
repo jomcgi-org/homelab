@@ -1,0 +1,51 @@
+# ActorTemplate (protojson ateapi.ActorTemplate) for the X5 Job: a fork template
+# whose children send their egress through the egress gateway
+# (fork_config.egress FORK_EGRESS_GATEWAY, Substrate fork c7f37a993862). x5.py
+# creates it in its own atespace and deletes it again.
+#
+# The workload is probe.py, run by the public Python image. x5.py replaces
+# PROBE_SOURCE below with the file's code (docstrings and comments dropped, to fit
+# the API's 4096-character argument limit) before it creates the template, so
+# the reviewed source is probe.py. Template args are public: every child
+# inherits them, and they hold no secret.
+#
+# The router sends a request to port 80 when the client names no other port
+# (atenet router ingress.go defaultActorPort). gVisor checks no capability for a
+# low port, so the image's user can bind it.
+metadata:
+  atespace: fork-x5
+  name: probe
+workerSelector:
+  matchLabels:
+    workload: gvisor-fork
+containers:
+  - name: probe
+    image: python:3.14.10-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
+    command:
+      - python3
+      - -I
+      - -c
+      - PROBE_SOURCE
+    wakeupProbe:
+      httpGet:
+        path: /healthz
+        port: 80
+      timeoutSeconds: 20
+resources:
+  limits:
+    cpuMillicores: 1000
+    memoryBytes: 134217728
+snapshotConfig:
+  goldenSnapshotConfig:
+    mode: GOLDEN_SNAPSHOT_MODE_DISABLED
+forkConfig:
+  mode: FORK_MODE_SEED_AND_FORK
+  seedResources:
+    limits:
+      cpuMillicores: 1000
+      memoryBytes: 268435456
+  singleUse: true
+  maxLifetimeSeconds: 300
+  pidsLimit: 256
+  logBytesLimit: 1048576
+  egress: FORK_EGRESS_GATEWAY

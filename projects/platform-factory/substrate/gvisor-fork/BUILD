@@ -6,6 +6,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # gazelle:exclude assets
 # gazelle:exclude conformance
 # gazelle:exclude latency
+# gazelle:exclude x5
 # gazelle:exclude xgates
 
 # The files ../resources renders through its "../gvisor-fork" resource.
@@ -15,6 +16,7 @@ filegroup(
         "*.yaml",
         "assets/*",
         "conformance/*",
+        "x5/*",
     ]),
     visibility = [
         "//projects/platform-factory/image-audit:__pkg__",
@@ -30,6 +32,7 @@ py_test(
         "assets/*",
         "conformance/*",
         "latency/*",
+        "x5/*",
     ]) + [
         "@multitool//tools/kustomize",
     ],

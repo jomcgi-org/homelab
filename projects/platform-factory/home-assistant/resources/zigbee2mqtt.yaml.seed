@@ -1,0 +1,21 @@
+# The init container copies this file to /app/data only when none is there.
+# Zigbee2MQTT then owns the file: it writes the generated network key and
+# device names into it. Change a live setting in its web UI, not here.
+version: 5
+homeassistant:
+  enabled: true
+frontend:
+  enabled: true
+  port: 8080
+mqtt:
+  base_topic: zigbee2mqtt
+  server: mqtt://mosquitto:1883
+serial:
+  port: /dev/zigbee
+  adapter: ember
+advanced:
+  # Channel 25 sits above Wi-Fi channels 1, 6 and 11.
+  channel: 25
+  network_key: GENERATE
+  pan_id: GENERATE
+  ext_pan_id: GENERATE

@@ -21,6 +21,9 @@ metadata:
     # Substrate's worker egress policy selects worker pods only in namespaces
     # with this label (projects/platform-factory/substrate).
     factory.jomcgi.dev/substrate-workers: "true"
+    # gVisor workers need SYS_ADMIN and no seccomp profile, which the cluster
+    # default (projects/factory-cluster/nodes/pod-security.yaml) forbids.
+    pod-security.kubernetes.io/enforce: privileged
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
     {{- include "factory.keep" . | nindent 4 }}
@@ -132,8 +135,8 @@ spec:
     snapshotPolicy:
       location: {{ printf "%s%s/" .Values.workers.snapshotLocationPrefix $ns | quote }}
 ---
-# No tools: web search is part of the model call (":online"), and the bridge
-# is the only Hindsight client (HOME-162 rule 3).
+# No tools and no web search, and the bridge is the only Hindsight client
+# (HOME-162 rule 3).
 apiVersion: api.kagent.dev/v1alpha3
 kind: Agent
 metadata:
@@ -200,6 +203,61 @@ spec:
 {{- if $o.enabled }}
 {{- $policy = merge (dict "operator" (dict "guild" $o.guild "channels" $o.channels)) (deepCopy $b.policy) }}
 {{- end }}
+{{- /* Each routed server agent answers its server's turns (HOME-909); one
+with servers: all answers every server's. The bridge keeps one session per
+channel. */}}
+{{- $routed := dict }}
+{{- $agents := dict }}
+{{- $all := "" }}
+{{- range $key := keys $d.serverAgents | sortAlpha }}
+{{- $a := index $d.serverAgents $key }}
+{{- if and $a.enabled $a.route }}
+{{- if not (hasKey ($b.policy.guilds | default dict) $a.guild) }}
+{{- fail (printf "discord.serverAgents.%s.route needs server %s in discord.bridge.policy.guilds" $key $a.guild) }}
+{{- end }}
+{{- $ref := printf "%s/%s" ($a.namespace | default (printf "discord-%s" $a.guild)) $a.name }}
+{{- $_ := set $agents $ref true }}
+{{- $servers := $a.servers | default "own" }}
+{{- if eq $servers "all" }}
+{{- if $all }}
+{{- fail (printf "discord.serverAgents.%s.servers: %s already answers all servers" $key $all) }}
+{{- end }}
+{{- $all = $key }}
+{{- range $guild := keys $b.policy.guilds | sortAlpha }}
+{{- $_ := set $routed $guild $ref }}
+{{- end }}
+{{- else if eq $servers "own" }}
+{{- $_ := set $routed $a.guild $ref }}
+{{- else }}
+{{- fail (printf "discord.serverAgents.%s.servers must be own or all" $key) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if $routed }}
+{{- $policy = merge (dict "serverAgents" $routed) (deepCopy $policy) }}
+{{- end }}
+{{- /* Research on public GitHub repositories (HOME-909), while the explorer is on. */}}
+{{- $e := $d.explorer }}
+{{- if $e.enabled }}
+{{- $policy = merge (dict "explore" (dict
+  "agent" (printf "%s/%s" $e.namespace $e.name)
+  "limit" $e.limit
+  "concurrency" (int $e.concurrency)
+  "timeout" $e.timeout
+  "maxSessions" (int $e.maxSessions)
+  "ttl" $e.ttl
+  "maxRepoMB" (int $e.maxRepoMB))) (deepCopy $policy) }}
+{{- end }}
+{{- /* Joe's unsafe mode (HOME-938): its tool-free agent, never a routed one. */}}
+{{- $u := $d.unsafe | default dict }}
+{{- $unsafeRef := "" }}
+{{- if $u.enabled }}
+{{- $ua := index $d.serverAgents $u.agent }}
+{{- $unsafeRef = printf "%s/%s" ($ua.namespace | default (printf "discord-%s" $ua.guild)) $ua.name }}
+{{- $policy = merge (dict "unsafe" (dict "agent" $unsafeRef "duration" $u.duration "maxDuration" $u.maxDuration)) (deepCopy $policy) }}
+{{- end }}
+{{- /* Joe's user ID is read for the operator session and for users: operator. */}}
+{{- $operatorUser := or $o.enabled (eq ($b.policy.users | default "all") "operator") }}
 ---
 # The bridge runs as this account; its only token is the projected
 # kagent-invocation token below.
@@ -254,6 +312,9 @@ metadata:
   namespace: {{ $ns }}
 spec:
   itemPath: {{ .Values.connector.notify.itemPath | quote }}
+{{- end }}
+{{- /* The connector's /notify and the notes tools' session record (HOME-918). */}}
+{{- if or .Values.connector.notify.enabled (and ($d.notes | default dict).enabled $d.artifacts.enabled) }}
 ---
 apiVersion: v1
 kind: Service
@@ -279,7 +340,9 @@ metadata:
     app.kubernetes.io/name: factory-discord-bridge
 spec:
   replicas: 1
-  # One gateway connection at a time.
+  # One gateway connection at a time: the old pod closes its gateway on
+  # SIGTERM and drains its turns before the new pod connects. The new pod's
+  # catch-up answers the tags sent in between.
   strategy:
     type: Recreate
   selector:
@@ -297,6 +360,8 @@ spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false
       enableServiceLinks: false
+      # The drain, then 30 seconds to flush the ingest buffer and exit.
+      terminationGracePeriodSeconds: {{ add (int $b.drainSeconds) 30 }}
       {{- if .Values.imagePullSecret.enabled }}
       imagePullSecrets:
         - name: {{ .Values.imagePullSecret.name }}
@@ -331,11 +396,58 @@ spec:
               value: {{ printf "%s/%s" $d.agent.namespace $d.agent.name | quote }}
             - name: HEALTH_ADDR
               value: ":8080"
+            - name: DISCORD_DRAIN_TIMEOUT
+              value: {{ printf "%ds" (int $b.drainSeconds) | quote }}
+            - name: DISCORD_CATCHUP_WINDOW
+              value: {{ $b.catchUpWindow | quote }}
+            {{- if .Values.networkPolicy.cilium }}
+            # factory-discord-render draws an answer's diagram, chart and SVG
+            # blocks as images; it runs where its deny policy does.
+            - name: DISCORD_RENDER_URL
+              value: {{ printf "http://factory-discord-render.%s.svc.cluster.local:8080" $ns | quote }}
+            {{- end }}
+            {{- if $d.backfill.enabled }}
+            # The history backfill (HOME-836): one pass after the gateway is
+            # ready, then one each interval, for each server with `history`.
+            - name: BACKFILL_ENABLED
+              value: "true"
+            - name: BACKFILL_INTERVAL
+              value: {{ $d.backfill.interval | quote }}
+            - name: BACKFILL_RATE
+              value: {{ $d.backfill.rate | quote }}
+            - name: BACKFILL_INCLUDE_BOTS
+              value: {{ $d.backfill.includeBots | quote }}
+            {{- end }}
+            {{- if $d.archive.enabled }}
+            # The verbatim message archive (HOME-909): the bridge waits for
+            # factory-db-setup to fill the mounted Secret file.
+            - name: ARCHIVE_DATABASE_URL_FILE
+              value: /var/run/secrets/discord-archive/database-url
+            - name: ARCHIVE_READER_ROLE
+              value: factory_discord_archive_reader
+            # history_sql's per-server logins are members of this group.
+            - name: ARCHIVE_SQL_ROLE
+              value: factory_discord_sql
+            {{- with $d.archive.purge }}
+            - name: ARCHIVE_PURGE
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- end }}
             {{- if $o.enabled }}
             - name: DISCORD_OPERATOR_AGENT
               value: {{ printf "%s/%s" $o.namespace $o.name | quote }}
+            {{- end }}
+            {{- if $operatorUser }}
             - name: DISCORD_OPERATOR_USER_FILE
               value: /var/run/secrets/discord-operator/user-id
+            {{- end }}
+            {{- if $d.artifacts.enabled }}
+            # Artifact share links (HOME-917, discord/share.go): signed with
+            # the read-only bosun-artifacts-share-s3 key after Joe confirms.
+            - name: ARTIFACT_SHARE_KEY_DIR
+              value: /var/run/secrets/artifact-share
+            - name: ARTIFACT_BASE_URL
+              value: {{ $d.artifacts.baseURL | quote }}
             {{- end }}
           ports:
             - name: health
@@ -370,15 +482,26 @@ spec:
             - name: policy
               mountPath: /etc/discord-bridge
               readOnly: true
-            {{- if $o.enabled }}
+            {{- if $d.archive.enabled }}
+            - name: archive
+              mountPath: /var/run/secrets/discord-archive
+              readOnly: true
+            {{- end }}
+            {{- if $operatorUser }}
             - name: operator
               mountPath: /var/run/secrets/discord-operator
               readOnly: true
             {{- end }}
+            {{- if $d.artifacts.enabled }}
+            - name: artifact-share
+              mountPath: /var/run/secrets/artifact-share
+              readOnly: true
+            {{- end }}
       volumes:
-        {{- if $o.enabled }}
+        {{- if $operatorUser }}
         # Joe's Discord user ID. Optional: without the field the bridge
-        # starts and keeps the operator channels closed.
+        # starts, keeps the operator channels closed and, under
+        # users: operator, answers nobody.
         - name: operator
           secret:
             secretName: discord-bot
@@ -417,11 +540,36 @@ spec:
         - name: policy
           configMap:
             name: {{ $name }}-policy
+        {{- if $d.artifacts.enabled }}
+        # Optional: garage-init fills it after the Secret exists, and the
+        # kubelet updates the files; the bridge reads them at each link.
+        - name: artifact-share
+          secret:
+            secretName: bosun-artifacts-share-s3
+            optional: true
+            items:
+              - key: AWS_ACCESS_KEY_ID
+                path: AWS_ACCESS_KEY_ID
+              - key: AWS_SECRET_ACCESS_KEY
+                path: AWS_SECRET_ACCESS_KEY
+        {{- end }}
+        {{- if $d.archive.enabled }}
+        # Optional: the bridge starts before factory-db-setup fills it, and
+        # the kubelet updates the file when it does.
+        - name: archive
+          secret:
+            secretName: discord-archive-db
+            optional: true
+            items:
+              - key: DATABASE_URL
+                path: database-url
+        {{- end }}
 {{- if .Values.networkPolicy.cilium }}
 ---
-# Egress to the renderer, Discord, hindsight-discord and kagent's controller.
+# Egress to the renderer, Discord, hindsight-discord, factory-db (the message
+# archive) and kagent's controller.
 # Nothing connects in, except the connector to /notify when connector.notify
-# is on. DNS is the cluster baseline's.
+# is on, and bosun-artifacts to GET /sessions/<id> when discord.notes is on. DNS is the cluster baseline's.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -433,8 +581,10 @@ spec:
   endpointSelector:
     matchLabels:
       app.kubernetes.io/name: factory-discord-bridge
-  {{- if .Values.connector.notify.enabled }}
+  {{- $notesIn := and ($d.notes | default dict).enabled $d.artifacts.enabled }}
+  {{- if or .Values.connector.notify.enabled $notesIn }}
   ingress:
+    {{- if .Values.connector.notify.enabled }}
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
@@ -443,6 +593,21 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
+    {{- end }}
+    {{- if $notesIn }}
+    # The notes tools read which server a session serves (HOME-918).
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: bosun-artifacts
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - method: GET
+                path: "^/sessions/[0-9a-z-]+$"
+    {{- end }}
   {{- end }}
   egress:
     - toEndpoints:
@@ -457,6 +622,13 @@ spec:
         - matchName: discord.com
         # gateway.discord.gg and its resume hosts.
         - matchPattern: "*.discord.gg"
+        # Attachment downloads: the images a turn sends (HOME-939).
+        - matchName: cdn.discordapp.com
+        - matchName: media.discordapp.net
+        {{- if $e.enabled }}
+        # The explorer's public-repository check, without credentials.
+        - matchName: api.github.com
+        {{- end }}
       toPorts:
         - ports:
             - port: "443"
@@ -469,6 +641,17 @@ spec:
         - ports:
             - port: "8888"
               protocol: TCP
+    {{- if $d.archive.enabled }}
+    # The message archive in factory-db (HOME-909).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-db
+            cnpg.io/cluster: factory-db
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    {{- end }}
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
@@ -495,107 +678,35 @@ spec:
               - method: POST
                 path: "^/kagent\\.api\\.v1\\.SessionService/DeleteSession$"
               {{- if $o.enabled }}
-              # The operator session's Agent and its persistent sessions.
+              # The operator session's Agent.
               - method: POST
                 path: {{ printf "^/agents/%s/%s$" (regexQuoteMeta $o.namespace) (regexQuoteMeta $o.name) | quote }}
+              {{- end }}
+              {{- range $ref := keys $agents | sortAlpha }}
+              # A server agent (HOME-909).
+              - method: POST
+                path: {{ printf "^/agents/%s$" (regexQuoteMeta $ref) | quote }}
+              {{- end }}
+              {{- with $unsafeRef }}
+              # The unsafe mode agent (HOME-938); its sessions use the rule
+              # below.
+              - method: POST
+                path: {{ printf "^/agents/%s$" (regexQuoteMeta .) | quote }}
+              {{- end }}
+              {{- if or $o.enabled $routed $e.enabled $unsafeRef }}
+              # The persistent sessions of the operator, server agents and
+              # explorer.
               - method: POST
                 path: "^/kagent\\.api\\.v1\\.SessionService/(CreateSession|RevertSession)$"
               {{- end }}
+              {{- if $e.enabled }}
+              # The research explorer (HOME-909): its turns, and naming,
+              # listing and deleting its sessions for the TTL and cap.
+              - method: POST
+                path: {{ printf "^/agents/%s/%s$" (regexQuoteMeta $e.namespace) (regexQuoteMeta $e.name) | quote }}
+              - method: POST
+                path: "^/kagent\\.api\\.v1\\.SessionService/(ListSessions|UpdateSessionName)$"
+              {{- end }}
           {{- end }}
 {{- end }}
-{{- end }}
-{{- if and $d.bridge.enabled $d.import.enabled }}
-{{- $b := $d.bridge }}
----
-# One history import run (HOME-164): `discord-bridge import` replays each
-# server with `history: true` into its bank, one document per channel-day.
-# A new runId starts a new run; days already stored are skipped. The bridge's
-# label gives it the bridge's egress and hindsight-discord's admission.
-# The Job must render the same in every release: a Job's template is
-# immutable, and a changed Job fails ArgoCD's server-side diff dry run, which
-# stops the whole sync. So `import.image` pins its image apart from the
-# connector's, and its labels leave out helm.sh/chart.
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: {{ printf "discord-import-%s" (toString $d.import.runId) }}
-  namespace: {{ $b.namespace }}
-  labels:
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/part-of: factory
-spec:
-  backoffLimit: 2
-  activeDeadlineSeconds: {{ $d.import.deadlineSeconds }}
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: factory-discord-bridge
-        app.kubernetes.io/component: import
-    spec:
-      serviceAccountName: discord-bridge
-      automountServiceAccountToken: false
-      enableServiceLinks: false
-      restartPolicy: Never
-      {{- if .Values.imagePullSecret.enabled }}
-      imagePullSecrets:
-        - name: {{ .Values.imagePullSecret.name }}
-      {{- end }}
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: import
-          image: {{ $d.import.image | default (include "factory.connectorImage" .) | quote }}
-          imagePullPolicy: {{ .Values.connector.image.pullPolicy }}
-          command: [/usr/local/bin/discord-bridge, import]
-          env:
-            - name: DISCORD_POLICY_FILE
-              value: /etc/discord-bridge/policy.json
-            - name: DISCORD_TOKEN_FILE
-              value: /var/run/secrets/discord/token
-            - name: HINDSIGHT_URL
-              value: {{ $b.hindsightURL | quote }}
-            - name: HINDSIGHT_KEY_FILE
-              value: /var/run/secrets/hindsight/tenant-api-key
-            - name: IMPORT_MAX_DOCUMENTS
-              value: {{ $d.import.maxDocuments | quote }}
-            - name: IMPORT_WORKERS
-              value: {{ $d.import.workers | quote }}
-          resources:
-            {{- toYaml $b.resources | nindent 12 }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
-          volumeMounts:
-            - name: discord
-              mountPath: /var/run/secrets/discord
-              readOnly: true
-            - name: hindsight
-              mountPath: /var/run/secrets/hindsight
-              readOnly: true
-            - name: policy
-              mountPath: /etc/discord-bridge
-              readOnly: true
-      volumes:
-        - name: discord
-          secret:
-            secretName: discord-bot
-            items:
-              - key: token
-                path: token
-        - name: hindsight
-          secret:
-            secretName: {{ $b.hindsightKeySecret }}
-            items:
-              - key: tenant-api-key
-                path: tenant-api-key
-        - name: policy
-          configMap:
-            name: discord-bridge-policy
 {{- end }}

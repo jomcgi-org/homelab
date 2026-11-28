@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +20,9 @@ type Channel struct {
 	Name     string `json:"name"`
 	Type     int    `json:"type"`
 	ParentID string `json:"parent_id"`
+	// LastMessageID is the channel's newest message; the catch-up reads
+	// only channels with a recent one.
+	LastMessageID string `json:"last_message_id,omitempty"`
 }
 
 // Channels whose history the import reads: text, announcement, and
@@ -34,43 +38,138 @@ var threadParentTypes = map[int]bool{0: true, 5: true, 15: true, 16: true}
 // other system messages are left out.
 var conversationTypes = map[int]bool{0: true, 19: true}
 
-// Attachment is a message attachment; the import keeps only its file name.
+// Attachment is a message attachment. History and the archive keep only
+// its file name and whether it is an image; a turn also reads where to
+// download it and its pixel size, to send its image to the model.
 type Attachment struct {
-	Filename string `json:"filename"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type,omitempty"`
+	URL         string `json:"url,omitempty"`
+	ProxyURL    string `json:"proxy_url,omitempty"`
+	Size        int64  `json:"size,omitempty"`
+	Width       int    `json:"width,omitempty"`
+	Height      int    `json:"height,omitempty"`
 }
 
-// Component is a message component; containers nest others.
+// Components V2 types that hold text or media: a section holds text
+// displays and an accessory, a thumbnail and a gallery hold images, a file
+// holds a file.
+const (
+	componentSection   = 9
+	componentThumbnail = 11
+	componentFile      = 13
+)
+
+// Component is a message component; containers and sections nest others.
 type Component struct {
-	Type       int         `json:"type"`
-	Content    string      `json:"content"`
-	Components []Component `json:"components"`
+	Type       int            `json:"type"`
+	Content    string         `json:"content"`
+	Components []Component    `json:"components"`
+	Accessory  *Component     `json:"accessory,omitempty"`
+	Items      []ComponentMed `json:"items,omitempty"`
+	Media      *MediaRef      `json:"media,omitempty"`
+	File       *MediaRef      `json:"file,omitempty"`
+}
+
+// ComponentMed is one media gallery item.
+type ComponentMed struct {
+	Media MediaRef `json:"media"`
+}
+
+// MediaRef is a component's media: an attachment://name or a URL.
+type MediaRef struct {
+	URL string `json:"url"`
+}
+
+// mediaName is a media's file name, never its URL: a URL is not passed on
+// to fetch.
+func mediaName(r MediaRef) string {
+	u := r.URL
+	if i := strings.IndexAny(u, "?#"); i >= 0 {
+		u = u[:i]
+	}
+	if i := strings.LastIndex(u, "/"); i >= 0 {
+		u = u[i+1:]
+	}
+	u = strings.TrimPrefix(u, "attachment:")
+	if u == "" {
+		return "image"
+	}
+	return clipRunes(u, 80)
+}
+
+// componentsText is the text of Components V2 components, in order: text
+// displays as text, gallery items and thumbnails as [image: name], files
+// as [file: name]. It walks containers, sections and their accessories.
+// names collects the files that the components show.
+func componentsText(cs []Component, names map[string]bool) string {
+	var parts []string
+	var walk func([]Component)
+	media := func(kind string, r MediaRef) {
+		n := mediaName(r)
+		if names != nil {
+			names[n] = true
+		}
+		parts = append(parts, "["+kind+": "+n+"]")
+	}
+	walk = func(cs []Component) {
+		for _, c := range cs {
+			switch c.Type {
+			case componentText:
+				if t := strings.TrimSpace(c.Content); t != "" {
+					parts = append(parts, t)
+				}
+			case componentGallery:
+				for _, it := range c.Items {
+					media("image", it.Media)
+				}
+			case componentThumbnail:
+				if c.Media != nil {
+					media("image", *c.Media)
+				}
+			case componentFile:
+				if c.File != nil {
+					media("file", *c.File)
+				}
+			}
+			walk(c.Components)
+			if c.Accessory != nil {
+				walk([]Component{*c.Accessory})
+			}
+		}
+	}
+	walk(cs)
+	return strings.Join(parts, "\n")
+}
+
+// Reaction is the subset of a message reaction the bridge reads: Me marks
+// the bot's own.
+type Reaction struct {
+	Me bool `json:"me"`
 }
 
 // HistoryMessage is a message read from a channel's history.
 type HistoryMessage struct {
 	Message
-	Attachments []Attachment `json:"attachments"`
-	Components  []Component  `json:"components"`
+	Attachments []Attachment     `json:"attachments"`
+	Components  []Component      `json:"components"`
+	Embeds      []HistoryEmbed   `json:"embeds"`
+	Stickers    []HistorySticker `json:"sticker_items"`
+	// Edited is when the message was last edited; nil when never.
+	Edited *time.Time `json:"edited_timestamp"`
+	// Thread is the thread started from the message, if any.
+	Thread    *Channel   `json:"thread,omitempty"`
+	Reactions []Reaction `json:"reactions,omitempty"`
 }
 
 // Text is a message's text: its content, or for a Components V2 message,
-// such as Bosun's replies (NewReply), its text displays.
+// such as Bosun's replies (NewReply), its text displays and media
+// (componentsText).
 func (m HistoryMessage) Text() string {
 	if s := strings.TrimSpace(m.Content); s != "" {
 		return s
 	}
-	var parts []string
-	var walk func([]Component)
-	walk = func(cs []Component) {
-		for _, c := range cs {
-			if c.Type == componentText && strings.TrimSpace(c.Content) != "" {
-				parts = append(parts, strings.TrimSpace(c.Content))
-			}
-			walk(c.Components)
-		}
-	}
-	walk(m.Components)
-	return strings.Join(parts, "\n")
+	return componentsText(m.Components, nil)
 }
 
 // HistoryDocumentID is an imported channel-day's document. It is apart from
@@ -90,13 +189,10 @@ func (r *REST) GuildChannels(ctx context.Context, guildID string) ([]Channel, er
 // Threads lists a server's active threads and each history channel's
 // archived public threads.
 func (r *REST) Threads(ctx context.Context, guildID string, channels []Channel) ([]Channel, error) {
-	var active struct {
-		Threads []Channel `json:"threads"`
-	}
-	if err := r.do(ctx, http.MethodGet, "/guilds/"+guildID+"/threads/active", nil, &active); err != nil {
+	out, err := r.ActiveThreads(ctx, guildID)
+	if err != nil {
 		return nil, err
 	}
-	out := active.Threads
 	for _, c := range channels {
 		if !threadParentTypes[c.Type] {
 			continue
@@ -136,6 +232,24 @@ func (r *REST) Threads(ctx context.Context, guildID string, channels []Channel) 
 	return out, nil
 }
 
+// ActiveThreads lists a server's active threads.
+func (r *REST) ActiveThreads(ctx context.Context, guildID string) ([]Channel, error) {
+	var active struct {
+		Threads []Channel `json:"threads"`
+	}
+	err := r.do(ctx, http.MethodGet, "/guilds/"+guildID+"/threads/active", nil, &active)
+	return active.Threads, err
+}
+
+// MessagesAfter reads up to 100 messages newer than after, in the order
+// Discord returns them.
+func (r *REST) MessagesAfter(ctx context.Context, channelID, after string) ([]HistoryMessage, error) {
+	q := url.Values{"limit": {"100"}, "after": {after}}
+	var out []HistoryMessage
+	err := r.do(ctx, http.MethodGet, "/channels/"+channelID+"/messages?"+q.Encode(), nil, &out)
+	return out, err
+}
+
 // MessagesBefore reads up to 100 messages older than before, newest first;
 // an empty before starts at the newest.
 func (r *REST) MessagesBefore(ctx context.Context, channelID, before string) ([]HistoryMessage, error) {
@@ -169,6 +283,10 @@ type Documents interface {
 type Importer struct {
 	Source HistorySource
 	Store  Documents
+	// Places names the mentions in stored text: users from each message,
+	// channels and roles from the gateway's cache. Nil names users only;
+	// other mentions become unknown.
+	Places *Places
 	Config Config
 	// BotID is Bosun's user: its replies are kept; other bots' and webhooks'
 	// messages are left out unless IncludeBots.
@@ -187,6 +305,20 @@ type Importer struct {
 	Now           func() time.Time
 	// Sleep waits between retries; tests replace it.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Pace, when set, runs before each Discord history read and each
+	// Hindsight call, so a rate limit keeps the import from starving live
+	// turns that share them.
+	Pace func(ctx context.Context) error
+	// SkipIngested skips a channel-day of a server with `ingest` when the day
+	// is on or after its IngestSince and the live document for that day
+	// exists: the ingestor stored its messages. An earlier day's live
+	// document holds only tagged turns, so that day is imported.
+	SkipIngested bool
+	// Observe, when set, sees each channel-day as it is retained or skipped.
+	Observe func(guildID string, retained bool)
+	// Archive, when set, gets every page read, for the verbatim archive
+	// (HOME-909). It never fails the import.
+	Archive *Archiver
 
 	mu       sync.Mutex
 	retained int
@@ -201,28 +333,54 @@ type ImportStats struct {
 // ErrCapped is a run that reached MaxDocuments; the next run continues.
 var ErrCapped = errors.New("discord: import reached its document cap")
 
+// HistoryGuilds lists the allowlisted servers marked for history, in order.
+func (c Config) HistoryGuilds() []string {
+	var out []string
+	for id, g := range c.Guilds {
+		if g.History {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Run imports every allowlisted server marked for history.
 func (im *Importer) Run(ctx context.Context) (ImportStats, error) {
+	return im.run(ctx, im.Config.HistoryGuilds())
+}
+
+// RunGuild imports one allowlisted server marked for history.
+func (im *Importer) RunGuild(ctx context.Context, guildID string) (ImportStats, error) {
+	if g, ok := im.Config.Guilds[guildID]; !ok || !g.History {
+		return ImportStats{}, fmt.Errorf("guild %s is not marked for history", guildID)
+	}
+	return im.run(ctx, []string{guildID})
+}
+
+// run imports guilds. MaxDocuments bounds each run.
+func (im *Importer) run(ctx context.Context, guilds []string) (ImportStats, error) {
 	var stats ImportStats
+	im.mu.Lock()
+	im.retained = 0
+	im.mu.Unlock()
 	today := im.now().UTC().Truncate(24 * time.Hour)
 	type job struct {
 		guildID string
 		channel Channel
 	}
 	var jobs []job
-	guilds := make([]string, 0, len(im.Config.Guilds))
-	for id := range im.Config.Guilds {
-		guilds = append(guilds, id)
-	}
-	sort.Strings(guilds)
 	for _, gid := range guilds {
 		g := im.Config.Guilds[gid]
-		if !g.History {
-			continue
+		if err := im.pace(ctx); err != nil {
+			return stats, err
 		}
 		channels, err := im.Source.GuildChannels(ctx, gid)
 		if err != nil {
 			return stats, fmt.Errorf("guild %s channels: %w", gid, err)
+		}
+		if err := im.pace(ctx); err != nil {
+			return stats, err
 		}
 		threads, err := im.Source.Threads(ctx, gid, channels)
 		if err != nil {
@@ -252,7 +410,7 @@ func (im *Importer) Run(ctx context.Context) (ImportStats, error) {
 		go func() {
 			defer wg.Done()
 			for j := range work {
-				retained, skipped, err := im.channel(runCtx, j.guildID, j.channel, today)
+				retained, skipped, err := im.safeChannel(runCtx, j.guildID, j.channel, today)
 				mu.Lock()
 				stats.Retained += retained
 				stats.Skipped += skipped
@@ -278,6 +436,21 @@ func (im *Importer) Run(ctx context.Context) (ImportStats, error) {
 	return stats, firstErr
 }
 
+// safeChannel runs channel and turns a panic into an error, so a bad
+// message or store fails the run instead of the process.
+func (im *Importer) safeChannel(ctx context.Context, guildID string, c Channel, today time.Time) (retained, skipped int, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if im.Log != nil {
+				im.Log.Error("history import panicked", "guild", guildID, "channel", c.ID,
+					"panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+			}
+			err = fmt.Errorf("channel %s: panic: %v", c.ID, r)
+		}
+	}()
+	return im.channel(ctx, guildID, c, today)
+}
+
 // channel walks one channel's history newest first and stores each
 // finished UTC day before today.
 func (im *Importer) channel(ctx context.Context, guildID string, c Channel, today time.Time) (retained, skipped int, err error) {
@@ -298,10 +471,17 @@ func (im *Importer) channel(ctx context.Context, guildID string, c Channel, toda
 		} else {
 			skipped++
 		}
+		if im.Observe != nil {
+			im.Observe(guildID, ok)
+		}
 		return nil
 	}
 	before := ""
+	unsafe := map[string]bool{}
 	for {
+		if err := im.pace(ctx); err != nil {
+			return retained, skipped, err
+		}
 		page, err := im.Source.MessagesBefore(ctx, c.ID, before)
 		var he *HTTPError
 		if errors.As(err, &he) && he.Status == http.StatusForbidden {
@@ -313,9 +493,16 @@ func (im *Importer) channel(ctx context.Context, guildID string, c Channel, toda
 		if len(page) == 0 {
 			break
 		}
+		im.Archive.Page(ctx, guildID, c, before, page)
 		for _, m := range page {
 			before = m.ID
-			if !im.keep(m) {
+			// Unsafe mode turns (HOME-938) are never remembered: the reply
+			// and, on this or a later (older) page, the message it answers.
+			if ref, ok := unsafeReplyRef(m, im.BotID); ok {
+				unsafe[ref] = true
+				continue
+			}
+			if unsafe[m.ID] || !im.keep(m) {
 				continue
 			}
 			d := SentAt(m.Message).UTC().Truncate(24 * time.Hour)
@@ -346,12 +533,15 @@ func (im *Importer) keep(m HistoryMessage) bool {
 // newest first, as Discord returns them.
 func (im *Importer) store(ctx context.Context, guildID string, c Channel, day time.Time, lines []HistoryMessage) (bool, error) {
 	id := HistoryDocumentID(c.ID, day)
-	exists, err := im.Store.DocumentExists(ctx, guildID, id)
-	if err != nil {
+	exists, err := im.exists(ctx, guildID, id)
+	if err != nil || exists {
 		return false, err
 	}
-	if exists {
-		return false, nil
+	if im.SkipIngested && im.Config.Guilds[guildID].ingestedLive(day) {
+		exists, err := im.exists(ctx, guildID, DocumentID(c.ID, day))
+		if err != nil || exists {
+			return false, err
+		}
 	}
 	im.mu.Lock()
 	if im.MaxDocuments > 0 && im.retained >= im.MaxDocuments {
@@ -363,7 +553,9 @@ func (im *Importer) store(ctx context.Context, guildID string, c Channel, day ti
 	var b strings.Builder
 	for i := len(lines) - 1; i >= 0; i-- {
 		m := lines[i]
-		fmt.Fprintf(&b, "%s (%s): %s", m.Author.Username, SentAt(m.Message).UTC().Format(time.RFC3339), m.Text())
+		im.Places.Learn(guildID, m.Message.Users()...)
+		text := im.Places.Resolve(guildID, m.Text(), m.Mentions)
+		fmt.Fprintf(&b, "%s (%s): %s", m.Author.Username, SentAt(m.Message).UTC().Format(time.RFC3339), text)
 		for _, a := range m.Attachments {
 			fmt.Fprintf(&b, " [attachment: %s]", a.Filename)
 		}
@@ -384,6 +576,9 @@ func (im *Importer) store(ctx context.Context, guildID string, c Channel, day ti
 // server, so each retry first checks whether the document is there. The
 // retain replaces the document by ID, so a second write adds no duplicate.
 func (im *Importer) retain(ctx context.Context, guildID string, item RetainItem) error {
+	if err := im.pace(ctx); err != nil {
+		return err
+	}
 	err := im.Store.RetainDocument(ctx, guildID, item)
 	wait := im.Backoff
 	for attempt := 1; attempt <= im.RetainRetries && err != nil && transient(ctx, err); attempt++ {
@@ -395,13 +590,30 @@ func (im *Importer) retain(ctx context.Context, guildID string, item RetainItem)
 			return err
 		}
 		wait *= 2
-		exists, xerr := im.Store.DocumentExists(ctx, guildID, item.DocumentID)
+		exists, xerr := im.exists(ctx, guildID, item.DocumentID)
 		if xerr == nil && exists {
 			return nil
+		}
+		if perr := im.pace(ctx); perr != nil {
+			return err
 		}
 		err = im.Store.RetainDocument(ctx, guildID, item)
 	}
 	return err
+}
+
+func (im *Importer) exists(ctx context.Context, guildID, documentID string) (bool, error) {
+	if err := im.pace(ctx); err != nil {
+		return false, err
+	}
+	return im.Store.DocumentExists(ctx, guildID, documentID)
+}
+
+func (im *Importer) pace(ctx context.Context) error {
+	if im.Pace == nil {
+		return ctx.Err()
+	}
+	return im.Pace(ctx)
 }
 
 // transient reports whether a retain failure may pass on its own. A

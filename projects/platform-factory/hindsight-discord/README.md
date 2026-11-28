@@ -6,6 +6,8 @@ separate Hindsight 1.2.1 process and database for Discord memory.
 ```mermaid
 flowchart LR
     D[factory-discord bridge] -->|REST :8888, tenant key| H[hindsight-discord]
+    A[homelab Hermes agent] -->|MCP recall, placeholder| G[Substrate egress gateway]
+    G -->|MCP :8888, recall token| H
     H -->|Postgres :5432| DB[factory-db: factory_discord_hindsight]
     H -->|HTTPS :443, dedicated key| O[openrouter.ai]
     K[hindsight-discord key Job] -->|copies tenant-api-key| S[factory-discord/hindsight-discord-key]
@@ -14,9 +16,27 @@ flowchart LR
 
 The bridge is HOME-162. The only consumer copy of the tenant key is Secret
 `factory-discord/hindsight-discord-key`, field `tenant-api-key`. The key grants
-REST access to every bank in this process. The bridge must enforce channel
-access and supply strict tag filters; tags alone do not authorize a caller.
-MCP is disabled.
+REST access to every bank in this process. The bridge must enforce server
+access: it chooses the bank from the gateway event, never from message text.
+A recall reads the server's whole bank, every channel
+([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-162#comment-12817)).
+Tags alone do not authorize a caller.
+
+MCP takes only the recall token (HOME-909). `resources/bindings.py`, a
+variant of the factory Hindsight's extension, binds it to the four servers'
+banks and to `recall`; `HINDSIGHT_API_MCP_ENABLED_TOOLS=recall` registers no
+other tool. The homelab Hermes agent calls the multi-bank endpoint `/mcp/`
+and names the bank in each call's `bank_id`. A middleware refuses a recall
+without `bank_id` before it runs, and a session whose URL path or
+`X-Bank-Id` resolves to a bound bank gets no tools, because its recall
+ignores `bank_id`. So the fallback bank (`HINDSIGHT_MCP_BANK_ID`, unset here,
+or an alias named `default`) must stay outside the binding. The token
+cannot reach REST, retain, reflect or delete. Recall results come back
+wrapped as `<untrusted_memory>`. The key Job copies the token only to
+`discord-1501965852042330302/hindsight-discord-recall`, labelled for
+Substrate injection, so the egress gateway injects it and the actor holds a
+placeholder. Which bank a turn recalls is the agent's rule, not the token's:
+see `projects/factory/discord/server-agents.md`, "Tools".
 
 Hindsight stores retained image bytes in the private Garage bucket `discord-media`,
 by document and content hash. `factory-db` holds no image bytes. GPT-4.1 mini
@@ -61,6 +81,7 @@ The factory Hindsight's `rollback_test` proves these steps in this image, and
 
 The API permits ingress only from pods in `factory-discord` labelled
 `app.kubernetes.io/name: factory-discord-bridge`, the bridge's label, and
+from the Substrate egress gateway (`ate-system`, `app: atenet-egress`), and
 egress only to
 `factory-db:5432`, `garage.garage.svc:3900` and `openrouter.ai:443`. The cluster baseline also permits
 DNS through CoreDNS. Key Jobs have separate labels and API-server egress.

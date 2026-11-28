@@ -21,6 +21,7 @@ filegroup(
     visibility = [
         "//projects/platform-factory/authentik/resources:__pkg__",
         "//projects/platform-factory/grimoire-data:__pkg__",
+        "//projects/platform-factory/home-assistant/resources:__pkg__",
     ],
 )
 

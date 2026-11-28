@@ -158,6 +158,101 @@ spec:
         connectionLimit: 4
         passwordSecret:
           name: factory-db-leaderboard-login
+      # Bosun's message archive (HOME-909): the Discord bridge owns and
+      # writes it; bosun-history reads it with the SELECT-only login.
+      - name: factory_discord_archive
+        ensure: present
+        login: true
+        inherit: false
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        connectionLimit: 4
+        passwordSecret:
+          name: factory-db-discord-archive-login
+      - name: factory_discord_archive_reader
+        ensure: present
+        login: true
+        inherit: false
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        connectionLimit: 6
+        passwordSecret:
+          name: factory-db-discord-archive-reader-login
+      # Bosun's history_sql (HOME-909): one login per server of
+      # bridge.policy.guilds, each a member of factory_discord_sql only.
+      # The archive's row security shows a member only the rows of the
+      # guild in its own login name (archive.Migrate).
+      - name: factory_discord_sql
+        ensure: present
+        login: false
+        inherit: false
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+      - name: factory_discord_sql_185442367703220224
+        ensure: present
+        login: true
+        inherit: true
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        # bosun-history opens at most 2; one more for a cancelled query.
+        connectionLimit: 3
+        inRoles: [factory_discord_sql]
+        passwordSecret:
+          name: factory-db-discord-sql-185442367703220224-login
+      - name: factory_discord_sql_1290668195249917964
+        ensure: present
+        login: true
+        inherit: true
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        # bosun-history opens at most 2; one more for a cancelled query.
+        connectionLimit: 3
+        inRoles: [factory_discord_sql]
+        passwordSecret:
+          name: factory-db-discord-sql-1290668195249917964-login
+      - name: factory_discord_sql_1501965852042330302
+        ensure: present
+        login: true
+        inherit: true
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        # bosun-history opens at most 2; one more for a cancelled query.
+        connectionLimit: 3
+        inRoles: [factory_discord_sql]
+        passwordSecret:
+          name: factory-db-discord-sql-1501965852042330302-login
+      - name: factory_discord_sql_1512814732392927463
+        ensure: present
+        login: true
+        inherit: true
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        # bosun-history opens at most 2; one more for a cancelled query.
+        connectionLimit: 3
+        inRoles: [factory_discord_sql]
+        passwordSecret:
+          name: factory-db-discord-sql-1512814732392927463-login
   backup:
     retentionPolicy: "14d"
     # The in-tree barman-cloud integration, as kagent-pg; CloudNativePG 1.31
@@ -302,5 +397,25 @@ spec:
     name: factory-db
   name: factory_trips
   owner: factory_trips
+  ensure: present
+  databaseReclaimPolicy: retain
+---
+# Bosun's verbatim Discord message archive (HOME-909,
+# projects/factory/discord/archive). The bridge applies the schema and row
+# security, and grants SELECT on the table to factory_discord_archive_reader
+# and factory_discord_sql.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: factory-db-discord-archive
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  cluster:
+    name: factory-db
+  name: factory_discord_archive
+  owner: factory_discord_archive
   ensure: present
   databaseReclaimPolicy: retain

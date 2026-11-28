@@ -16,6 +16,8 @@ resources:
   - gvisor-assets-job.yaml
   - kvm-pool.yaml
   - conformance-job.yaml
+  # Gate X5 for fork children (HOME-924).
+  - x5
 
 configMapGenerator:
   # The fork build pins and the script that stages them (gvisor-assets-job.yaml).

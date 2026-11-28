@@ -131,50 +131,73 @@ def _mounted_gateway_config(docs: list[dict]) -> dict:
     return _one(docs, "ConfigMap", mounted)
 
 
-def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
-    applied = _mounted_gateway_config(_docs())
-    config = yaml.safe_load(applied["data"]["config.yaml"])
-    (route,) = next(
+def _internal_listener(config: dict, protocol: str) -> dict:
+    return next(
         listener
         for bind in config["binds"]
         if bind.get("mode") == "internal"
         for listener in bind["listeners"]
-        if listener["protocol"] == "HTTP"
-    )["routes"]
-    (check,) = route["policies"].pop("extAuthz")["conditional"]
-    assert check["condition"] == (
-        'destination.hostname == "hindsight-api.hindsight.svc.cluster.local"'
-        " && destination.port == 8888"
+        if listener["protocol"] == protocol
     )
-    assert check["host"] == "egress-scan.ate-system.svc:8080"
-    assert check["failureMode"] == "deny"
-    assert check["protocol"] == {
-        "grpc": {
-            "context": {"route": "hindsight"},
-            "metadata": {"actor": '{"spiffe": source.spiffeId}'},
+
+
+def test_egress_scan_changes_only_the_scanned_routes() -> None:
+    applied = _mounted_gateway_config(_docs())
+    config = yaml.safe_load(applied["data"]["config.yaml"])
+    (route,) = _internal_listener(config, "HTTP")["routes"]
+    checks = route["policies"].pop("extAuthz")["conditional"]
+    wanted = [
+        ("hindsight-api.hindsight.svc.cluster.local", 8888, "hindsight"),
+        # Bosun's browser (HOME-932): the URLs and text the agent types.
+        ("browser-mcp.factory-discord.svc.cluster.local", 8080, "browser"),
+    ]
+    assert len(checks) == len(wanted)
+    for check, (host, port, name) in zip(checks, wanted):
+        assert check["condition"] == (
+            f'destination.hostname == "{host}" && destination.port == {port}'
+        )
+        assert check["host"] == "egress-scan.ate-system.svc:8080"
+        assert check["failureMode"] == "deny"
+        assert check["protocol"] == {
+            "grpc": {
+                "context": {"route": name},
+                "metadata": {"actor": '{"spiffe": source.spiffeId}'},
+            }
         }
-    }
-    assert check["includeRequestBody"] == {
-        "maxRequestBytes": 524288,
-        "allowPartialMessage": False,
-        "packAsBytes": True,
-    }
-    assert check["policies"] == {"http": {"requestTimeout": "80ms"}}
+        assert check["includeRequestBody"] == {
+            "maxRequestBytes": 524288,
+            "allowPartialMessage": False,
+            "packAsBytes": True,
+        }
+        assert check["policies"] == {"http": {"requestTimeout": "80ms"}}
+    # HOME-938: the terminated HTTPS catch-all route scans abliteration.ai.
+    (tls_route,) = [
+        r for r in _internal_listener(config, "HTTPS")["routes"] if "name" not in r
+    ]
+    (tls_check,) = tls_route["policies"].pop("extAuthz")["conditional"]
+    assert tls_check["condition"] == (
+        'destination.hostname == "api.abliteration.ai" && destination.port == 443'
+    )
+    assert tls_check["failureMode"] == "deny"
+    assert tls_check["protocol"]["grpc"]["context"] == {"route": "abliteration"}
+    for key in ("host", "includeRequestBody", "policies"):
+        assert tls_check[key] == checks[0][key], key
     assert config == yaml.safe_load((_HERE / "atenet-egress-config.yaml").read_text())
 
 
 def test_the_metric_route_allowlist_names_the_scanned_hosts() -> None:
     # The route label of the scanner metrics is bounded by an allowlist, and a
     # scanned host outside it would count as "other" for ever.
-    policy = yaml.safe_load((_HERE / "egress-scan" / "gateway-policy.yaml").read_text())
     scanned = set()
-    for check in policy["conditional"]:
-        match = re.fullmatch(
-            r'destination\.hostname == "([a-z0-9.-]+)" && destination\.port == ([0-9]+)',
-            check["condition"],
-        )
-        assert match, f"cannot read the scanned host from {check['condition']!r}"
-        scanned.add(f"{match[1]}:{match[2]}")
+    for name in ("gateway-policy.yaml", "gateway-policy-tls.yaml"):
+        policy = yaml.safe_load((_HERE / "egress-scan" / name).read_text())
+        for check in policy["conditional"]:
+            match = re.fullmatch(
+                r'destination\.hostname == "([a-z0-9.-]+)" && destination\.port == ([0-9]+)',
+                check["condition"],
+            )
+            assert match, f"cannot read the scanned host from {check['condition']!r}"
+            scanned.add(f"{match[1]}:{match[2]}")
     chart_values = _HERE.parent / "egress-scan" / "chart" / "values.yaml"
     routes = set(yaml.safe_load(chart_values.read_text())["metrics"]["routes"])
     assert scanned == routes, (scanned, routes)
@@ -247,7 +270,14 @@ def test_the_receiver_route_keeps_substrate_authorization_and_scoped_mtls() -> N
     config_name = "atenet-egress-agentgateway-config"
     current = yaml.safe_load((_HERE / "atenet-egress-config.yaml").read_text())
     mounted = yaml.safe_load(_mounted_gateway_config(docs)["data"]["config.yaml"])
-    assert mounted["binds"][0]["listeners"][0] == current["binds"][0]["listeners"][0]
+    mounted_https = mounted["binds"][0]["listeners"][0]
+    # The egress scan of the catch-all route (HOME-938) is the only change;
+    # test_egress_scan_changes_only_the_hindsight_and_abliteration_routes
+    # checks it.
+    for r in mounted_https["routes"]:
+        if "name" not in r:
+            r["policies"].pop("extAuthz")
+    assert mounted_https == current["binds"][0]["listeners"][0]
     upstream_path = _HERE / "upstream/substrate/atenet-egress.yaml"
     upstream = [item for item in yaml.safe_load_all(upstream_path.read_text()) if item]
     original = yaml.safe_load(
@@ -467,10 +497,12 @@ def test_microvm_spike_namespace_allows_only_the_router_and_the_gateway() -> Non
 _ROUTER_CLIENTS = [
     "spiffe://cluster.local/ns/ate-system/sa/atenet-client",
     "spiffe://cluster.local/ns/kagent/sa/kagent-controller",
+    # The fork Jobs and later the fork runner (Joe, 2026-11-28, HOME-924).
+    "spiffe://cluster.local/ns/ate-system/sa/ate-client",
 ]
 
 
-def test_router_allows_exactly_the_two_client_identities() -> None:
+def test_router_allows_exactly_the_three_client_identities() -> None:
     # The router checks a client by its SPIFFE ID alone, and an allowed ID can
     # reach any actor in any atespace. engine-gate left the list when Joe
     # deferred the Semgrep tier (2026-11-24). egress-scan, which parses
@@ -825,9 +857,12 @@ _FORK_OBJECTS = {
     ("CiliumNetworkPolicy", "ate-system", "ate-api-server-gvisor-fork-conformance"),
     ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-assets-init"),
     ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-conformance"),
+    ("CiliumNetworkPolicy", "ate-system", "ate-api-server-gvisor-fork-x5"),
+    ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-x5"),
+    ("Job", "ate-system", "gvisor-fork-x5-3"),
     ("CiliumNetworkPolicy", _FORK_NS, "substrate-workers"),
     ("Job", "ate-system", "gvisor-fork-assets-init"),
-    ("Job", "ate-system", "gvisor-fork-conformance-6"),
+    ("Job", "ate-system", "gvisor-fork-conformance-7"),
     ("Namespace", None, _FORK_NS),
     ("SandboxConfig", None, "gvisor-fork"),
     ("ServiceAccount", _FORK_NS, "fork-worker"),
@@ -867,11 +902,12 @@ def test_gvisor_fork_slice_is_wired() -> None:
     ).stdout
     rendered = {key(d) for d in yaml.safe_load_all(slice_docs) if d}
     assert rendered <= {key(d) for d in docs}
-    # The two generated ConfigMaps carry a content hash in their names.
+    # The three generated ConfigMaps carry a content hash in their names.
     configmaps = {k for k in rendered if k[0] == "ConfigMap"}
     assert {k[2].rsplit("-", 1)[0] for k in configmaps} == {
         "gvisor-fork-assets",
         "gvisor-fork-conformance",
+        "gvisor-fork-x5",
     }
     assert rendered - configmaps == _FORK_OBJECTS
     classes = {
@@ -894,7 +930,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
     # its own (and deletes it), so the worker holds no seed.
     pool = _one(docs, "WorkerPool", "gvisor-fork")
     assert pool["spec"]["replicas"] == 1
-    conformance = _one(docs, "Job", "gvisor-fork-conformance-6")
+    conformance = _one(docs, "Job", "gvisor-fork-conformance-7")
     assert conformance["spec"]["suspend"] is False
     # A Pending Job leaves the Application Degraded and the cluster is request
     # tight, so the pod requests little.
@@ -913,7 +949,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
         if v["name"] == "config"
     ]
     assert config_volume["configMap"]["name"] == conformance_map
-    assert conformance_map == "gvisor-fork-conformance-tgf4tdtbht"
+    assert conformance_map == "gvisor-fork-conformance-khtmk9cc87"
     assert not [
         d for d in docs if d["metadata"]["name"].startswith("gvisor-fork-latency")
     ]
@@ -1076,13 +1112,13 @@ def test_fork_seed_gate_is_on() -> None:
 
 # 8cf248b96e08 contains the earlier KVM-only ForkSeed patch (1e7a877d0ca3), so
 # both builds give the gate to KVM pools' workers only.
-_KVM_ONLY_GATE_BUILDS = {"fork-1e7a877d0ca3", "fork-8cf248b96e08"}
+_KVM_ONLY_GATE_BUILDS = {"fork-1e7a877d0ca3", "fork-8cf248b96e08", "fork-c7f37a993862"}
 _FORK_IMAGES = "ghcr.io/jomcgi-org/homelab/substrate-fork/"
-_FORK_TAG = "fork-8cf248b96e08"
+_FORK_TAG = "fork-c7f37a993862"
 _FORK_DIGESTS = {
-    "ateapi": "b4feb50d685dbaedaa5433ba77ae9b6c9181c30b81bd3e0522cca102b9865835",
-    "atecontroller": "d8386836296bb7554a0dc12ba9415c154e17f933ecee37f70cb1fe715efcb55a",
-    "atelet": "f72e25955d72f2475ac15342b6073857c603eabd5486c7ddd77344999f40a1e0",
+    "ateapi": "c8389dcf2f0d5229db59125a9a5a0d26cc284783b9a6dad772901471d8018a5b",
+    "atecontroller": "3750e645a59ba980bb3b4c502940f267060cb37157b980bca0eb69ca809992d1",
+    "atelet": "da40d52d3d83164d706c9278fb6cda8b9b3ef3bdb652946b3451a0541b39a736",
 }
 
 
@@ -1137,7 +1173,7 @@ def test_fork_images_share_one_fork_commit_tag() -> None:
     refs["workerpool/gvisor-fork"] = _one(docs, "WorkerPool", "gvisor-fork")["spec"][
         "workerImage"
     ]
-    job = _one(docs, "Job", "gvisor-fork-conformance-6")
+    job = _one(docs, "Job", "gvisor-fork-conformance-7")
     (cli,) = [
         v["image"]["reference"]
         for v in job["spec"]["template"]["spec"]["volumes"]
@@ -1207,10 +1243,10 @@ def _check_gateway_covers_detector(deadline: str, gateway_timeout: str) -> None:
 
 def test_gateway_timeout_covers_the_detector_deadline() -> None:
     policy = yaml.safe_load((_HERE / "egress-scan" / "gateway-policy.yaml").read_text())
-    (check,) = policy["conditional"]
-    timeout = check["policies"]["http"]["requestTimeout"]
-    assert timeout == _GATEWAY_TIMEOUT
-    _check_gateway_covers_detector(_detector_values()["deadline"], timeout)
+    for check in policy["conditional"]:
+        timeout = check["policies"]["http"]["requestTimeout"]
+        assert timeout == _GATEWAY_TIMEOUT
+        _check_gateway_covers_detector(_detector_values()["deadline"], timeout)
 
 
 def test_the_coupling_check_fails_when_the_gateway_is_too_short() -> None:

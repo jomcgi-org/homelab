@@ -11,6 +11,11 @@ resources:
 # Keep the script ConfigMap distinct from the tenant Secret. Kustomize also
 # rewrites matching Role resourceNames, including rules for Secrets.
 configMapGenerator:
+  # The MCP recall binding (HOME-909), mounted at /etc/hindsight/extensions.
+  - name: hindsight-bindings
+    namespace: hindsight-discord
+    files:
+      - bindings.py
   - name: hindsight-keys-script
     namespace: hindsight-discord
     files:

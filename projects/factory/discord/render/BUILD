@@ -14,7 +14,11 @@ exports_files([
 
 rust_binary(
     name = "factory-discord-render",
-    srcs = ["src/main.rs"],
+    srcs = [
+        "src/main.rs",
+        "src/table.rs",
+    ],
+    compile_data = glob(["theme/*.json"]),
     crate_name = "factory_discord_render",
     edition = "2021",
     deps = [
@@ -49,11 +53,27 @@ pkg_tar(
     package_dir = "/usr/share/fonts/truetype/dejavu",
 )
 
+pkg_tar(
+    name = "inter_fonts",
+    srcs = ["@discord_render_inter//:fonts"],
+    mode = "0644",
+    package_dir = "/usr/share/fonts/truetype/inter",
+)
+
+pkg_tar(
+    name = "emoji_fonts",
+    srcs = ["@discord_render_emoji//file"],
+    mode = "0644",
+    package_dir = "/usr/share/fonts/truetype/noto",
+)
+
 tar(
     name = "licenses",
     srcs = [
         "goldens/LICENSE",
+        "@discord_render_emoji_license//file",
         "@discord_render_fonts//:LICENSE",
+        "@discord_render_inter//:LICENSE.txt",
         "@discord_render_vl_convert//:bin/LICENSE",
         "@discord_render_vl_convert//:bin/thirdparty_font.md",
         "@discord_render_vl_convert//:bin/thirdparty_javascript.md",
@@ -62,6 +82,8 @@ tar(
     mtree = [
         "./usr/share/doc/mmdr/LICENSE type=file content=$(execpath goldens/LICENSE)",
         "./usr/share/doc/dejavu/LICENSE type=file content=$(execpath @discord_render_fonts//:LICENSE)",
+        "./usr/share/doc/inter/LICENSE type=file content=$(execpath @discord_render_inter//:LICENSE.txt)",
+        "./usr/share/doc/noto-emoji/LICENSE type=file content=$(execpath @discord_render_emoji_license//file)",
     ] + [
         "./usr/share/doc/vl-convert/%s type=file content=$(execpath @discord_render_vl_convert//:bin/%s)" % (file, file)
         for file in [
@@ -81,7 +103,9 @@ apko_image(
     repository = "ghcr.io/jomcgi/homelab/projects/factory/discord/render",
     tars = [
         ":executables",
+        ":emoji_fonts",
         ":fonts",
+        ":inter_fonts",
         ":licenses",
     ],
 )

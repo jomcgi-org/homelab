@@ -1,0 +1,67 @@
+"""Each page loads the house design system from /_lib/ with matching hashes."""
+
+import base64
+import hashlib
+import os
+import re
+from pathlib import Path
+
+LIBS = dict(
+    zip(os.environ["LIB_NAMES"].split(), os.environ["LIB_FILES"].split(), strict=True)
+)
+PAGES = os.environ["PAGES"].split()
+REF = re.compile(r'(?:src|href)="/_lib/([^"]+)"\s+integrity="([^"]+)"')
+# What every page loads: the stylesheet, then the six scripts in order.
+HOUSE = [
+    "house-2.css",
+    "lucide-1.72.0.min.js",
+    "mermaid-12.3.0.min.js",
+    "vega-6.4.0.min.js",
+    "vega-lite-6.5.0.min.js",
+    "vega-embed-7.3.0.min.js",
+    "house-2.js",
+]
+
+
+# Published pages pin these hashes: a change to a house file breaks them, so
+# a change goes in a new file (house-3) with a new entry here.
+FROZEN = {
+    "house-1.css": "sha384-oWMsm4jALoVOD2EWe0AkXNEKEt+4L3gH2oWjZ4puAs/OZARfQJFLZBG+Tlezyhl1",
+    "house-1.js": "sha384-9EOYVkdNo9W4GjxIL8cWRcTyJMNXZjkZn/PalibQakU5HfCPm2WvBFRQ6of/891+",
+    "house-2.css": "sha384-a2fadyQmBhj6Aujn4v94i0XtFMp6Ab2iatksRuqSrURuIf26LE2KB0rBR5ouNLB2",
+    "house-2.js": "sha384-QnBr/08aY6bzFwE+905otA0BI+TfSTDpsUrz/7FoJ5xlO9gNcC2ugi/gsjDa6H3E",
+}
+
+
+def sri(name):
+    digest = hashlib.sha384(Path(LIBS[name]).read_bytes()).digest()
+    return "sha384-" + base64.b64encode(digest).decode()
+
+
+def test_pages_load_the_house_files_with_their_hashes():
+    for page in PAGES:
+        refs = REF.findall(Path(page).read_text())
+        assert [name for name, _ in refs] == HOUSE, page
+        for name, integrity in refs:
+            assert integrity == sri(name), (page, name)
+
+
+def test_pages_load_nothing_else():
+    for page in PAGES:
+        html = Path(page).read_text()
+        for value in re.findall(r"""(?:src|href)\s*=\s*["']([^"']*)""", html):
+            assert value.startswith(("/_lib/", "#")), (page, value)
+        assert "@import" not in html and "url(" not in html, page
+
+
+def test_the_stylesheets_load_fonts_from_lib_only():
+    for name in ("house-1.css", "house-2.css"):
+        css = Path(LIBS[name]).read_text()
+        for url in re.findall(r"url\(\"?([^\")]+)", css):
+            assert url.startswith("/_lib/"), (name, url)
+            assert url.removeprefix("/_lib/") in LIBS, (name, url)
+
+
+def test_house_files_are_frozen():
+    for name, integrity in FROZEN.items():
+        assert sri(name) == integrity, f"{name} changed: add a new version instead"

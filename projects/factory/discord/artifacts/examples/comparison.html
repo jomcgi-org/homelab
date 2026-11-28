@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Draw big diagrams in the browser</title>
+    <link
+      rel="stylesheet"
+      href="/_lib/house-2.css"
+      integrity="sha384-a2fadyQmBhj6Aujn4v94i0XtFMp6Ab2iatksRuqSrURuIf26LE2KB0rBR5ouNLB2"
+      crossorigin="anonymous"
+    />
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <span class="eyebrow"><i data-lucide="scale"></i> Decision</span>
+        <h1>Draw big diagrams in the browser with ELK</h1>
+        <p class="lede">
+          Three ways to draw an architecture with groups and fan-out. Only ELK
+          kept every edge out of the groups, at no server cost.
+        </p>
+      </header>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>The options</h2>
+          <p>What each engine costs and where it falls short.</p>
+        </div>
+        <div class="compare">
+          <article class="option">
+            <h3>Inline renderer (mmdr)</h3>
+            <p class="muted">Rust, in the Discord bridge's renderer.</p>
+            <ul>
+              <li class="pro">
+                <i data-lucide="check"></i>0.4 s and 17 MB per diagram
+              </li>
+              <li class="pro">
+                <i data-lucide="check"></i>Image appears right in the chat
+              </li>
+              <li class="con">
+                <i data-lucide="x"></i>Edges cross groups and labels
+              </li>
+            </ul>
+          </article>
+          <article class="option pick">
+            <span class="badge">Recommended</span>
+            <h3>Browser with ELK</h3>
+            <p class="muted">Mermaid 12 in an artifact page.</p>
+            <ul>
+              <li class="pro">
+                <i data-lucide="check"></i>No edge through a node or group
+              </li>
+              <li class="pro">
+                <i data-lucide="check"></i>Zoom, light and dark, live charts
+              </li>
+              <li class="con">
+                <i data-lucide="x"></i>A link to open, not an inline image
+              </li>
+            </ul>
+          </article>
+          <article class="option">
+            <h3>Headless Chrome service</h3>
+            <p class="muted">Screenshots of artifact pages.</p>
+            <ul>
+              <li class="pro">
+                <i data-lucide="check"></i>Best layout and an inline image
+              </li>
+              <li class="con">
+                <i data-lucide="x"></i>About 130 MB and 1.1 s per render
+              </li>
+              <li class="con">
+                <i data-lucide="x"></i>A browser to run and sandbox
+              </li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Side by side</h2>
+          <p>Measured on the same 15-node architecture diagram.</p>
+        </div>
+        <div class="table-wrap" tabindex="0">
+          <table class="table">
+            <thead>
+              <tr>
+                <th scope="col">Engine</th>
+                <th scope="col" class="num">Time</th>
+                <th scope="col" class="num">Memory</th>
+                <th scope="col">Edges through groups</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>mmdr</td>
+                <td class="num">0.4 s</td>
+                <td class="num">17 MB</td>
+                <td><span class="badge bad">4</span></td>
+              </tr>
+              <tr>
+                <td>Mermaid, dagre</td>
+                <td class="num">1.1 s</td>
+                <td class="num">130 MB</td>
+                <td><span class="badge warn">1</span></td>
+              </tr>
+              <tr>
+                <td>Mermaid, ELK</td>
+                <td class="num">1.2 s</td>
+                <td class="num">130 MB</td>
+                <td><span class="badge good">0</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="callout">
+          <i data-lucide="info"></i>
+          <p>
+            <strong>When to revisit</strong>Keep inline images for small
+            diagrams. Revisit a screenshot service if links get too little use.
+          </p>
+        </div>
+      </section>
+
+      <footer class="page-foot">
+        An example page for Bosun; the numbers are made up.
+      </footer>
+    </main>
+    <script
+      src="/_lib/lucide-1.72.0.min.js"
+      integrity="sha384-LJKEYnLhvei+XTxKjLahwKnS/kWFWfkb3n+v8n7YKWAAS3oamYHQyT4Bwch3XplL"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/mermaid-12.3.0.min.js"
+      integrity="sha384-HHW54r639fK42Ip0coGF3mz8oSiGn0eEoWNTLs75X7H63pLSDBa0Tqs0RwGmLlXE"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/vega-6.4.0.min.js"
+      integrity="sha384-VKdcJr3ZaBIJMbVcopTAI/JEuUkSY6qnwVu9iLuw0DnQ9gQ1JjsfZJhXFQAgNi43"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/vega-lite-6.5.0.min.js"
+      integrity="sha384-pV2l7nzmyxZh02knvUH7N8zvtyCYsYiGt+SsE/emG/dFiBI6G0YJZFZ2FzEX72P3"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/vega-embed-7.3.0.min.js"
+      integrity="sha384-Muy1QRxYFeNrA1zShc1KtN4OfipkR/61gt+HWqN57c1Zxu3Oe16TsilsruVVjfKL"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="/_lib/house-2.js"
+      integrity="sha384-QnBr/08aY6bzFwE+905otA0BI+TfSTDpsUrz/7FoJ5xlO9gNcC2ugi/gsjDa6H3E"
+      crossorigin="anonymous"
+    ></script>
+  </body>
+</html>

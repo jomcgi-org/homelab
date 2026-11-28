@@ -15,6 +15,14 @@ import { cells, type MapData } from "./stars-geometry";
 import type { Site } from "./stars-model";
 import { watchMapHealth } from "./map-errors";
 
+// The base map follows the page scheme, so a dark page gets a dark map.
+const STYLES = {
+  light: "https://tiles.openfreemap.org/styles/liberty",
+  dark: "https://tiles.openfreemap.org/styles/dark",
+};
+const darkScheme = () => matchMedia("(prefers-color-scheme: dark)");
+const baseStyle = () => (darkScheme().matches ? STYLES.dark : STYLES.light);
+
 export default function StarsMap(
   props: MapData & { onSelect: (id: Site["id"] | null) => void },
 ) {
@@ -30,6 +38,8 @@ export default function StarsMap(
     () => cells(props),
     [props.sites, props.mode, props.darkness, props.activeNights, props.now],
   );
+  const latest = useRef(data);
+  latest.current = data;
   useEffect(() => {
     const container = host.current!;
     let instance: LibreMap;
@@ -44,7 +54,7 @@ export default function StarsMap(
         zoom: 5.5,
         attributionControl: { compact: true },
       });
-      instance.setStyle("https://tiles.openfreemap.org/styles/liberty");
+      instance.setStyle(baseStyle());
     } catch {
       setFailed(true);
       return;
@@ -88,11 +98,10 @@ export default function StarsMap(
       if (feature) onSelect.current(feature.properties.id as Site["id"]);
     };
     canvas.addEventListener("keydown", keyboard);
-    instance.on("load", () => {
-      instance.addSource("stars", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
+    // A new base style drops the site cells, so each style load adds them.
+    const addCells = () => {
+      if (instance.getSource("stars")) return;
+      instance.addSource("stars", { type: "geojson", data: latest.current });
       instance.addLayer({
         id: "stars-cells",
         type: "fill",
@@ -103,6 +112,10 @@ export default function StarsMap(
           "fill-antialias": false,
         },
       });
+    };
+    instance.on("style.load", addCells);
+    instance.on("load", () => {
+      addCells();
       setReady(true);
       setFailed(false);
     });
@@ -111,17 +124,16 @@ export default function StarsMap(
       if (feature) onSelect.current(feature.properties.id as Site["id"]);
     });
     watchMapHealth(instance, ["stars"], () => setFailed(true));
-    const recolor = () => {
-      if (instance.getLayer("stars-cells"))
-        instance.setPaintProperty("stars-cells", "fill-color", ramp());
-    };
-    const scheme = matchMedia("(prefers-color-scheme: dark)");
-    scheme.addEventListener("change", recolor);
+    // A scheme change loads the other base style. Its style.load adds the
+    // cells again with the new scheme's colours.
+    const restyle = () => instance.setStyle(baseStyle(), { diff: false });
+    const scheme = darkScheme();
+    scheme.addEventListener("change", restyle);
     const observer = new ResizeObserver(() => instance.resize());
     observer.observe(container);
     return () => {
       observer.disconnect();
-      scheme.removeEventListener("change", recolor);
+      scheme.removeEventListener("change", restyle);
       canvas.removeEventListener("keydown", keyboard);
       instance.remove();
       map.current = null;

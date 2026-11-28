@@ -47,6 +47,7 @@ def test_rendered_host_access_audit(tmp_path):
         "factory-discord-agent",
         "factory-r-homelab",
         "factory-r-homelab-review",
+        "home-assistant",  # zigbee2mqtt mounts the Zigbee dongle device.
         "kube-system",
         "otel-collector",
         "t3",  # platform-factory/t3/resources/relay.yaml mounts a hostPath.

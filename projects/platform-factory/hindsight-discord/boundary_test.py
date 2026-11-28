@@ -1,4 +1,4 @@
-"""Probe Discord REST authentication and disabled MCP in the pinned image.
+"""Probe Discord REST authentication and the MCP recall binding in the pinned image.
 
 BUILD runs this inside ghcr.io/vectorize-io/hindsight-api (exec_properties),
 as the image's own user, with no network. Hindsight uses its embedded
@@ -22,7 +22,11 @@ import yaml
 ROOT = Path(__file__).resolve().parent
 HINDSIGHT = Path("/app/api/.venv/bin/hindsight-api")
 TENANT_KEY = "t" * 64
-SECRET_VALUES = {"tenant-api-key": TENANT_KEY}
+RECALL_TOKEN = "r" * 64
+SECRET_VALUES = {"tenant-api-key": TENANT_KEY, "recall-token": RECALL_TOKEN}
+# A bank in the recall binding (resources/hindsight.yaml MCP_BINDINGS).
+BANK = "discord-1501965852042330302"
+OTHER = "discord-1"
 
 
 def deployed_env():
@@ -50,10 +54,12 @@ def deployed_env():
         del env[name]
     env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] = "local"
     # Nor can it reach the decision model; recall then keeps the reranker
-    # order (rrf). Authentication and disabled MCP do not depend on either.
+    # order (rrf). Authentication and the MCP binding do not depend on either.
     for name in [n for n in env if n.startswith("HINDSIGHT_API_DECISION_MODEL_")]:
         del env[name]
     env["HINDSIGHT_API_DECISION_MODEL_PROVIDER"] = "none"
+    # The pod mounts resources/bindings.py at the Deployment's PYTHONPATH.
+    env["PYTHONPATH"] = str(ROOT / "resources")
     return env
 
 
@@ -133,32 +139,167 @@ def test_rest_requires_the_tenant_key(server, token, status):
     assert request(server, "GET", "/v1/default/banks", token)[0] == status
 
 
-@pytest.mark.parametrize("path", ["/mcp/", "/mcp/discord-test/"])
-@pytest.mark.parametrize("token", [None, TENANT_KEY])
-def test_mcp_is_not_mounted(server, path, token):
-    assert (
-        request(
-            server,
-            "POST",
-            path,
-            token,
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize"},
-        )[0]
-        == 404
+class MCP:
+    """A minimal streamable-HTTP MCP client: initialize, then JSON-RPC calls."""
+
+    def __init__(self, base, path, token, headers=None):
+        self.base, self.path, self.token, self.next_id = base, path, token, 1
+        self.headers = {
+            "Accept": "application/json, text/event-stream",
+            **(headers or {}),
+        }
+        status, headers, _ = self.post(
+            "initialize",
+            {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "hindsight-discord-boundary-test",
+                    "version": "1",
+                },
+            },
+        )
+        self.status = status
+        session = {k.lower(): v for k, v in headers.items()}.get("mcp-session-id")
+        if session:
+            self.headers["mcp-session-id"] = session
+        if status == 200:
+            self.post("notifications/initialized", None, notify=True)
+
+    def post(self, method, params, notify=False):
+        body = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            body["params"] = params
+        if not notify:
+            body["id"] = self.next_id
+            self.next_id += 1
+        return request(self.base, "POST", self.path, self.token, body, self.headers)
+
+    def call(self, method, params=None):
+        status, _, text = self.post(method, params or {})
+        assert status == 200, (status, text)
+        text = text.strip()
+        if text.startswith("{"):
+            return json.loads(text)
+        data = [
+            line[5:].strip() for line in text.splitlines() if line.startswith("data:")
+        ]
+        return json.loads(data[-1])
+
+
+def refused(reply):
+    # Hindsight returns a validator refusal as the recall result's error.
+    return (
+        "error" in reply
+        or reply["result"].get("isError") is True
+        or "Operation outside MCP binding" in json.dumps(reply)
     )
 
 
-def test_rest_recall_works_with_the_tenant_key(server):
-    # Hindsight 1.2.1 answers recall on a missing bank with 404, so the
-    # tenant key creates the bank first.
+@pytest.fixture(scope="module")
+def bank(server):
+    # Hindsight 1.2.1 answers recall on a missing bank with 404.
     status, _, body = request(
-        server, "PUT", "/v1/default/banks/discord-test", TENANT_KEY, {}
+        server, "PUT", f"/v1/default/banks/{BANK}", TENANT_KEY, {}
     )
     assert status in (200, 201), body
+    return BANK
+
+
+@pytest.mark.parametrize("token", [None, "wrong-key", TENANT_KEY])
+def test_mcp_takes_only_the_recall_token(server, token):
+    assert MCP(server, "/mcp/", token).status == 401
+
+
+def test_recall_token_cannot_use_rest(server):
+    assert request(server, "GET", "/v1/default/banks", RECALL_TOKEN)[0] == 401
+    assert (
+        request(server, "DELETE", f"/v1/default/banks/{BANK}", RECALL_TOKEN)[0] == 401
+    )
+
+
+def test_recall_token_lists_only_recall_and_recalls_a_named_bank(server, bank):
+    client = MCP(server, "/mcp/", RECALL_TOKEN)
+    assert client.status == 200
+    tools = client.call("tools/list")["result"]["tools"]
+    assert [tool["name"] for tool in tools] == ["recall"]
+    reply = client.call(
+        "tools/call",
+        {"name": "recall", "arguments": {"query": "plans", "bank_id": bank}},
+    )
+    assert not refused(reply), reply
+    block = reply["result"]["content"][0]["text"]
+    assert block.startswith("<untrusted_memory>") and block.endswith(
+        "</untrusted_memory>"
+    )
+    payload = json.loads(
+        block.removeprefix("<untrusted_memory>").removesuffix("</untrusted_memory>")
+    )
+    assert "results" in payload and "error" not in payload, payload
+
+
+@pytest.mark.parametrize(
+    "name,arguments",
+    [
+        ("retain", {"content": "planted", "bank_id": BANK}),
+        ("reflect", {"query": "plans", "bank_id": BANK}),
+        ("delete_bank", {"bank_id": BANK}),
+        ("list_banks", {}),
+    ],
+)
+def test_recall_token_refuses_other_banks_and_tools(server, bank, name, arguments):
+    reply = MCP(server, "/mcp/", RECALL_TOKEN).call(
+        "tools/call", {"name": name, "arguments": arguments}
+    )
+    assert refused(reply), reply
+
+
+@pytest.fixture(scope="module")
+def other_bank(server):
+    # A real bank outside the binding, so a refusal is the binding's.
+    status, _, body = request(
+        server, "PUT", f"/v1/default/banks/{OTHER}", TENANT_KEY, {}
+    )
+    assert status in (200, 201), body
+    return OTHER
+
+
+def test_recall_token_cannot_read_a_bank_outside_the_binding(server, bank, other_bank):
+    reply = MCP(server, "/mcp/", RECALL_TOKEN).call(
+        "tools/call",
+        {"name": "recall", "arguments": {"query": "plans", "bank_id": other_bank}},
+    )
+    assert "Operation outside MCP binding" in json.dumps(reply), reply
+
+
+def test_recall_without_bank_id_is_refused(server, bank):
+    reply = MCP(server, "/mcp/", RECALL_TOKEN).call(
+        "tools/call", {"name": "recall", "arguments": {"query": "plans"}}
+    )
+    assert "recall requires bank_id" in json.dumps(reply), reply
+
+
+@pytest.mark.parametrize(
+    "path,headers",
+    [("/mcp/", {"X-Bank-Id": BANK}), (f"/mcp/{BANK}/", {})],
+    ids=["bank-header", "bank-path"],
+)
+def test_a_session_fixed_to_a_bank_gets_no_tools(
+    server, bank, other_bank, path, headers
+):
+    # Its recall would ignore the call's bank_id and read the session bank.
+    client = MCP(server, path, RECALL_TOKEN, headers)
+    assert client.call("tools/list")["result"]["tools"] == []
+    for arguments in ({"query": "plans"}, {"query": "plans", "bank_id": other_bank}):
+        reply = client.call("tools/call", {"name": "recall", "arguments": arguments})
+        assert refused(reply), reply
+
+
+def test_rest_recall_works_with_the_tenant_key(server, bank):
     status, _, body = request(
         server,
         "POST",
-        "/v1/default/banks/discord-test/memories/recall",
+        f"/v1/default/banks/{bank}/memories/recall",
         TENANT_KEY,
         {
             "query": "acceptance fact",

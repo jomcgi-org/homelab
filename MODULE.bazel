@@ -113,6 +113,88 @@ http_archive(
     urls = ["https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.tar.bz2"],
 )
 
+# Renderer house fonts: Inter for text, Noto Color Emoji for emoji.
+http_archive(
+    name = "discord_render_inter",
+    build_file_content = 'exports_files(["LICENSE.txt"])\nfilegroup(name = "fonts", srcs = ["extras/ttf/Inter-%s.ttf" % w for w in ["Regular", "Medium", "SemiBold", "Bold"]], visibility = ["//visibility:public"])',
+    sha256 = "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e",
+    urls = ["https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip"],
+)
+
+http_file(
+    name = "discord_render_emoji",
+    downloaded_file_path = "NotoColorEmoji.ttf",
+    sha256 = "72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b",
+    urls = ["https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/NotoColorEmoji.ttf"],
+)
+
+http_file(
+    name = "discord_render_emoji_license",
+    downloaded_file_path = "LICENSE",
+    sha256 = "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+    urls = ["https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/LICENSE"],
+)
+
+# Browser libraries that artifact pages load from artifact.jomcgi.dev/_lib/
+# (projects/factory/discord/libs). Each is the npm package's own build file.
+http_archive(
+    name = "discord_lib_mermaid",
+    build_file_content = 'exports_files(["dist/mermaid.min.js"])',
+    sha256 = "be0684e8d20bfc874df12c0f04927a5c482f57f2200eec54cca52a4583fd4040",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/mermaid/-/mermaid-12.3.0.tgz"],
+)
+
+http_archive(
+    name = "discord_lib_vega",
+    build_file_content = 'exports_files(["build/vega.min.js"])',
+    sha256 = "3521fb6ff68a94a40323954f0ba4484ba4014b157bfd37f89a3b063082320c42",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/vega/-/vega-6.4.0.tgz"],
+)
+
+http_archive(
+    name = "discord_lib_vega_lite",
+    build_file_content = 'exports_files(["build/vega-lite.min.js"])',
+    sha256 = "811230a6bfd2cdbfc359d0c38f624a90df86657b7f251b67be88bcc4eee32b7f",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/vega-lite/-/vega-lite-6.5.0.tgz"],
+)
+
+http_archive(
+    name = "discord_lib_vega_embed",
+    build_file_content = 'exports_files(["build/vega-embed.min.js"])',
+    sha256 = "d9a958ced3240f0418df7d5e12e97dba6e63cecda15b8403e47a0db7eb6ea859",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/vega-embed/-/vega-embed-7.3.0.tgz"],
+)
+
+# Icons and fonts for the artifact house design system
+# (projects/factory/discord/libs/house), served from /_lib/ like the above.
+http_archive(
+    name = "discord_lib_lucide",
+    build_file_content = 'exports_files(["dist/umd/lucide.min.js", "LICENSE"])',
+    sha256 = "6fe747aa52264b8c990d0b354561424cc4622602db72bb3ed02e682c43fa2a01",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/lucide/-/lucide-1.72.0.tgz"],
+)
+
+http_archive(
+    name = "discord_lib_inter",
+    build_file_content = 'exports_files(["files/inter-latin-wght-normal.woff2", "LICENSE"])',
+    sha256 = "d26710dd38e7217484a1d47ee76c024977ec550548876f26d06ed1844af09a14",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/@fontsource-variable/inter/-/inter-5.3.0.tgz"],
+)
+
+http_archive(
+    name = "discord_lib_schibsted_grotesk",
+    build_file_content = 'exports_files(["files/schibsted-grotesk-latin-wght-normal.woff2", "LICENSE"])',
+    sha256 = "dd729607754cfbf3f4c7f0872ba6d727e953a3d2b533184afe009b134f04f996",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/@fontsource-variable/schibsted-grotesk/-/schibsted-grotesk-5.3.0.tgz"],
+)
+
 # Private API server for the factory credential admission test. Match the
 # factory cluster's Kubernetes minor; CI executors are Linux amd64. Checksums
 # come from controller-tools/envtest-releases.yaml and the ESO chart index.
@@ -325,7 +407,7 @@ go_deps.gazelle_override(
 # Run 'bazel mod tidy' to update this.
 # org_golang_google_grpc_cmd_protoc_gen_go_grpc was kept for the EmberVM
 # node.proto codegen, deleted with the hub (HOME-262). `bazel mod tidy` may drop it.
-use_repo(go_deps, "com_github_bazelbuild_buildtools", "com_github_betterleaks_betterleaks_v2", "com_github_envoyproxy_go_control_plane", "com_github_envoyproxy_go_control_plane_envoy", "com_github_go_jose_go_jose_v4", "com_github_go_logr_logr", "com_github_google_go_containerregistry", "com_github_google_uuid", "com_github_klauspost_compress", "com_github_lib_pq", "com_github_onsi_ginkgo_v2", "com_github_onsi_gomega", "com_github_prometheus_client_golang", "com_github_spf13_cobra", "com_github_spf13_viper", "com_github_spiffe_go_spiffe_v2", "com_github_stretchr_testify", "com_github_zricethezav_gitleaks_v8", "in_gopkg_yaml_v3", "io_k8s_api", "io_k8s_apimachinery", "io_k8s_client_go", "io_k8s_sigs_controller_runtime", "io_k8s_sigs_yaml", "io_k8s_utils", "io_nhooyr_websocket", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_trace", "org_golang_google_genproto_googleapis_rpc", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf", "org_golang_x_net", "org_golang_x_sync", "org_golang_x_sys", "org_golang_x_time")
+use_repo(go_deps, "com_github_bazelbuild_buildtools", "com_github_betterleaks_betterleaks_v2", "com_github_envoyproxy_go_control_plane", "com_github_envoyproxy_go_control_plane_envoy", "com_github_go_jose_go_jose_v4", "com_github_go_logr_logr", "com_github_google_go_containerregistry", "com_github_google_uuid", "com_github_klauspost_compress", "com_github_lib_pq", "com_github_onsi_ginkgo_v2", "com_github_onsi_gomega", "com_github_prometheus_client_golang", "com_github_spf13_cobra", "com_github_spf13_viper", "com_github_spiffe_go_spiffe_v2", "com_github_stretchr_testify", "com_github_yuin_goldmark", "com_github_zricethezav_gitleaks_v8", "in_gopkg_yaml_v3", "io_k8s_api", "io_k8s_apimachinery", "io_k8s_client_go", "io_k8s_sigs_controller_runtime", "io_k8s_sigs_yaml", "io_k8s_utils", "io_nhooyr_websocket", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_trace", "org_golang_google_genproto_googleapis_rpc", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf", "org_golang_x_net", "org_golang_x_sync", "org_golang_x_sys", "org_golang_x_time")
 
 #########################
 # JavaScript and pnpm package manager
@@ -475,7 +557,7 @@ use_repo(oci, "custom_crane_regctl_toolchains")
 
 oci.pull(
     name = "factory_codex_upstream",
-    digest = "sha256:51d92a9c9b5e819325e89491a80678539fc60dc7713a6e4e4b150ff9adc0a3cb",
+    digest = "sha256:e6e89c4783b16d21e8bea8875ff9ea65ac010ed082f0e9bb2eeea6f29d40f887",
     image = "ghcr.io/jomcgi-org/kagent/codex-harness",
     platforms = ["linux/amd64"],
 )
@@ -517,7 +599,7 @@ private_oci_layer(
 # projects/factory/deploy/values.yaml; harness_image_test checks it.
 oci.pull(
     name = "codex_harness",
-    digest = "sha256:51d92a9c9b5e819325e89491a80678539fc60dc7713a6e4e4b150ff9adc0a3cb",
+    digest = "sha256:e6e89c4783b16d21e8bea8875ff9ea65ac010ed082f0e9bb2eeea6f29d40f887",
     image = "ghcr.io/jomcgi-org/kagent/codex-harness",
     platforms = ["linux/amd64"],
 )
@@ -534,6 +616,33 @@ oci.pull(
     platforms = ["linux/amd64"],
 )
 use_repo(oci, "claude_harness", "claude_harness_linux_amd64")
+
+# Source of the Hermes Agent harness image (projects/factory/harness/hermes):
+# nousresearch/hermes-agent v0.23.4 (commit 8fc03744), MIT. slim.py keeps its
+# Debian layer, Hermes and its Python; harness_image_test checks the version
+# stamp.
+oci.pull(
+    name = "hermes_agent",
+    digest = "sha256:ef0650d523ee1b5ab32c779acabc446d9936869a9932591553688a62bcf0c42f",
+    image = "docker.io/nousresearch/hermes-agent",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "hermes_agent", "hermes_agent_linux_amd64")
+
+# The kagent-hermes runner from the kagent fork build the controller runs
+# (kagent.controller.image in projects/factory/deploy/values.yaml): a scratch
+# image whose one layer holds only /usr/local/bin/kagent-hermes. The Hermes
+# harness image reuses that layer. Move it with the controller. It is at
+# fork commit 0f2bccdc49ef (jomcgi-org/kagent#9 on #10): runner-only changes
+# after the controller's ce4e068bc4a0 (image parts, HOME-939; a refused turn
+# leaves the chain, HOME-909), so the controller stays.
+oci.pull(
+    name = "hermes_runner",
+    digest = "sha256:340073dcfbcc1a30314a3917a9f4d83b36794974b62730c5370d5597776e70b2",
+    image = "ghcr.io/jomcgi-org/kagent/hermes-runner",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "hermes_runner_linux_amd64")
 
 #########################
 # PostgreSQL test fixtures — extract PG16 + pgvector binaries from OCI

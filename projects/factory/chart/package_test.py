@@ -23,6 +23,7 @@ _IMAGES = {
     "broker": "image",
     "codexTrial": "image",
     "connector": "image",
+    "discord": "hermesImage",
     "discordRender": "image",
     "itsaplan": "webImage",
     "reviewer": "image",
@@ -63,15 +64,6 @@ def test_application_keeps_git_values_until_a_compatible_release_exists() -> Non
         "ref": "values",
     }
     assert _DEPLOY.is_file()
-
-
-def test_application_does_not_ignore_the_discord_import_job() -> None:
-    # HOME-836: an ignored Job /spec, with RespectIgnoreDifferences, makes a
-    # sync apply the live spec. ArgoCD then owns the apiserver's selector and
-    # each later server-side diff dry run fails, which stops the whole sync.
-    app = yaml.safe_load(_APPLICATION.read_text())
-    for entry in app["spec"].get("ignoreDifferences", []):
-        assert entry.get("kind") != "Job", entry
 
 
 def _render(chart: Path, values: Path, *overrides: str) -> str:
@@ -164,3 +156,15 @@ def test_packaged_render_matches_the_lock_with_published_images(
             assert deployment["spec"]["template"]["spec"]["imagePullSecrets"] == [
                 {"name": published["imagePullSecret"]["name"]}
             ]
+    # The homelab server agent's Hermes Harness runs the published digest,
+    # the only form the Harness CRD admits.
+    (harness,) = [
+        doc
+        for doc in docs
+        if doc["kind"] == "Harness"
+        and doc["metadata"]["namespace"] == "discord-1501965852042330302"
+    ]
+    image = published["discord"]["hermesImage"]
+    assert harness["spec"]["workload"]["image"] == (
+        f"{image['repository']}@{image['digest']}"
+    )

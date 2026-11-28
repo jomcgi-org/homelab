@@ -3,11 +3,14 @@
 #
 # On 2026-11-23 these leftovers filled node-1's root filesystem. The kubelet
 # then tainted the node for disk pressure and left 22 pods Pending. The script
-# lists and, with --apply, removes only these three kinds of file:
+# lists and, with --apply, removes only these four kinds of file:
 #
 #   1. Go build cache files not modified for --go-days (default 3), under
-#      GOCACHE. The directory must hold Go's README marker. The fuzz corpus
-#      (fuzz/) stays. Symlinks are not followed.
+#      GOCACHE, and then the oldest files until the cache is at most
+#      --go-max-gib (default 4) GiB. Go refreshes a file's time each time a
+#      build uses it, so an active cache never ages; the size cap limits it.
+#      The directory must hold Go's README marker. The fuzz corpus (fuzz/)
+#      stays. Symlinks are not followed.
 #   2. Test directories /tmp/pgdata* and /tmp/tmp* (direct children of
 #      GC_TMP_DIR, owned by the caller, not symlinks) that are older than
 #      --tmp-hours (default 12) and hold no newer file. A directory stays if
@@ -35,27 +38,40 @@
 #      files, working directories and mappings are real paths, so they match).
 #   3. Bazel disk cache files (ac/ and cas/ only) not modified for
 #      --bazel-days (default 7), under BAZEL_DISK_CACHE.
+#   4. Claude Code session directories GC_SCRATCH_DIR/<project>/<session>
+#      (default GC_SCRATCH_DIR: <GC_TMP_DIR>/claude-<uid>) that hold no file
+#      modified in --scratch-days (default 3). They hold each session's
+#      scratchpad. Only this shape matches: a project name that starts with
+#      - (Claude Code's escaped working directory) and a session name that is
+#      a UUID. Other trees in the root, such as bundled-skills/<version> or a
+#      virtualenv, stay. The same in-use, mount and ownership checks as for the
+#      test directories apply.
 #
-# It touches nothing else. It does not install a timer. Dry run is the default.
+# It touches nothing else. node-disk-gc@<user>.timer runs it with --apply every 6 h.
+# Dry run is the default.
 # It refuses to run as root, with no exception, and it needs HOME to be an
 # absolute path.
 #
 # Usage:
-#   node-disk-gc.sh [--apply] [--go-days N] [--tmp-hours N] [--bazel-days N]
+#   node-disk-gc.sh [--apply] [--go-days N] [--go-max-gib N] [--tmp-hours N]
+#                   [--bazel-days N] [--scratch-days N]
 #
 # Environment:
 #   GOCACHE            Go build cache (default: ~/.cache/go-build)
 #   BAZEL_DISK_CACHE   Bazel disk cache (default: ~/.cache/bazel/disk_cache)
 #   GC_TMP_DIR         Directory that holds the test directories (default: /tmp)
+#   GC_SCRATCH_DIR     Claude Code session root (default: <GC_TMP_DIR>/claude-<uid>)
 set -euo pipefail
 
 apply=false
 go_days=3
 tmp_hours=12
 bazel_days=7
+go_max_gib=4
+scratch_days=3
 
 usage() {
-	echo "usage: ${0##*/} [--apply] [--go-days N] [--tmp-hours N] [--bazel-days N]" >&2
+	echo "usage: ${0##*/} [--apply] [--go-days N] [--go-max-gib N] [--tmp-hours N] [--bazel-days N] [--scratch-days N]" >&2
 	exit 2
 }
 
@@ -71,11 +87,19 @@ number() {
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--apply) apply=true ;;
-	--go-days | --tmp-hours | --bazel-days)
+	--go-days | --go-max-gib | --tmp-hours | --bazel-days | --scratch-days)
 		[[ $# -ge 2 ]] || usage
 		number "$2"
 		case "$1" in
 		--go-days) go_days=$2 ;;
+		--go-max-gib) go_max_gib=$2 ;;
+		--scratch-days)
+			[[ "$2" != 0 ]] || {
+				echo "--scratch-days must be at least 1" >&2
+				usage
+			}
+			scratch_days=$2
+			;;
 		--tmp-hours)
 			[[ "$2" != 0 ]] || {
 				echo "--tmp-hours must be at least 1" >&2
@@ -227,6 +251,8 @@ report_files() {
 }
 
 # 1. Go build cache. Go refreshes a used entry's time, so an old file is unused.
+# The list is sorted oldest first. A file goes when it is older than the age
+# limit, or while the files that remain are larger than the size cap.
 # The path loses its trailing slashes, and it must not be the home directory or
 # a directory that holds it.
 while [[ "$go_cache" == */ ]]; do go_cache=${go_cache%/}; done
@@ -234,8 +260,24 @@ go_real="$(realdir "$go_cache" || true)"
 if [[ "$go_cache" == /* && -n "$go_real" && -f "$go_real/README" ]] && ! holds_home "$go_real" &&
 	grep -q "cached build artifacts from the Go build system" "$go_real/README"; then
 	find "$go_real" -xdev -type f ! -name README ! -name trim.txt ! -path "$go_real/fuzz/*" \
-		-mmin "+$((go_days * 1440))" -print0 >"$scratch/go" 2>/dev/null || true
-	report_files "Go build cache $go_real (older than $go_days days)" "$scratch/go"
+		-printf '%T@\t%s\t%p\0' 2>/dev/null | LC_ALL=C sort -z -n |
+		LC_ALL=C awk -v cutoff="$(($(date +%s) - go_days * 86400))" -v cap="$((go_max_gib * 1073741824))" '
+			BEGIN { RS = "\0"; ORS = "\0" }
+			{
+				t = $0; sub(/\t.*/, "", t)
+				rest = substr($0, length(t) + 2)
+				s = rest; sub(/\t.*/, "", s)
+				time[NR] = t + 0; size[NR] = s + 0; path[NR] = substr(rest, length(s) + 2)
+				total += size[NR]
+			}
+			END {
+				for (i = 1; i <= NR; i++) {
+					if (time[i] >= cutoff && total <= cap) break
+					print path[i]
+					total -= size[i]
+				}
+			}' >"$scratch/go" || true
+	report_files "Go build cache $go_real (older than $go_days days, or over $go_max_gib GiB)" "$scratch/go"
 else
 	echo "Go build cache $go_cache: skipped (not a Go build cache, or it holds the home directory)"
 fi
@@ -356,7 +398,7 @@ keep_reason() {
 # Prints a file under the directory that is newer than the age limit. The
 # errors of find (an unreadable subdirectory) go to $scratch/err.
 newer_file() {
-	LC_ALL=C find "$1" -mmin "-$((tmp_hours * 60))" -print -quit 2>"$scratch/err" || true
+	LC_ALL=C find "$1" -mmin "-$age_min" -print -quit 2>"$scratch/err" || true
 }
 
 # Opens the unreadable subdirectories that find reports, one at a time, and
@@ -396,72 +438,105 @@ restore_modes() {
 	: >"$scratch/modes"
 }
 
-tmp_total=0
-tmp_count=0
+# Checks one candidate directory and, with --apply, removes it. It stays
+# when it is in use, holds a mount, or holds a file newer than $age_min
+# minutes. Adds to sweep_count and sweep_total.
+sweep_dir() {
+	local dir=$1 reason newer size
+	if [[ "$dir" == *$'\n'* ]]; then
+		printf '  keep (name has a newline): %q\n' "$dir"
+		return
+	fi
+	reason=$(keep_reason "$dir")
+	if [[ -n "$reason" ]]; then
+		echo "  keep ($reason): $dir"
+		return
+	fi
+	# A subdirectory that the caller cannot read hides its files from the
+	# age check. With --apply, open each one with chmod, check again, and
+	# put the old modes back if the directory stays.
+	: >"$scratch/modes"
+	newer=$(newer_file "$dir")
+	if [[ -z "$newer" && -s "$scratch/err" ]]; then
+		if ! $apply; then
+			echo "  keep (unreadable; --apply opens it first): $dir"
+			return
+		fi
+		newer=$(open_and_check "$dir")
+		if [[ -z "$newer" && -s "$scratch/err" ]]; then
+			restore_modes
+			echo "  keep (unreadable): $dir"
+			return
+		fi
+	fi
+	if [[ -n "$newer" ]]; then
+		restore_modes
+		echo "  keep (newer file): $dir"
+		return
+	fi
+	size=$(du -sb "$dir" 2>/dev/null | awk '{ print $1 }' || true)
+	size=${size:-0}
+	echo "  $dir $(human "$size")"
+	sweep_count=$((sweep_count + 1))
+	sweep_total=$((sweep_total + size))
+	if $apply; then
+		# The scan is a snapshot from before du and any earlier removal.
+		rescan
+		reason=$(keep_reason "$dir")
+		if [[ -n "$reason" ]]; then
+			echo "  keep ($reason): $dir"
+			return
+		fi
+		# Test databases make files read-only. u+rwX also opens an
+		# unreadable subdirectory so that rm can enter it.
+		chmod -R u+rwX -- "$dir" 2>/dev/null || true
+		if rm -rf --one-file-system -- "$dir" 2>/dev/null && [[ ! -e "$dir" ]]; then
+			removed_bytes=$((removed_bytes + size))
+		else
+			echo "  failed: $dir"
+		fi
+	fi
+}
+
+age_min=$((tmp_hours * 60))
+sweep_count=0
+sweep_total=0
 if [[ -n "$tmp_real" ]]; then
 	scan
 	while IFS= read -r -d '' dir; do
 		[[ "$(dirname "$dir")" == "$tmp_root" ]] || continue
 		[[ ! -L "$dir" ]] || continue
 		[[ "$dir" != "$scratch" ]] || continue
-		if [[ "$dir" == *$'\n'* ]]; then
-			printf '  keep (name has a newline): %q\n' "$dir"
-			continue
-		fi
-		reason=$(keep_reason "$dir")
-		if [[ -n "$reason" ]]; then
-			echo "  keep ($reason): $dir"
-			continue
-		fi
-		# A subdirectory that the caller cannot read hides its files from the
-		# age check. With --apply, open each one with chmod, check again, and
-		# put the old modes back if the directory stays.
-		: >"$scratch/modes"
-		newer=$(newer_file "$dir")
-		if [[ -z "$newer" && -s "$scratch/err" ]]; then
-			if ! $apply; then
-				echo "  keep (unreadable; --apply opens it first): $dir"
-				continue
-			fi
-			newer=$(open_and_check "$dir")
-			if [[ -z "$newer" && -s "$scratch/err" ]]; then
-				restore_modes
-				echo "  keep (unreadable): $dir"
-				continue
-			fi
-		fi
-		if [[ -n "$newer" ]]; then
-			restore_modes
-			echo "  keep (newer file): $dir"
-			continue
-		fi
-		size=$(du -sb "$dir" 2>/dev/null | awk '{ print $1 }' || true)
-		size=${size:-0}
-		echo "  $dir $(human "$size")"
-		tmp_count=$((tmp_count + 1))
-		tmp_total=$((tmp_total + size))
-		if $apply; then
-			# The scan is a snapshot from before du and any earlier removal.
-			rescan
-			reason=$(keep_reason "$dir")
-			if [[ -n "$reason" ]]; then
-				echo "  keep ($reason): $dir"
-				continue
-			fi
-			# Test databases make files read-only. u+rwX also opens an
-			# unreadable subdirectory so that rm can enter it.
-			chmod -R u+rwX -- "$dir" 2>/dev/null || true
-			if rm -rf --one-file-system -- "$dir" 2>/dev/null && [[ ! -e "$dir" ]]; then
-				removed_bytes=$((removed_bytes + size))
-			else
-				echo "  failed: $dir"
-			fi
-		fi
+		sweep_dir "$dir"
 	done < <(find "$tmp_root" -mindepth 1 -maxdepth 1 -type d -uid "$proc_euid" \
-		\( -name 'pgdata*' -o -name 'tmp*' \) -mmin "+$((tmp_hours * 60))" -print0 2>/dev/null)
+		\( -name 'pgdata*' -o -name 'tmp*' \) -mmin "+$age_min" -print0 2>/dev/null)
 fi
-echo "Test directories in $tmp_root (older than $tmp_hours h): $tmp_count, $(human "$tmp_total")"
-total_bytes=$((total_bytes + tmp_total))
+echo "Test directories in $tmp_root (older than $tmp_hours h): $sweep_count, $(human "$sweep_total")"
+total_bytes=$((total_bytes + sweep_total))
+
+# 4. Claude Code session directories: <root>/<project>/<session>. The root
+# must be a real directory that the caller owns, not / and not the home
+# directory or a directory that holds it.
+scratch_root="${GC_SCRATCH_DIR:-$tmp_root/claude-$proc_euid}"
+scratch_real="$(realdir "$scratch_root" || true)"
+age_min=$((scratch_days * 1440))
+sweep_count=0
+sweep_total=0
+if [[ "$scratch_root" == /* && -n "$scratch_real" ]] && ! holds_home "$scratch_real" &&
+	[[ "$(stat -c %u -- "$scratch_real")" == "$proc_euid" ]]; then
+	scan
+	while IFS= read -r -d '' dir; do
+		[[ "$(dirname "$(dirname "$dir")")" == "$scratch_real" ]] || continue
+		[[ ! -L "$dir" && ! -L "$(dirname "$dir")" ]] || continue
+		sweep_dir "$dir"
+	done < <(find "$scratch_real" -mindepth 2 -maxdepth 2 -type d -uid "$proc_euid" \
+		-path "$scratch_real/-*/*" -regextype posix-extended \
+		-regex '.*/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' -print0 2>/dev/null)
+	echo "Session directories in $scratch_real (no change in $scratch_days days): $sweep_count, $(human "$sweep_total")"
+	total_bytes=$((total_bytes + sweep_total))
+else
+	echo "Session directories $scratch_root: skipped (missing, not owned by the caller, or it holds the home directory)"
+fi
 
 # 3. Bazel disk cache. Only ac/ and cas/ hold cache entries. The real path
 # must be named disk_cache and must not be the home directory or hold it.

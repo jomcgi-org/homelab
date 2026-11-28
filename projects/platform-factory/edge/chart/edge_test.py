@@ -10,6 +10,14 @@ import subprocess
 import pytest
 import yaml
 
+# The Discord servers with an artifact folder (values.yaml artifacts.servers).
+SERVERS = [
+    "185442367703220224",
+    "1290668195249917964",
+    "1501965852042330302",
+    "1512814732392927463",
+]
+
 
 @pytest.fixture(scope="module")
 def docs():
@@ -190,6 +198,13 @@ def test_only_kagent_forwards_the_access_token(docs):
         "authentik-no-gateway-oidc",
         "kagent-authentik-oidc",
         "t3-authentik-oidc",
+        "home-assistant-authentik-oidc",
+        "artifact-admins",
+        *(f"artifact-server-{server}" for server in SERVERS),
+        "artifact-lib-no-gateway-oidc",
+        "artifact-share-no-gateway-oidc",
+        "notes-admins",
+        *(f"notes-server-{server}" for server in SERVERS),
         "kube-api-authentik-jwt",
         "explore-api-authentik-jwt",
     }
@@ -262,6 +277,415 @@ def test_edge_may_reference_only_the_kagent_ui(docs):
             }
         ],
         "to": [{"group": "", "kind": "Service", "name": "kagent-ui"}],
+    }
+
+
+def test_home_assistant_admits_admins_and_household_on_the_entire_host(docs):
+    route = docs["HTTPRoute", "home-assistant"]["spec"]
+    assert route["hostnames"] == ["home.jomcgi.dev"]
+    ((backend,),) = [rule["backendRefs"] for rule in route["rules"]]
+    assert backend == {
+        "group": "",
+        "kind": "Service",
+        "name": "home-assistant",
+        "namespace": "home-assistant",
+        "port": 8123,
+        "weight": 1,
+    }
+    policy = docs["SecurityPolicy", "home-assistant-authentik-oidc"]["spec"]
+    gateway = docs["SecurityPolicy", "edge-authentik-oidc"]["spec"]
+    assert policy["targetRefs"] == [
+        {
+            "group": "gateway.networking.k8s.io",
+            "kind": "HTTPRoute",
+            "name": "home-assistant",
+        }
+    ]
+    assert policy["oidc"] == gateway["oidc"]
+    assert policy["authorization"]["defaultAction"] == "Deny"
+    admins, household = policy["authorization"]["rules"]
+    assert admins["principal"]["jwt"]["claims"] == [
+        {"name": "groups", "valueType": "StringArray", "values": ["authentik Admins"]}
+    ]
+    assert household["action"] == "Allow"
+    assert household["principal"]["jwt"]["claims"] == [
+        {"name": "groups", "valueType": "StringArray", "values": ["household"]}
+    ]
+
+
+def test_household_is_admitted_on_home_assistant_only(docs):
+    for (kind, name), doc in docs.items():
+        if kind == "SecurityPolicy" and name != "home-assistant-authentik-oidc":
+            assert "household" not in str(doc.get("spec", {}))
+
+
+def test_artifacts_are_sandboxed_and_each_server_folder_admits_its_group(docs):
+    route = docs["HTTPRoute", "artifact"]["spec"]
+    assert route["hostnames"] == ["artifact.jomcgi.dev"]
+    rules = {rule["name"]: rule for rule in route["rules"]}
+    assert list(rules) == [f"server-{s}" for s in SERVERS] + ["admins"]
+    for name, rule in rules.items():
+        prefix = "/" if name == "admins" else "/" + name.removeprefix("server-") + "/"
+        assert rule["matches"] == [{"path": {"type": "PathPrefix", "value": prefix}}]
+        assert rule["backendRefs"] == [
+            {
+                "group": "",
+                "kind": "Service",
+                "name": "garage-web",
+                "namespace": "garage",
+                "port": 3902,
+                "weight": 1,
+            }
+        ]
+        assert rule["filters"] == rules["admins"]["filters"]
+    filters = {f["type"]: f for f in rules["admins"]["filters"]}
+    assert filters["URLRewrite"]["urlRewrite"] == {
+        "hostname": "bosun-artifacts.web.garage.internal"
+    }
+    assert filters["RequestHeaderModifier"]["requestHeaderModifier"] == {
+        "remove": ["Cookie", "Authorization"]
+    }
+    response = filters["ResponseHeaderModifier"]["responseHeaderModifier"]
+    headers = {h["name"]: h["value"] for h in response["set"]}
+    csp = dict(
+        (d.split()[0], d.split()[1:])
+        for d in headers.pop("Content-Security-Policy").split("; ")
+    )
+    assert csp["sandbox"] == ["allow-scripts", "allow-popups"]
+    assert csp["default-src"] == ["'none'"]
+    assert csp["connect-src"] == ["'none'"]
+    assert csp["form-action"] == ["'none'"]
+    assert csp["base-uri"] == ["'none'"]
+    # Only script-src, style-src and font-src name a network source: the
+    # libraries path on this host, nothing else.
+    lib = "https://artifact.jomcgi.dev/_lib/"
+    assert csp.pop("script-src") == ["'unsafe-inline'", "'unsafe-eval'", lib]
+    assert csp.pop("style-src") == ["'unsafe-inline'", lib]
+    assert csp.pop("font-src") == ["data:", lib]
+    for values in csp.values():
+        for v in values:
+            assert v in {
+                "allow-scripts",
+                "allow-popups",
+                "'none'",
+                "'unsafe-inline'",
+                "data:",
+                "blob:",
+            }, v
+    assert headers == {
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cross-Origin-Resource-Policy": "same-origin",
+    }
+    assert response["remove"] == ["Set-Cookie", "Access-Control-Allow-Origin"]
+
+    # One policy per rule. Each merges into the gateway policy, so it keeps
+    # that sign-in and session, and replaces only the authorization.
+    gateway = docs["SecurityPolicy", "edge-authentik-oidc"]["spec"]
+    admins = {
+        "name": "groups",
+        "valueType": "StringArray",
+        "values": ["authentik Admins"],
+    }
+    for rule in rules:
+        server = rule.removeprefix("server-")
+        name = "artifact-admins" if rule == "admins" else f"artifact-server-{server}"
+        policy = docs["SecurityPolicy", name]["spec"]
+        assert policy["targetRefs"] == [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "artifact",
+                "sectionName": rule,
+            }
+        ]
+        assert policy["mergeType"] == "JSONMerge"
+        assert "oidc" not in policy
+        assert policy["jwt"] == gateway["jwt"]
+        assert policy["authorization"]["defaultAction"] == "Deny"
+        allowed = [
+            (r["action"], r["principal"]["jwt"]["claims"])
+            for r in policy["authorization"]["rules"]
+        ]
+        expected = [("Allow", [admins])]
+        if rule != "admins":
+            expected.append(("Allow", [{**admins, "values": [f"discord-{server}"]}]))
+        assert allowed == expected
+    # A server group is admitted on its own folder only.
+    for (kind, name), doc in docs.items():
+        if kind == "SecurityPolicy":
+            for server in SERVERS:
+                if f"discord-{server}" in str(doc["spec"]):
+                    assert name in (
+                        f"artifact-server-{server}",
+                        f"notes-server-{server}",
+                    )
+    egress = docs["CiliumNetworkPolicy", "proxy"]["spec"]["egress"]
+    garage = [
+        r
+        for r in egress
+        if any(
+            e.get("matchLabels", {}).get("k8s:io.kubernetes.pod.namespace") == "garage"
+            for e in r.get("toEndpoints", [])
+        )
+    ]
+    assert garage == [
+        {
+            "toEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "garage",
+                        "app.kubernetes.io/name": "garage",
+                    }
+                }
+            ],
+            "toPorts": [
+                {
+                    "ports": [
+                        {"port": "3902", "protocol": "TCP"},
+                        {"port": "3900", "protocol": "TCP"},
+                    ]
+                }
+            ],
+        }
+    ]
+
+
+def test_notes_viewer_admits_each_server_group_on_its_folder_only(docs):
+    # HOME-920: the same folders and policies as artifact.jomcgi.dev, in
+    # front of the read-only viewer, with the viewer's strict CSP.
+    route = docs["HTTPRoute", "notes"]["spec"]
+    assert route["hostnames"] == ["notes.jomcgi.dev"]
+    rules = {rule["name"]: rule for rule in route["rules"]}
+    assert list(rules) == [f"server-{s}" for s in SERVERS] + ["admins"]
+    for name, rule in rules.items():
+        server = name.removeprefix("server-")
+        matches = (
+            [{"path": {"type": "PathPrefix", "value": "/"}}]
+            if name == "admins"
+            else [
+                {"path": {"type": "PathPrefix", "value": f"/{server}/"}},
+                {"path": {"type": "Exact", "value": f"/{server}"}},
+            ]
+        )
+        assert rule["matches"] == matches
+        assert rule["backendRefs"] == [
+            {
+                "group": "",
+                "kind": "Service",
+                "name": "bosun-notes-view",
+                "namespace": "factory-discord",
+                "port": 8080,
+                "weight": 1,
+            }
+        ]
+        assert rule["filters"] == rules["admins"]["filters"]
+    filters = {f["type"]: f for f in rules["admins"]["filters"]}
+    assert set(filters) == {"RequestHeaderModifier", "ResponseHeaderModifier"}
+    assert filters["RequestHeaderModifier"]["requestHeaderModifier"] == {
+        "remove": ["Cookie", "Authorization"]
+    }
+    response = filters["ResponseHeaderModifier"]["responseHeaderModifier"]
+    headers = {h["name"]: h["value"] for h in response["set"]}
+    csp = dict(
+        (d.split()[0], d.split()[1:])
+        for d in headers.pop("Content-Security-Policy").split("; ")
+    )
+    assert csp == {
+        "default-src": ["'none'"],
+        "script-src": ["'self'"],
+        "style-src": ["'self'"],
+        "img-src": ["'self'"],
+        "font-src": ["'self'"],
+        "connect-src": ["'none'"],
+        "form-action": ["'self'"],
+        "frame-ancestors": ["'none'"],
+        "base-uri": ["'none'"],
+    }
+    assert headers == {
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cross-Origin-Resource-Policy": "same-origin",
+        "X-Frame-Options": "DENY",
+    }
+    assert response["remove"] == ["Set-Cookie", "Access-Control-Allow-Origin"]
+
+    gateway = docs["SecurityPolicy", "edge-authentik-oidc"]["spec"]
+    admins = {
+        "name": "groups",
+        "valueType": "StringArray",
+        "values": ["authentik Admins"],
+    }
+    for rule in rules:
+        server = rule.removeprefix("server-")
+        name = "notes-admins" if rule == "admins" else f"notes-server-{server}"
+        policy = docs["SecurityPolicy", name]["spec"]
+        assert policy["targetRefs"] == [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "notes",
+                "sectionName": rule,
+            }
+        ]
+        assert policy["mergeType"] == "JSONMerge"
+        assert "oidc" not in policy
+        assert policy["jwt"] == gateway["jwt"]
+        assert policy["authorization"]["defaultAction"] == "Deny"
+        allowed = [
+            (r["action"], r["principal"]["jwt"]["claims"])
+            for r in policy["authorization"]["rules"]
+        ]
+        expected = [("Allow", [admins])]
+        if rule != "admins":
+            expected.append(("Allow", [{**admins, "values": [f"discord-{server}"]}]))
+        assert allowed == expected
+    egress = docs["CiliumNetworkPolicy", "proxy"]["spec"]["egress"]
+    viewer = [r for r in egress if "factory-discord" in str(r)]
+    assert viewer == [
+        {
+            "toEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "factory-discord",
+                        "app.kubernetes.io/name": "bosun-notes-view",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}]}],
+        }
+    ]
+
+
+def test_artifact_libraries_are_public_read_only_and_from_their_own_bucket(docs):
+    route = docs["HTTPRoute", "artifact-lib"]["spec"]
+    assert route["hostnames"] == ["artifact.jomcgi.dev"]
+    (rule,) = route["rules"]
+    assert rule["matches"] == [
+        {"path": {"type": "PathPrefix", "value": "/_lib/"}, "method": "GET"}
+    ]
+    filters = {f["type"]: f for f in rule["filters"]}
+    # The libraries bucket, never the artifacts bucket.
+    assert filters["URLRewrite"]["urlRewrite"] == {
+        "hostname": "bosun-libs.web.garage.internal",
+        "path": {"type": "ReplacePrefixMatch", "replacePrefixMatch": "/"},
+    }
+    assert filters["RequestHeaderModifier"]["requestHeaderModifier"] == {
+        "remove": ["Cookie", "Authorization"]
+    }
+    response = filters["ResponseHeaderModifier"]["responseHeaderModifier"]
+    headers = {h["name"]: h["value"] for h in response["set"]}
+    artifact = docs["HTTPRoute", "artifact"]["spec"]["rules"][0]["filters"]
+    (artifact_headers,) = [
+        f["responseHeaderModifier"]["set"]
+        for f in artifact
+        if f["type"] == "ResponseHeaderModifier"
+    ]
+    # The self-test page gets the artifact pages' sandbox.
+    assert (
+        headers["Content-Security-Policy"]
+        == {h["name"]: h["value"] for h in artifact_headers}["Content-Security-Policy"]
+    )
+    assert headers["Cross-Origin-Resource-Policy"] == "cross-origin"
+    assert headers["Access-Control-Allow-Origin"] == "*"
+    assert response["remove"] == ["Set-Cookie"]
+    # Only this route skips sign-in, and only by name.
+    policy = docs["SecurityPolicy", "artifact-lib-no-gateway-oidc"]["spec"]
+    assert policy == {
+        "targetRefs": [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "artifact-lib",
+            }
+        ],
+        "authorization": {"defaultAction": "Allow"},
+    }
+
+
+def test_prefix_rewrites_have_exactly_one_path_prefix_match(docs):
+    # Gateway API CEL rule: a rule whose URLRewrite uses replacePrefixMatch
+    # must have exactly one match, and it must be a PathPrefix. The API
+    # server refuses the whole route otherwise, and Argo stops syncing edge.
+    for (kind, name), doc in docs.items():
+        if kind != "HTTPRoute":
+            continue
+        for rule in doc["spec"].get("rules", []):
+            rewrites = [
+                f["urlRewrite"].get("path", {})
+                for f in rule.get("filters", [])
+                if f["type"] == "URLRewrite"
+            ]
+            if any(p.get("type") == "ReplacePrefixMatch" for p in rewrites):
+                matches = rule.get("matches", [])
+                assert len(matches) == 1, name
+                assert matches[0]["path"]["type"] == "PathPrefix", name
+
+
+def test_share_links_reach_only_the_artifact_bucket_with_host_kept(docs):
+    route = docs["HTTPRoute", "artifact-share"]["spec"]
+    assert route["hostnames"] == ["artifact.jomcgi.dev"]
+    # One rule per method: the API server admits replacePrefixMatch only
+    # with exactly one PathPrefix match in its rule.
+    get, head = route["rules"]
+    assert get["matches"] == [
+        {"path": {"type": "PathPrefix", "value": "/s"}, "method": "GET"}
+    ]
+    assert head["matches"] == [
+        {"path": {"type": "PathPrefix", "value": "/s"}, "method": "HEAD"}
+    ]
+    assert (
+        get["filters"] == head["filters"] and get["backendRefs"] == head["backendRefs"]
+    )
+    rule = get
+    filters = {f["type"]: f for f in rule["filters"]}
+    # Only the path prefix changes; Host stays artifact.jomcgi.dev, which
+    # the presigned signature covers (discord/artifacts/share.go).
+    assert filters["URLRewrite"]["urlRewrite"] == {
+        "path": {
+            "type": "ReplacePrefixMatch",
+            "replacePrefixMatch": "/bosun-artifacts",
+        }
+    }
+    assert filters["RequestHeaderModifier"]["requestHeaderModifier"] == {
+        "remove": ["Cookie", "Authorization"]
+    }
+    response = filters["ResponseHeaderModifier"]["responseHeaderModifier"]
+    headers = {h["name"]: h["value"] for h in response["set"]}
+    artifact = {
+        f["type"]: f
+        for f in docs["HTTPRoute", "artifact"]["spec"]["rules"][0]["filters"]
+    }
+    sandbox = {
+        h["name"]: h["value"]
+        for h in artifact["ResponseHeaderModifier"]["responseHeaderModifier"]["set"]
+    }
+    assert headers == {
+        **sandbox,
+        "X-Robots-Tag": "noindex, nofollow",
+        "Cache-Control": "private, no-store",
+    }
+    assert response["remove"] == ["Set-Cookie", "Access-Control-Allow-Origin"]
+    assert rule["backendRefs"] == [
+        {
+            "group": "",
+            "kind": "Service",
+            "name": "garage",
+            "namespace": "garage",
+            "port": 3900,
+            "weight": 1,
+        }
+    ]
+    # No sign-in: the signature is the credential, and Garage checks it.
+    assert docs["SecurityPolicy", "artifact-share-no-gateway-oidc"]["spec"] == {
+        "targetRefs": [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "artifact-share",
+            }
+        ],
+        "authorization": {"defaultAction": "Allow"},
     }
 
 
@@ -439,6 +863,7 @@ def test_kagent_hostname_is_owned_and_published():
         "factory-agents.jomcgi.dev",
         "factory-kube.jomcgi.dev",
         "factory-explore-api.jomcgi.dev",
+        "notes.jomcgi.dev",
     ):
         assert {
             "expression": "request.namespace == 'edge' || "
@@ -476,6 +901,7 @@ def test_kagent_hostname_is_owned_and_published():
         "factory-agents.jomcgi.dev",
         "factory-kube.jomcgi.dev",
         "factory-explore-api.jomcgi.dev",
+        "notes.jomcgi.dev",
     } <= set(route["spec"]["hostnames"])
     assert "t3.jomcgi.dev" in route["spec"]["hostnames"]
     assert route["spec"]["rules"] == [

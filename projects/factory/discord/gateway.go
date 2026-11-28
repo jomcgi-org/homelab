@@ -70,6 +70,14 @@ type Gateway struct {
 	Token     func() (string, error)
 	OnReady   func(User)
 	OnMessage func(Message)
+	// OnReaction gets each MESSAGE_REACTION_ADD (share confirmations); it
+	// must not block.
+	OnReaction func(ReactionAdd)
+	// Places caches servers and channels from guild events; nil caches none.
+	Places *Places
+	// OnArchive, when set, gets each message create, edit and delete event
+	// before the bridge sees it (Archiver.Event). It must not block.
+	OnArchive func(event string, data json.RawMessage)
 	Log       *slog.Logger
 	// Intents is the identify intents; the package constant Intents when zero.
 	Intents int
@@ -257,6 +265,9 @@ func (g *Gateway) connect(ctx context.Context, url string, s *session) error {
 }
 
 func (g *Gateway) dispatch(ctx context.Context, s *session, p payload) {
+	if g.OnArchive != nil && strings.HasPrefix(p.T, "MESSAGE_") {
+		g.OnArchive(p.T, p.D)
+	}
 	switch p.T {
 	case "READY":
 		var r struct {
@@ -283,6 +294,19 @@ func (g *Gateway) dispatch(ctx context.Context, s *session, p payload) {
 		}
 		if g.OnMessage != nil {
 			g.OnMessage(m)
+		}
+	case "MESSAGE_REACTION_ADD":
+		var r ReactionAdd
+		if err := json.Unmarshal(p.D, &r); err != nil {
+			g.Log.WarnContext(ctx, "bad MESSAGE_REACTION_ADD", "error", err)
+			return
+		}
+		if g.OnReaction != nil {
+			g.OnReaction(r)
+		}
+	default:
+		if g.Places != nil {
+			g.Places.Apply(p.T, p.D)
 		}
 	}
 }

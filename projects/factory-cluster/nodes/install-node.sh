@@ -101,6 +101,7 @@ install -m 0600 "${HERE}/audit-policy.yaml" /etc/rancher/k3s/audit-policy.yaml
 install -m 0600 "${HERE}/k3s-config.yaml" /etc/rancher/k3s/config.yaml
 install -m 0644 "${HERE}/registries.yaml" /etc/rancher/k3s/registries.yaml
 install -m 0644 "${HERE}/authentication-config.yaml" /etc/rancher/k3s/authentication-config.yaml
+install -m 0644 "${HERE}/pod-security.yaml" /etc/rancher/k3s/pod-security.yaml
 # A drop-in, not a config-v3.toml.tmpl, so k3s's generated config stays whole.
 rm -f /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl
 install -m 0644 "${HERE}/containerd-runsc.toml" \

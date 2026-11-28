@@ -18,7 +18,7 @@ on:
         description: Full commit of jomcgi-org/substrate to build
         required: true
         # fork/seed-slice1 head.
-        default: 8cf248b96e08fcf2402199804fb04deadab5348b
+        default: c7f37a99386277790922fed462cc31ccdcdb3519
       publish:
         description: Push the images (off builds them and discards them)
         type: boolean

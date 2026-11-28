@@ -1,0 +1,296 @@
+{{- /*
+Bosun's artifact tools (HOME-909, projects/factory/discord/artifacts): an MCP
+server that puts, lists and deletes files in the bosun-artifacts Garage
+bucket, served at https://artifact.jomcgi.dev behind Authentik
+(projects/platform-factory/edge/chart/templates/artifact-route.yaml).
+
+Callers are the routed server agents' actors only. Substrate's egress gateway
+injects an actor JWT with audience bosun-artifacts; the service verifies it
+against the issuer's keys and admits only the atespaces of routed
+discord.serverAgents. The bucket key (bosun-artifacts-s3, filled by
+garage-init) is in this pod only; the actor holds none.
+
+With discord.notes.enabled it also serves the notes vault tools at /notes/mcp
+(HOME-918, projects/factory/discord/notes), with the separate bosun-notes-s3
+key. Each call's server comes from the bridge's record of the calling
+session (GET /sessions/<id> on the bridge), never from the model.
+*/}}
+{{- $d := .Values.discord }}
+{{- $art := $d.artifacts }}
+{{- $notes := $d.notes | default dict }}
+{{- if and $art.enabled $d.bridge.enabled }}
+{{- $ns := $d.bridge.namespace }}
+{{- $name := "bosun-artifacts" }}
+{{- $atespaces := list }}
+{{- range $key := keys $d.serverAgents | sortAlpha }}
+{{- $a := index $d.serverAgents $key }}
+{{- if and $a.enabled $a.route }}
+{{- $atespaces = append $atespaces (printf "discord-%s" $a.guild) }}
+{{- end }}
+{{- end }}
+{{- $servers := keys ($d.bridge.policy.guilds | default dict) | sortAlpha }}
+{{- /* With no routed server agent no actor could call it, so it renders nothing. */}}
+{{- if $atespaces }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          image: {{ include "factory.connectorImage" . | quote }}
+          imagePullPolicy: {{ .Values.connector.image.pullPolicy }}
+          command: [/usr/local/bin/bosun-artifacts]
+          # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL,
+          # AWS_REGION and BUCKET.
+          envFrom:
+            - secretRef:
+                name: bosun-artifacts-s3
+          env:
+            - name: ADDR
+              value: ":8080"
+            - name: ARTIFACT_BASE_URL
+              value: {{ $art.baseURL | quote }}
+            - name: ARTIFACT_SERVERS
+              value: {{ join "," $servers | quote }}
+            - name: ACTOR_JWT_ISSUER
+              value: {{ .Values.kagent.config.substrate.actorJwtIssuer | quote }}
+            - name: ACTOR_JWT_AUDIENCE
+              value: {{ $name }}
+            - name: ACTOR_JWT_CA_FILE
+              value: /run/substrate-servicedns/trust-bundle.pem
+            - name: ACTOR_JWT_ATESPACES
+              value: {{ join "," $atespaces | quote }}
+            {{- if $notes.enabled }}
+            # The notes vault key. Not optional: a new pod waits for
+            # garage-init to fill the Secret, and the old pod keeps serving.
+            {{- range $k := list "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_ENDPOINT_URL" "AWS_REGION" "BUCKET" }}
+            - name: NOTES_{{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: bosun-notes-s3
+                  key: {{ $k }}
+            {{- end }}
+            - name: NOTES_BRIDGE_URL
+              value: {{ printf "http://discord-bridge.%s.svc.cluster.local:8080" $ns | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml $art.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: substrate-servicedns
+              mountPath: /run/substrate-servicedns
+              readOnly: true
+      volumes:
+        # Substrate's service-DNS trust bundle, to verify the actor JWT
+        # issuer (idp.<substrate>.svc), as the broker does.
+        - name: substrate-servicedns
+          projected:
+            sources:
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+{{- if .Values.networkPolicy.cilium }}
+---
+# Only Substrate's egress gateway connects in. Out: Garage's S3 API and the
+# actor JWT issuer. DNS is the cluster baseline's.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: ate-idp-server
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+    {{- if $notes.enabled }}
+    # The bridge's session record, for the notes tools' server.
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: factory-discord-bridge
+            app.kubernetes.io/component: gateway
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - method: GET
+                path: "^/sessions/[0-9a-z-]+$"
+    {{- end }}
+{{- end }}
+{{- end }}
+---
+# The pinned libraries artifact pages load from /_lib/
+# (projects/factory/discord/libs): the image carries them, and this Job puts
+# them in the bosun-libs bucket after each sync. Files already there with the
+# same name and size are skipped. Old library versions stay, because pages
+# published earlier load them. Only this Job holds the bucket's key.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bosun-libs
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bosun-libs
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: upload
+          image: {{ include "factory.connectorImage" . | quote }}
+          imagePullPolicy: {{ .Values.connector.image.pullPolicy }}
+          command: [/usr/local/bin/bosun-libs]
+          # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL,
+          # AWS_REGION and BUCKET.
+          envFrom:
+            - secretRef:
+                name: bosun-libs-s3
+          env:
+            - name: LIB_DIR
+              value: /usr/share/bosun-libs
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+{{- if .Values.networkPolicy.cilium }}
+---
+# Out: Garage's S3 API only. DNS is the cluster baseline's.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: bosun-libs
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: bosun-libs
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
+{{- end }}
+{{- end }}

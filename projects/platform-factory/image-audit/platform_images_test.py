@@ -67,6 +67,7 @@ KUSTOMIZE_APPLICATIONS = [
     "grimoire-data",
     "hindsight",
     "hindsight-discord",
+    "home-assistant",
     "kagent-postgres",
     "prometheus",
     "substrate",

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"sync"
@@ -72,7 +73,7 @@ type OperatorSession struct {
 // OperatorAgent runs operator turns: one persistent session per thread.
 type OperatorAgent interface {
 	Session(ctx context.Context, threadID string) (OperatorSession, error)
-	Turn(ctx context.Context, threadID, messageID, prompt string) (string, error)
+	Turn(ctx context.Context, threadID, messageID, prompt string, images ...TurnImage) (string, error)
 }
 
 // operatorScope reports whether m is in the operator's channels, and then
@@ -174,6 +175,10 @@ func (b *Bridge) admit(ctx context.Context, m Message) (chan notice, bool) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.draining {
+		b.Log.InfoContext(ctx, "drain: message not taken", "channel", m.ChannelID, "message", m.ID)
+		return nil, false
+	}
 	b.start(ctx)
 	if _, dup := b.seen[m.ID]; dup {
 		return nil, false
@@ -203,11 +208,7 @@ func (b *Bridge) operatorMessage(ctx context.Context, m Message) {
 		go b.worker(ctx, q, b.operatorTurn)
 	}
 	b.mu.Unlock()
-	select {
-	case q <- m:
-	default:
-		b.queueNotice(ctx, notices, m, ReplyBusy)
-	}
+	b.enqueue(ctx, notices, q, m)
 }
 
 // operatorTurn runs one operator turn in the thread's session. It recalls
@@ -224,13 +225,20 @@ func (b *Bridge) operatorTurn(ctx context.Context, m Message) {
 	if s.Fresh {
 		earlier = b.restore(ctx, m)
 	}
-	answer, err := b.Operator.Turn(ctx, m.ChannelID, m.ID, OperatorPrompt(m, b.stripMention(m.Content), earlier))
+	// The operator Agent runs on the Codex harness, which takes no images.
+	answer, err := b.Operator.Turn(ctx, m.ChannelID, m.ID, OperatorPrompt(m, b.Places.Resolve(m.GuildID, b.stripMention(m.Content), m.Mentions), earlier))
 	if err != nil {
 		l.WarnContext(ctx, "operator turn failed", "error", err)
+		if ContentBlocked(err) {
+			b.block(m.ID) // A restored session leaves it out.
+			b.reply(ctx, m, ReplyBlocked)
+			return
+		}
 		b.reply(ctx, m, ReplyFailed)
 		return
 	}
-	b.reply(ctx, m, answer)
+	text, _, files := Visuals(ctx, b.Render, answer)
+	b.replyWith(ctx, m, text, files)
 }
 
 // OperatorLine is one of Joe's earlier messages in a session thread.
@@ -253,10 +261,10 @@ func (b *Bridge) restore(ctx context.Context, m Message) []OperatorLine {
 	var out []OperatorLine
 	chars := 0
 	for _, h := range msgs { // Newest first.
-		if (h.ChannelID != "" && h.ChannelID != m.ChannelID) || !b.fromOperator(h.Message) {
+		if (h.ChannelID != "" && h.ChannelID != m.ChannelID) || !b.fromOperator(h.Message) || b.blockedID(h.ID) {
 			continue
 		}
-		text := b.stripMention(h.Content)
+		text := b.Places.Resolve(m.GuildID, b.stripMention(h.Content), h.Mentions)
 		if text == "" {
 			continue
 		}
@@ -292,8 +300,9 @@ type OperatorSessions interface {
 	RevertSession(ctx context.Context, id string) (*kagent.Session, error)
 }
 
-// maxSessionGenerations bounds the replacements of a thread's session.
-const maxSessionGenerations = 16
+// maxSessionGenerations bounds the replacements of a thread's session. A
+// blocked turn uses one, so the bound leaves room for many (HOME-909).
+const maxSessionGenerations = 64
 
 // OperatorRequestID is the request ID of a thread's session. kagent returns
 // the same session for the same request ID, so a restarted bridge finds the
@@ -306,6 +315,44 @@ func OperatorRequestID(threadID string, generation int) string {
 	return fmt.Sprintf("discord-operator-%s-%d", threadID, generation)
 }
 
+// ChannelRequestID is the request ID of a server agent's session for one
+// channel (HOME-909): each channel, a thread included, has its own.
+func ChannelRequestID(channelID string, generation int) string {
+	if generation == 0 {
+		return "discord-channel-" + channelID
+	}
+	return fmt.Sprintf("discord-channel-%s-%d", channelID, generation)
+}
+
+// EpochChannelRequestID names channel sessions with epoch in the ID:
+// discord-channel-<epoch>-<channel>. kagent pins a session to the Agent
+// revision that created it, so a new epoch gives every channel a new session
+// on the current revision. An empty epoch is ChannelRequestID.
+func EpochChannelRequestID(epoch string) func(string, int) string {
+	if epoch == "" {
+		return ChannelRequestID
+	}
+	return func(channelID string, generation int) string {
+		return ChannelRequestID(epoch+"-"+channelID, generation)
+	}
+}
+
+// ServerRequestID is the request ID of a server agent's session for a whole
+// server, before sessions moved to one per channel (HOME-909).
+func ServerRequestID(guildID string, generation int) string {
+	if generation == 0 {
+		return "discord-server-" + guildID
+	}
+	return fmt.Sprintf("discord-server-%s-%d", guildID, generation)
+}
+
+func (k *KagentOperator) requestID(key string, generation int) string {
+	if k.RequestID != nil {
+		return k.RequestID(key, generation)
+	}
+	return OperatorRequestID(key, generation)
+}
+
 // KagentOperator runs operator turns on one kagent Agent. Each thread keeps
 // one session across turns and bridge restarts; nothing deletes it.
 type KagentOperator struct {
@@ -314,9 +361,19 @@ type KagentOperator struct {
 	Agent    kagent.AgentRef
 	Poll     time.Duration
 	Timeout  time.Duration
+	// RequestID names a key's session; nil names a thread's
+	// (OperatorRequestID). A server agent uses ServerRequestID, so its
+	// sessions never meet a thread's.
+	RequestID func(key string, generation int) string
+	// Log reports a blocked session that could not be deleted; nil logs
+	// nothing.
+	Log *slog.Logger
 
 	mu    sync.Mutex
 	known map[string]string // thread -> context ID
+	// first is the generation a key's session search starts at: past a
+	// session dropped after a blocked turn, before kagent deletes it.
+	first map[string]int
 }
 
 // Session finds or creates the thread's session.
@@ -327,8 +384,11 @@ func (k *KagentOperator) Session(ctx context.Context, threadID string) (Operator
 	if ok {
 		return OperatorSession{ContextID: id}, nil
 	}
-	for gen := range maxSessionGenerations {
-		s, err := k.Sessions.CreateSession(ctx, k.Agent, OperatorRequestID(threadID, gen))
+	k.mu.Lock()
+	start := k.first[threadID]
+	k.mu.Unlock()
+	for gen := start; gen < maxSessionGenerations; gen++ {
+		s, err := k.Sessions.CreateSession(ctx, k.Agent, k.requestID(threadID, gen))
 		if errors.Is(err, kagent.ErrSessionNotFound) || errors.Is(err, kagent.ErrSessionUnrecoverable) {
 			continue
 		}
@@ -336,7 +396,7 @@ func (k *KagentOperator) Session(ctx context.Context, threadID string) (Operator
 			return OperatorSession{}, err
 		}
 		if s == nil || s.ContextID == "" || s.ID != s.ContextID || s.AgentNamespace != k.Agent.Namespace || s.AgentName != k.Agent.Name {
-			return OperatorSession{}, errors.New("discord: session does not belong to the operator Agent")
+			return OperatorSession{}, errors.New("discord: session does not belong to the Agent")
 		}
 		if s.Gone() {
 			continue
@@ -358,31 +418,69 @@ func (k *KagentOperator) Session(ctx context.Context, threadID string) (Operator
 			k.known = map[string]string{}
 		}
 		k.known[threadID] = s.ContextID
+		if k.first == nil {
+			k.first = map[string]int{}
+		}
+		k.first[threadID] = gen
 		k.mu.Unlock()
 		return OperatorSession{ContextID: s.ContextID, Fresh: page.TotalSize == 0 && len(page.Tasks) == 0}, nil
 	}
 	return OperatorSession{}, fmt.Errorf("discord: thread %s has no usable session after %d generations", threadID, maxSessionGenerations)
 }
 
+// Forget drops a key's cached session, so its next turn looks it up again.
+func (k *KagentOperator) Forget(key string) {
+	k.mu.Lock()
+	delete(k.known, key)
+	k.mu.Unlock()
+}
+
 // Turn sends prompt in the thread's session and waits for the answer. The
 // Discord message ID makes the A2A message ID, so a resend after an
 // ambiguous outcome is the same message. A failed turn makes the next turn
 // look the session up again.
-func (k *KagentOperator) Turn(ctx context.Context, threadID, messageID, prompt string) (string, error) {
+func (k *KagentOperator) Turn(ctx context.Context, threadID, messageID, prompt string, images ...TurnImage) (string, error) {
 	s, err := k.Session(ctx, threadID)
 	if err != nil {
 		return "", err
 	}
-	answer, err := k.turn(ctx, s.ContextID, messageID, prompt)
+	answer, err := k.turn(ctx, s.ContextID, messageID, prompt, images)
 	if err != nil {
 		k.mu.Lock()
 		delete(k.known, threadID)
 		k.mu.Unlock()
 	}
+	if ContentBlocked(err) {
+		k.dropBlocked(threadID, s.ContextID)
+	}
 	return answer, err
 }
 
-func (k *KagentOperator) turn(ctx context.Context, contextID, messageID, prompt string) (string, error) {
+// dropBlocked drops a session whose turn the provider's safety filter
+// refused. The provider judges the whole conversation, and Hermes keeps
+// the refused message in it, so every later turn in that session is
+// refused too. The key's next turn starts at the next generation, a clean
+// session, and kagent deletes the old one off the channel's worker
+// (HOME-909).
+func (k *KagentOperator) dropBlocked(key, contextID string) {
+	k.mu.Lock()
+	if k.first == nil {
+		k.first = map[string]int{}
+	}
+	k.first[key]++
+	k.mu.Unlock()
+	d, ok := k.Sessions.(SessionDeleter)
+	if !ok {
+		return
+	}
+	go func() {
+		if err := deleteSession(d, contextID); err != nil && k.Log != nil {
+			k.Log.Warn("blocked session not deleted", "key", key, "session", contextID, "error", err)
+		}
+	}()
+}
+
+func (k *KagentOperator) turn(ctx context.Context, contextID, messageID, prompt string, images []TurnImage) (string, error) {
 	timeout := k.Timeout
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
@@ -393,7 +491,12 @@ func (k *KagentOperator) turn(ctx context.Context, contextID, messageID, prompt 
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	msg := kagent.Message{MessageID: "discord-" + messageID, ContextID: contextID, Parts: []kagent.Part{{Text: prompt}}}
+	parts := []kagent.Part{{Text: prompt}}
+	for _, img := range images {
+		// The harness runtime reads raw image parts after the text (HOME-939).
+		parts = append(parts, kagent.Part{Raw: img.Data, MediaType: img.MediaType, Filename: img.Filename})
+	}
+	msg := kagent.Message{MessageID: "discord-" + messageID, ContextID: contextID, Parts: parts}
 	task, err := k.A2A.Send(ctx, k.Agent, msg)
 	if errors.Is(err, kagent.ErrAmbiguous) {
 		task, err = k.A2A.Send(ctx, k.Agent, msg)

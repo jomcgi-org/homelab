@@ -11,17 +11,27 @@ import (
 	"time"
 )
 
-// Memory is the channel memory the bridge reads before a turn and writes
+// Memory is the server memory the bridge reads before a turn and writes
 // after it.
 type Memory interface {
-	Recall(ctx context.Context, guildID, channelID, query string) ([]string, error)
+	Recall(ctx context.Context, guildID, query string) ([]string, error)
 	Retain(ctx context.Context, guildID, channelID string, at time.Time, content string) error
 }
 
+// FactMemory is a Memory that stores an explicit fact as its own item
+// (HOME-919). A Memory without it gets the fact through Retain.
+type FactMemory interface {
+	RetainFact(ctx context.Context, guildID, channelID, messageID string, at time.Time, content string) error
+}
+
+// RememberedTag marks a fact that Joe asked Bosun to remember (HOME-919).
+const RememberedTag = "kind:remembered"
+
 // Hindsight is the hindsight-discord REST API, called with the tenant key.
 // Each server has its own bank (discord-<guild_id>, HOME-162 contract rule
-// 8) and each channel its own tag, which every recall requires and every
-// retain carries (rule 5). Both come from the gateway event.
+// 8). Every retain carries its channel's tag. A recall reads the whole bank:
+// every channel of the server (Joe, 2026-11-26, HOME-162 comment 12817).
+// The bank and the tag come from the gateway event.
 type Hindsight struct {
 	BaseURL string
 	Key     func() (string, error)
@@ -45,12 +55,11 @@ func DocumentID(channelID string, at time.Time) string {
 	return "discord:" + channelID + ":" + at.UTC().Format(time.DateOnly)
 }
 
-// RecallRequest is the body of a recall: only the channel's tag, strictly.
+// RecallRequest is the body of a recall. It has no tag filter, so Hindsight
+// returns the bank's memories and observations from every channel.
 type RecallRequest struct {
-	Query     string   `json:"query"`
-	Tags      []string `json:"tags"`
-	TagsMatch string   `json:"tags_match"`
-	MaxTokens int      `json:"max_tokens,omitempty"`
+	Query     string `json:"query"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
 }
 
 // RetainItem is one retained exchange.
@@ -64,13 +73,14 @@ type RetainItem struct {
 	ObservationScopes [][]string `json:"observation_scopes"`
 }
 
-// NewRecall builds the recall for a channel.
-func NewRecall(channelID, query string, maxTokens int) RecallRequest {
-	return RecallRequest{Query: query, Tags: []string{ChannelTag(channelID)}, TagsMatch: "all_strict", MaxTokens: maxTokens}
+// NewRecall builds the recall for a server's bank.
+func NewRecall(query string, maxTokens int) RecallRequest {
+	return RecallRequest{Query: query, MaxTokens: maxTokens}
 }
 
 // NewRetain builds the retained exchange for a channel. Observations stay in
-// the channel's scope, so consolidation never mixes channels.
+// the channel's scope, so consolidation never merges facts from two
+// channels. The untagged recall still returns them.
 func NewRetain(channelID string, at time.Time, content string) RetainItem {
 	tag := ChannelTag(channelID)
 	return RetainItem{
@@ -84,8 +94,21 @@ func NewRetain(channelID string, at time.Time, content string) RetainItem {
 	}
 }
 
-// Recall returns the channel's memories for query.
-func (h *Hindsight) Recall(ctx context.Context, guildID, channelID, query string) ([]string, error) {
+// NewFact builds the item for a fact that Joe asked Bosun to remember. It
+// is its own document, keyed by the tagging message, so a repeat replaces
+// it and the day's channel document is unchanged. Its observations stay in
+// the channel's scope, as for an exchange.
+func NewFact(channelID, messageID string, at time.Time, content string) RetainItem {
+	item := NewRetain(channelID, at, content)
+	item.Context = "Joe asked Bosun to remember this, in Discord channel " + channelID
+	item.DocumentID = "discord:" + channelID + ":remembered:" + messageID
+	item.UpdateMode = "replace"
+	item.Tags = append(item.Tags, RememberedTag)
+	return item
+}
+
+// Recall returns the server's memories for query, from every channel.
+func (h *Hindsight) Recall(ctx context.Context, guildID, query string) ([]string, error) {
 	if err := h.ensureBank(ctx, guildID); err != nil {
 		return nil, err
 	}
@@ -94,7 +117,7 @@ func (h *Hindsight) Recall(ctx context.Context, guildID, channelID, query string
 			Text string `json:"text"`
 		} `json:"results"`
 	}
-	req := NewRecall(channelID, query, h.RecallTokens)
+	req := NewRecall(query, h.RecallTokens)
 	if err := h.call(ctx, http.MethodPost, "/v1/default/banks/"+BankID(guildID)+"/memories/recall", req, &out); err != nil {
 		return nil, err
 	}
@@ -113,6 +136,16 @@ func (h *Hindsight) Retain(ctx context.Context, guildID, channelID string, at ti
 		return err
 	}
 	body := map[string]any{"items": []RetainItem{NewRetain(channelID, at, content)}, "async": false}
+	return h.call(ctx, http.MethodPost, "/v1/default/banks/"+BankID(guildID)+"/memories", body, nil)
+}
+
+// RetainFact stores a remembered fact in the server's bank and waits until
+// Hindsight has stored it.
+func (h *Hindsight) RetainFact(ctx context.Context, guildID, channelID, messageID string, at time.Time, content string) error {
+	if err := h.ensureBank(ctx, guildID); err != nil {
+		return err
+	}
+	body := map[string]any{"items": []RetainItem{NewFact(channelID, messageID, at, content)}, "async": false}
 	return h.call(ctx, http.MethodPost, "/v1/default/banks/"+BankID(guildID)+"/memories", body, nil)
 }
 
