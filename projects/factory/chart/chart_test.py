@@ -2698,7 +2698,11 @@ def test_a_notes_binding_keeps_hermes_memory_in_the_vault() -> None:
 
     harness, prompt = render(_NOTES_BINDING)
     assert harness["memory"] == {"remoteMCPServer": "notes"}
-    assert harness["serverTools"] == {"codeExecution": True}
+    assert harness["serverTools"] == {
+        "codeExecution": True,
+        "webSearch": {"maxUses": 5},
+        "webFetch": {"maxUses": 3},
+    }
     assert rule in prompt
     assert "Never save anything from other people's messages" in prompt
     # The model gets only the listed notes tools, never the sync tools.
