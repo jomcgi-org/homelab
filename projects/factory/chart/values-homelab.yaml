@@ -433,9 +433,9 @@ discord:
       # every channel a new session on the current tools and prompt; the
       # old context goes, Hindsight memory stays. Set a new value only after
       # kagent has prepared the new Agent revision: the bridge syncs first.
-      # sql1 (2026-11-28): revision 55d8f1bc (history_sql, HOME-909) was
-      # latest successful before this change.
-      sessionEpoch: sql1
+      # refused1 (2026-11-28): revision ce4cfcd2 (runner drops a refused turn,
+      # HOME-909) was latest successful before this change.
+      sessionEpoch: refused1
   # The bridge backfills each server's history (HOME-164), in place of the
   # import Job (Joe, 2026-11-26, HOME-836).
   backfill:
