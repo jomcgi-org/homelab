@@ -105,7 +105,8 @@ spec:
         - ports:
             - port: "8123"
               protocol: TCP
-    # Garage's website endpoint, for artifact.jomcgi.dev.
+    # Garage's website endpoint, for artifact.jomcgi.dev, and its S3 API,
+    # for signed share links on artifact.jomcgi.dev/s/.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: garage
@@ -113,6 +114,8 @@ spec:
       toPorts:
         - ports:
             - port: "3902"
+              protocol: TCP
+            - port: "3900"
               protocol: TCP
     - toEndpoints:
         - matchLabels:

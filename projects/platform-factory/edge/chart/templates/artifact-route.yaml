@@ -15,6 +15,8 @@ Who may read (HOME-917):
   /<server-id>/...  members of Authentik group discord-<server-id>, and
                     authentik Admins (one route rule and policy per server)
   /_lib/...         anyone, GET and HEAD (route artifact-lib below)
+  /s/<key>?sig      anyone with a valid signed link, GET and HEAD (route
+                    artifact-share below)
   everything else   authentik Admins only (rule "admins"), private/ included
 
 Each policy targets one route rule and merges (JSONMerge) into the
@@ -162,6 +164,86 @@ spec:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: artifact-lib
+  authorization:
+    defaultAction: Allow
+---
+{{- /*
+Signed, expiring share links (HOME-917). The discord bridge signs an S3
+presigned GET after Joe confirms (projects/factory/discord/share.go), with a
+read-only key for the bucket. A link is /s/<key>?X-Amz-...: this route
+rewrites only the path prefix to /<bucket>/ and keeps Host, which the
+signature covers, and Garage's S3 API checks the signature and the expiry.
+A bad, expired or unsigned request gets Garage's 403. No sign-in: the
+signature is the credential. GET and HEAD only. Every response gets the
+artifact sandbox headers and noindex, and no cache may keep it past expiry.
+*/}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: artifact-share
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+      sectionName: http
+  hostnames: [{{ .Values.artifacts.hostname }}]
+  rules:
+    # One rule per method: replacePrefixMatch needs exactly one PathPrefix
+    # match in its rule.
+    {{- range $method := list "GET" "HEAD" }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ $.Values.artifacts.sharePath }}
+          method: {{ $method }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /{{ $.Values.artifacts.shareBucket }}
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove: [Cookie, Authorization]
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Content-Security-Policy
+                value: {{ $.Values.artifacts.contentSecurityPolicy | quote }}
+              - name: X-Content-Type-Options
+                value: nosniff
+              - name: Referrer-Policy
+                value: no-referrer
+              - name: Cross-Origin-Resource-Policy
+                value: same-origin
+              - name: X-Robots-Tag
+                value: noindex, nofollow
+              - name: Cache-Control
+                value: private, no-store
+            remove: [Set-Cookie, Access-Control-Allow-Origin]
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: garage
+          namespace: garage
+          port: 3900
+          weight: 1
+    {{- end }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: artifact-share-no-gateway-oidc
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: artifact-share
   authorization:
     defaultAction: Allow
 {{- range $rule := concat (list "admins") .Values.artifacts.servers }}

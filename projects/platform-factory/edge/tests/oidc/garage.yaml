@@ -1,0 +1,52 @@
+# A one-node Garage S3 API as Service garage:3900, the share route's backend.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: garage
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: garage
+    spec:
+      containers:
+        - name: garage
+          image: docker.io/dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
+          command: [/garage, -c, /etc/garage/garage.toml, server]
+          env:
+            - name: GARAGE_RPC_SECRET
+              value: "0000000000000000000000000000000000000000000000000000000000000001"
+            - name: GARAGE_ADMIN_TOKEN
+              value: kind-only
+          readinessProbe:
+            tcpSocket:
+              port: 3900
+          volumeMounts:
+            - name: config
+              mountPath: /etc/garage
+            - name: meta
+              mountPath: /var/lib/garage/meta
+            - name: data
+              mountPath: /var/lib/garage/data
+      volumes:
+        - name: config
+          configMap:
+            name: garage-config
+        - name: meta
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage
+spec:
+  selector:
+    app.kubernetes.io/name: garage
+  ports:
+    - name: s3
+      port: 3900

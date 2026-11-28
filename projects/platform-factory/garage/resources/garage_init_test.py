@@ -319,3 +319,29 @@ def test_website_is_turned_off_on_other_buckets(monkeypatch):
     calls = record_garage(monkeypatch, {"websiteAccess": False})
     INIT.ensure_website("id2", "factory-evidence")
     assert [c[1] for c in calls] == ["GetBucketInfo"]
+
+
+def test_the_artifact_share_key_is_read_only(monkeypatch):
+    granted = []
+    monkeypatch.setattr(INIT, "wait_for_nodes", lambda: [])
+    monkeypatch.setattr(INIT, "ensure_layout", lambda _: None)
+    monkeypatch.setattr(INIT, "ensure_bucket", lambda name: "id-" + name)
+    monkeypatch.setattr(INIT, "ensure_website", lambda *args: None)
+    monkeypatch.setattr(INIT, "discover_grants", lambda: [])
+    monkeypatch.setattr(INIT, "ensure_grant", lambda *args: granted.append(args))
+    monkeypatch.setattr(
+        INIT,
+        "garage",
+        lambda *args: {
+            "status": "healthy",
+            "storageNodesUp": 3,
+            "storageNodes": 3,
+            "partitionsAllOk": 1,
+            "partitions": 1,
+        },
+    )
+    INIT.bootstrap()
+    access = {(ns, name): a for _, _, ns, name, a in granted}
+    assert access["factory-discord", "bosun-artifacts-share-s3"] == "read"
+    assert access["factory-discord", "bosun-artifacts-s3"] == "readwrite"
+    assert {a for a in access.values()} == {"read", "readwrite"}

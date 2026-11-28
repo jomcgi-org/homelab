@@ -23,6 +23,17 @@ metadata:
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 type: Opaque
 ---
+# The read-only share key (HOME-917): the discord bridge signs artifact
+# share links with it after Joe confirms. Rotating it revokes every link.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bosun-artifacts-share-s3
+  namespace: factory-discord
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -31,7 +42,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: [bosun-artifacts-s3, bosun-libs-s3]
+    resourceNames: [bosun-artifacts-s3, bosun-libs-s3, bosun-artifacts-share-s3]
     verbs: [get, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

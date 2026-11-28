@@ -1468,7 +1468,20 @@ def test_discord_bridge_reaches_only_its_expected_peers() -> None:
         "kagent": ("/var/run/secrets/kagent", True),
         "policy": ("/etc/discord-bridge", True),
         "archive": ("/var/run/secrets/discord-archive", True),
+        "artifact-share": ("/var/run/secrets/artifact-share", True),
     }
+    # The read-only share key (HOME-917): optional, two files, no other key.
+    volumes = {v["name"]: v for v in spec["volumes"]}
+    assert volumes["artifact-share"]["secret"] == {
+        "secretName": "bosun-artifacts-share-s3",
+        "optional": True,
+        "items": [
+            {"key": "AWS_ACCESS_KEY_ID", "path": "AWS_ACCESS_KEY_ID"},
+            {"key": "AWS_SECRET_ACCESS_KEY", "path": "AWS_SECRET_ACCESS_KEY"},
+        ],
+    }
+    assert env["ARTIFACT_SHARE_KEY_DIR"] == "/var/run/secrets/artifact-share"
+    assert env["ARTIFACT_BASE_URL"] == "https://artifact.jomcgi.dev"
     # Each file the bridge reads is a mounted key.
     assert env["DISCORD_TOKEN_FILE"] == "/var/run/secrets/discord/token"
     assert env["HINDSIGHT_KEY_FILE"] == "/var/run/secrets/hindsight/tenant-api-key"

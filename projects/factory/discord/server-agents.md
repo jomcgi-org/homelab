@@ -462,6 +462,7 @@ then admits them to that server's folder:
 | `/<server-id>/<channel-id>/…` | Group `discord-<server-id>`, and `authentik Admins` |
 | `/private/<channel-id>/…` | `authentik Admins` only |
 | `/_lib/…` (pinned public libraries, GET and HEAD) | Anyone, no sign-in |
+| `/s/<key>?X-Amz-…` (a share link, GET and HEAD) | Anyone with a valid, unexpired link Joe confirmed |
 | Every other path | `authentik Admins` only |
 
 A member sees no other host: the gateway-wide policy admits only
@@ -593,6 +594,52 @@ Members get the group at their next Discord sign-in. To remove a server,
 remove it from the bridge and edge lists, and set its group and binding
 entries to `state: absent` (Authentik keeps an object whose blueprint entry
 is only deleted). Its folder is then Admins-only.
+
+**Share links (HOME-917).** A share link opens one file for anyone who
+has it, with no sign-in, until it expires. Bosun cannot make one; Joe
+confirms each link.
+
+```mermaid
+sequenceDiagram
+  participant J as Joe
+  participant B as Bosun (agent)
+  participant R as Bridge
+  participant E as Edge /s/
+  participant G as Garage S3 API
+  J->>B: share report.html for 3 days
+  B->>R: answer with share block {path, ttl}
+  R->>J: "Share <key> for 3 days? React ✅" (bot adds ✅)
+  J->>R: ✅ on that message within 10 minutes
+  R->>R: presign GET with the read-only share key
+  R->>J: link, valid until <time> UTC
+  Note over E,G: anyone with the link
+  E->>G: GET /bosun-artifacts/<key>?X-Amz-..., Host kept
+  G-->>E: file, or 403 if the signature is bad or expired
+```
+
+| Rule | Where |
+| --- | --- |
+| Only a fenced `share` block asks; the bridge takes one per answer. `path` is a file of the current channel, its URL or its key (`<server>/<channel>/…` or `private/<channel>/…`); `ttl` is 1 minute to 7 days, 24 hours by default | `share.go` `ParseShare`, `artifacts/share.go` `ShareKey` |
+| A link needs Joe's ✅ (`Operator.UserID`) on that exact confirmation, in its channel, within 10 minutes. Other users, other emoji, the bot's own ✅ and late reactions do nothing. A confirmation makes one link | `share.go` `HandleReaction` |
+| The bridge signs with `bosun-artifacts-share-s3`, a read-only key for the bucket that only the bridge mounts. The agent and the artifacts service never hold it | `garage_init.py` `GRANTS`, chart `discord.yaml` |
+| The link is `/s/<key>?X-Amz-…`. The edge rewrites the prefix to `/bosun-artifacts/`, keeps Host, and allows GET and HEAD with no sign-in. Garage checks the signature and expiry; a bad, expired or unsigned request gets 403 | edge `artifact-route.yaml` route `artifact-share` |
+| Each response gets the artifact sandbox CSP, `nosniff`, `no-referrer`, `CORP: same-origin`, `X-Robots-Tag: noindex, nofollow` and `Cache-Control: private, no-store`; `Set-Cookie` is removed | same |
+
+The bridge posts the link in the channel, so the channel's members see it
+too. A link to a missing file gets Garage's 404. The bridge does not check
+that the file exists.
+
+To revoke every link, rotate the share key, in this order, so that
+garage-init cannot import the old key again:
+
+1. Clear the Secret: `kubectl -n factory-discord patch secret
+   bosun-artifacts-share-s3 --type=json -p '[{"op":"remove","path":"/data"}]'`.
+   The next garage-init run mints a new key into it.
+2. Delete the old key in Garage: `garage key delete --yes <old key ID>` on a
+   Garage pod. From then on, every old link gets 403.
+
+The bridge reads the key files at each link, so new links use the new key
+when the kubelet updates the mount, with no restart.
 
 **Wiring.** Deploy values bind it to the homelab agent
 (`discord.serverAgents.homelab.mcpServers`, HOME-915): a RemoteMCPServer

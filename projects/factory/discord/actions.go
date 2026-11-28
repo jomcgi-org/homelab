@@ -50,11 +50,13 @@ type Actions struct {
 	Explore *ExploreRequest
 	// Event creates a scheduled event in the message's server (event.go).
 	Event *EventRequest
+	// Share asks Joe to confirm a share link for an artifact (share.go).
+	Share *ShareRequest
 }
 
 // Any reports whether a holds an action.
 func (a Actions) Any() bool {
-	return len(a.React) > 0 || a.Thread != "" || a.Pin || a.Explore != nil || a.Event != nil
+	return len(a.React) > 0 || a.Thread != "" || a.Pin || a.Explore != nil || a.Event != nil || a.Share != nil
 }
 
 // TargetTagged and TargetReplied label the tagged message and the message
@@ -88,8 +90,8 @@ func validTarget(s string) bool {
 }
 
 // actionBlock is a fenced code block tagged react, thread, pin, reply,
-// explore or event.
-var actionBlock = regexp.MustCompile("(?s)```[ \\t]*(react|thread|pin|reply|explore|event)[ \\t]*\\r?\\n(.*?)```")
+// explore, event or share.
+var actionBlock = regexp.MustCompile("(?s)```[ \\t]*(react|thread|pin|reply|explore|event|share)[ \\t]*\\r?\\n(.*?)```")
 
 var errAction = errors.New("discord: invalid action")
 
@@ -225,6 +227,12 @@ func TakeActions(answer string) (string, Actions) {
 					a.Event, ok = &e, true
 				}
 			}
+		case "share":
+			if a.Share == nil {
+				if r, err := ParseShare(spec); err == nil {
+					a.Share, ok = &r, true
+				}
+			}
 		}
 		if !ok {
 			continue
@@ -256,6 +264,9 @@ func (a Actions) Tags() string {
 	}
 	if a.Event != nil {
 		tags = append(tags, "[event: "+a.Event.Name+", "+a.Event.Start.Format(time.RFC3339)+"]")
+	}
+	if a.Share != nil {
+		tags = append(tags, "[asked Joe to confirm a share link: "+a.Share.Path+"]")
 	}
 	return strings.Join(tags, " ")
 }

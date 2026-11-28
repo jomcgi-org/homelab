@@ -132,6 +132,7 @@ func run(log *slog.Logger) error {
 		log.Info("renderer on", "url", u)
 	}
 	wireOperatorUser(log, bridge)
+	wireShare(log, bridge)
 	wireServerAgents(log, bridge, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions)
 	wireExplorer(log, bridge, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions)
 	if err := wireOperator(log, bridge, rest, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions); err != nil {
@@ -162,6 +163,10 @@ func run(log *slog.Logger) error {
 	// A server with `ingest` stores every human message (HOME-833). The
 	// ingestor outlives the gateway so the last turns' lines are stored.
 	intents := discord.IntentsFor(policy)
+	if bridge.Share != nil {
+		// Joe's ✅ confirms a share link (discord/share.go).
+		intents |= discord.IntentGuildMessageReactions
+	}
 	ingestDone := make(chan struct{})
 	stopIngest := func() {}
 	if intents&discord.IntentMessageContent != 0 {
@@ -253,9 +258,11 @@ func run(log *slog.Logger) error {
 		Token:     botToken,
 		OnReady:   onReady,
 		OnMessage: func(m discord.Message) { bridge.Handle(work, m) },
-		Places:    bridge.Places,
-		Log:       log,
-		Intents:   intents,
+		// Off the gateway's reader: a confirmed share signs and posts.
+		OnReaction: func(r discord.Reaction) { go bridge.HandleReaction(ctx, r) },
+		Places:     bridge.Places,
+		Log:        log,
+		Intents:    intents,
 	}
 	if archiver != nil {
 		gateway.OnArchive = archiver.Event
