@@ -9,6 +9,8 @@
 //	<path>.md                 notes
 //	_hermes/MEMORY.md         Hermes' memory file (memory_read, memory_write)
 //	_hermes/USER.md           Hermes' user profile
+//	_hermes/channels/<id>.md  a channel session's handoff note (handoff_read,
+//	                          handoff_write): its latest compaction summary
 //	.trash/<path>.md          deleted notes (notes_delete moves them here)
 //	.history/<path>/<ts>.md   versions that a write replaced
 //
@@ -37,8 +39,11 @@ const (
 	MaxNoteBytes   = 256 << 10
 	MaxAppendBytes = 64 << 10
 	MaxMemoryBytes = 64 << 10
-	maxList        = 500
-	pageSize       = 1000
+	// MaxHandoffBytes bounds a channel's handoff note. A new session reads
+	// it into its first turn, so it stays small.
+	MaxHandoffBytes = 16 << 10
+	maxList         = 500
+	pageSize        = 1000
 	// maxPages bounds one listing: .trash/ and .history/ sort before most
 	// note names, so a listing pages past them.
 	maxPages     = 20
@@ -568,4 +573,62 @@ func (s *Store) MemoryWrite(ctx context.Context, server, file, content, base str
 		return MemoryResult{}, err
 	}
 	return MemoryResult{File: file, Content: content, Version: Version(content, true)}, nil
+}
+
+// HandoffResult is what handoff_read and handoff_write return.
+type HandoffResult struct {
+	Channel string `json:"channel_id"`
+	Content string `json:"content"`
+}
+
+// handoffKey is the key of a channel's handoff note (HOME-944). The channel
+// comes from the bridge's record of the session, never from the caller.
+func handoffKey(prefix, channel string) (string, error) {
+	if !snowflake.MatchString(channel) {
+		return "", errors.New("notes: session's channel is not a Discord ID")
+	}
+	return prefix + Hermes + "/channels/" + channel + ".md", nil
+}
+
+// HandoffRead returns the handoff note of the session's channel; a missing
+// note is empty.
+func (s *Store) HandoffRead(ctx context.Context, server, channel string) (HandoffResult, error) {
+	prefix, err := s.prefix(server)
+	if err != nil {
+		return HandoffResult{}, err
+	}
+	key, err := handoffKey(prefix, channel)
+	if err != nil {
+		return HandoffResult{}, err
+	}
+	body, _, err := s.get(ctx, key)
+	if err != nil {
+		return HandoffResult{}, err
+	}
+	return HandoffResult{Channel: channel, Content: body}, nil
+}
+
+// HandoffWrite replaces the handoff note of the session's channel. The note
+// is the session's latest compaction summary, so the newest write wins and
+// no old version is kept.
+func (s *Store) HandoffWrite(ctx context.Context, server, channel, content string) (HandoffResult, error) {
+	prefix, err := s.prefix(server)
+	if err != nil {
+		return HandoffResult{}, err
+	}
+	key, err := handoffKey(prefix, channel)
+	if err != nil {
+		return HandoffResult{}, err
+	}
+	if err := checkText(content, MaxHandoffBytes); err != nil {
+		return HandoffResult{}, err
+	}
+	if strings.TrimSpace(content) == "" {
+		return HandoffResult{}, &ParamError{"content", "must not be empty"}
+	}
+	defer s.lock(key)()
+	if err := s.Bucket.Put(ctx, key, []byte(content), contentType); err != nil {
+		return HandoffResult{}, err
+	}
+	return HandoffResult{Channel: channel, Content: content}, nil
 }

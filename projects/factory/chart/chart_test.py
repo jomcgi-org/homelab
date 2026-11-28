@@ -2854,7 +2854,12 @@ def test_a_notes_binding_keeps_hermes_memory_in_the_vault() -> None:
     (binding,) = [t for t in tools if t["mcp"]["server"]["name"] == "notes"]
     assert binding["mcp"]["tools"] == ["notes_list", "notes_read"]
     for t in tools:
-        assert not {"memory_read", "memory_write"} & set(t["mcp"]["tools"])
+        assert not {
+            "memory_read",
+            "memory_write",
+            "handoff_read",
+            "handoff_write",
+        } & set(t["mcp"]["tools"])
 
     harness, prompt = render(_NOTES_BINDING + ["discord.serverAgents.homelab.memory="])
     assert "memory" not in harness
@@ -2862,8 +2867,8 @@ def test_a_notes_binding_keeps_hermes_memory_in_the_vault() -> None:
 
 
 def test_server_agent_bindings_never_give_the_model_the_memory_sync_tools() -> None:
-    for tool in ("memory_read", "memory_write"):
-        with pytest.raises(RuntimeError, match="memory_read or memory_write"):
+    for tool in ("memory_read", "memory_write", "handoff_read", "handoff_write"):
+        with pytest.raises(RuntimeError, match="handoff_read or handoff_write"):
             _render(
                 _HOMELAB
                 + _NOTES_BINDING[:4]

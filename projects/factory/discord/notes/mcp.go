@@ -190,6 +190,12 @@ type memoryReadArgs struct {
 	File string `json:"file"`
 }
 
+type handoffReadArgs struct{}
+
+type handoffWriteArgs struct {
+	Content string `json:"content"`
+}
+
 type memoryWriteArgs struct {
 	File        string `json:"file"`
 	Content     string `json:"content"`
@@ -274,6 +280,18 @@ func (h *Handler) call(ctx context.Context, id actorjwt.Identity, raw json.RawMe
 			target = a.File
 			out, err = h.Store.MemoryWrite(ctx, server, a.File, a.Content, a.BaseVersion)
 		}
+	case "handoff_read":
+		var a handoffReadArgs
+		if err = strictDecode(p.Arguments, &a); err == nil {
+			target = place.Channel
+			out, err = h.Store.HandoffRead(ctx, server, place.Channel)
+		}
+	case "handoff_write":
+		var a handoffWriteArgs
+		if err = strictDecode(p.Arguments, &a); err == nil {
+			target = place.Channel
+			out, err = h.Store.HandoffWrite(ctx, server, place.Channel, a.Content)
+		}
 	}
 	log := h.Log.With("tool", p.Name, "actor", id.Subject, "server", server, "channel", place.Channel, "path", target)
 	var pe *ParamError
@@ -350,8 +368,9 @@ func annotations(title string, readOnly, destructive bool) map[string]any {
 }
 
 // Tools is the fixed tool list. Bindings name the tools Hermes registers:
-// the homelab agent gets the notes_* tools; memory_read and memory_write are
-// for the Hermes runner's memory sync (HOME-918), not for the model.
+// the homelab agent gets the notes_* tools; memory_read, memory_write,
+// handoff_read and handoff_write are for the Hermes runner's memory sync
+// (HOME-918, HOME-944), not for the model.
 var Tools = []Tool{
 	{
 		Name:        "notes_list",
@@ -400,5 +419,17 @@ var Tools = []Tool{
 		Description: "Replace Hermes' MEMORY.md or USER.md for this server when base_version is its current version (\"\" for a missing file). On a mismatch nothing changes and the result has conflict true with the current copy. For the runner's memory sync.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"file":{"type":"string","enum":["MEMORY.md","USER.md"]},"content":{"type":"string"},"base_version":{"type":"string"}},"required":["file","content","base_version"],"additionalProperties":false}`),
 		Annotations: annotations("Write a memory file", false, true),
+	},
+	{
+		Name:        "handoff_read",
+		Description: "Read the handoff note of this session's channel: the compaction summary of its last session. For the runner's first turn in a new session.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Annotations: annotations("Read a channel handoff note", true, false),
+	},
+	{
+		Name:        "handoff_write",
+		Description: fmt.Sprintf("Replace the handoff note of this session's channel with its latest compaction summary (at most %d bytes). For the runner's memory sync.", MaxHandoffBytes),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"content":{"type":"string"}},"required":["content"],"additionalProperties":false}`),
+		Annotations: annotations("Write a channel handoff note", false, true),
 	},
 }

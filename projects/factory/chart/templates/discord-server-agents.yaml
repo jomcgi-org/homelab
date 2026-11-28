@@ -46,8 +46,8 @@ Hindsight of its own yet (slice 3), so the bridge recalls for it.
 {{- if or (not $m.url) (empty $m.tools) }}
 {{- fail (printf "discord.serverAgents.%s.mcpServers %s needs url and tools: Hermes registers only listed tools" $server $m.name) }}
 {{- end }}
-{{- if or (has "memory_read" $m.tools) (has "memory_write" $m.tools) }}
-{{- fail (printf "discord.serverAgents.%s.mcpServers %s lists memory_read or memory_write: they are for the runner's memory sync, not the model" $server $m.name) }}
+{{- if or (has "memory_read" $m.tools) (has "memory_write" $m.tools) (has "handoff_read" $m.tools) (has "handoff_write" $m.tools) }}
+{{- fail (printf "discord.serverAgents.%s.mcpServers %s lists memory_read, memory_write, handoff_read or handoff_write: they are for the runner's memory sync, not the model" $server $m.name) }}
 {{- end }}
 {{- end }}
 {{- /* memory names the binding that holds Hermes's MEMORY.md and USER.md (HOME-921); off until that binding exists. */}}
