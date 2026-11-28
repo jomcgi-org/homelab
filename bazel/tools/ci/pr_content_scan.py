@@ -1,4 +1,4 @@
-"""Warn on secret patterns in PR additions and PR commit messages."""
+"""Fail on secrets and private markers in PR additions and PR commit messages."""
 
 # invariant: ROOT-5
 import codecs
@@ -21,17 +21,41 @@ RULES = (
 )
 
 
+# Accept complete variable expansions and the Renovate mounted-token read.
+# Literal prefixes, suffixes and nonempty fallback values still need review.
+VARIABLE = r"[a-zA-Z_][a-zA-Z_0-9]*"
+EXPANSION = rf"\$(?:{VARIABLE}|\{{{VARIABLE}(?::-)?\}})"
+RENOVATE_TOKEN_READ = r'"\$\(cat /var/run/renovate-token/token\)"'
+RUNTIME_VALUE = re.compile(
+    rf'(?:{EXPANSION}|"{EXPANSION}"|{RENOVATE_TOKEN_READ})(?=\s|$)'
+)
+
+
+def matches(label, pattern, content):
+    if label != "secret env var assignment":
+        return pattern.search(content)
+    # The shared assignment regex consumes the first character of the value.
+    position = 0
+    while match := pattern.search(content, position):
+        reference = RUNTIME_VALUE.match(content, match.end() - 1)
+        if reference is None:
+            return True
+        position = reference.end()
+    return False
+
+
 def git(*args):
     return subprocess.check_output(["git", *args])
 
 
 def report(path, content):
-    labels = [label for label, pattern in RULES if pattern.search(content)]
+    labels = [label for label, pattern in RULES if matches(label, pattern, content)]
     if labels:
         if any(pattern.search(path) for _, pattern in RULES):
             path = "[redacted path]"
         for label in labels:
-            print(f"warning: {ascii(path)}: {label}")
+            print(f"error: {ascii(path)}: {label}")
+    return bool(labels)
 
 
 def blob_lines(mode, oid):
@@ -56,6 +80,7 @@ def blob_lines(mode, oid):
 
 
 def scan(base, head):
+    found = False
     start = git("merge-base", base, head).decode().strip()
     changes = git(
         "diff",
@@ -79,13 +104,14 @@ def scan(base, head):
         ).get_opcodes():
             if op in ("replace", "insert"):
                 additions.extend(after[first:last])
-        report(os.fsdecode(path), "\n".join(additions))
+        found |= report(os.fsdecode(path), "\n".join(additions))
 
     messages = git("log", "-z", "--format=%H%x00%B", f"{start}..{head}", "--")
     records = iter(messages.decode(errors="replace").split("\0")[:-1])
     for commit, message in zip(records, records):
-        report(f"commit {commit}", message)
+        found |= report(f"commit {commit}", message)
+    return found
 
 
 if __name__ == "__main__":
-    scan(*sys.argv[1:])
+    sys.exit(scan(*sys.argv[1:]))

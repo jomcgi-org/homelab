@@ -23,7 +23,7 @@ invariants:
   mechanism: []
   state: retired
 - id: ROOT-5
-  statement: PR content warnings scan added lines and PR commit messages and report rule labels without matched values.
+  statement: PR checks fail on findings in added lines or PR commit messages and report rule labels without matched values.
   mechanism:
   - bazel/tools/ci/pr_content_scan.py
   test: //bazel/tools/ci:pr_content_scan_test
