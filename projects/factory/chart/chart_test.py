@@ -1864,7 +1864,8 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
     assert account["automountServiceAccountToken"] is False
     agent = _in(docs, "Agent", ns, "homelab")["spec"]
     assert agent["harnessRef"] == {"name": "hermes"}
-    # Only the Scotland planner's four read tools and the artifacts tools.
+    # Only the Scotland planner's four read tools, the artifacts, history
+    # and notes tools.
     assert agent["template"]["inline"]["tools"] == [
         {
             "mcp": {
@@ -1882,6 +1883,20 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
             "mcp": {
                 "server": {"kind": "RemoteMCPServer", "name": "history"},
                 "tools": ["history_search", "history_around", "history_day"],
+            }
+        },
+        # The notes vault (HOME-918): no memory_read or memory_write.
+        {
+            "mcp": {
+                "server": {"kind": "RemoteMCPServer", "name": "notes"},
+                "tools": [
+                    "notes_list",
+                    "notes_read",
+                    "notes_search",
+                    "notes_write",
+                    "notes_append",
+                    "notes_delete",
+                ],
             }
         },
     ]
@@ -2622,16 +2637,11 @@ def test_a_notes_binding_adds_the_notes_write_rule_to_the_prompt() -> None:
         return agent["spec"]["template"]["inline"]["systemPrompt"]
 
     rule = "only when the tagging message is Joe's and asks you to note"
-    assert rule not in prompt([])
-    bound = prompt(
-        [
-            "discord.serverAgents.homelab.mcpServers[0].name=notes",
-            "discord.serverAgents.homelab.mcpServers[0].url=http://bosun-artifacts.factory-discord.svc.cluster.local:8080/notes/mcp",
-            "discord.serverAgents.homelab.mcpServers[0].actorJwt.audiences={bosun-artifacts}",
-            "discord.serverAgents.homelab.mcpServers[0].tools={notes_list,notes_read}",
-        ]
+    # The deploy values bind notes.
+    assert rule in " ".join(prompt([]).split())
+    assert rule not in " ".join(
+        prompt(["discord.serverAgents.homelab.mcpServers=null"]).split()
     )
-    assert rule in " ".join(bound.split())
 
 
 _NOTES_BINDING = [
