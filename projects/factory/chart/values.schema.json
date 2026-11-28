@@ -855,7 +855,8 @@
                   { "type": "integer", "minimum": 1 },
                   { "const": "codexWorkers" }
                 ]
-              }
+              },
+              "drain": { "type": "boolean" }
             }
           }
         },

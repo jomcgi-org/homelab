@@ -106,10 +106,13 @@ type Coordinator struct {
 }
 
 // Agent is an itsaplan external agent whose runs the connector claims.
+// A drain agent claims no new runs. The connector keeps its key so the runs
+// it already holds can heartbeat, report and close after its retirement.
 type Agent struct {
 	Key         string `yaml:"key"`
 	APIKeyFile  string `yaml:"apiKeyFile"`
 	Concurrency int    `yaml:"concurrency"`
+	Drain       bool   `yaml:"drain"`
 }
 
 // Planner is the planner runtime: the itsaplan agent whose cron runs the
@@ -376,6 +379,7 @@ func Parse(b []byte) (*File, error) {
 			return nil, fmt.Errorf("config: planner runTimeout must be at least one minute")
 		}
 	}
+	drain := map[string]bool{}
 	for i := range f.Agents {
 		a := &f.Agents[i]
 		if a.Key == "" || a.APIKeyFile == "" {
@@ -389,6 +393,9 @@ func Parse(b []byte) (*File, error) {
 			return nil, fmt.Errorf("config: planner agent %q is also a coding agent", a.Key)
 		}
 		agents[a.Key] = true
+		if a.Drain {
+			drain[a.Key] = true
+		}
 		if a.Concurrency <= 0 {
 			a.Concurrency = 1
 		}
@@ -465,6 +472,9 @@ func Parse(b []byte) (*File, error) {
 		for _, a := range b.Agents {
 			if !agents[a] {
 				return nil, fmt.Errorf("config: binding %s names unknown agent %q", b.Name, a)
+			}
+			if drain[a] {
+				return nil, fmt.Errorf("config: binding %s names drain agent %q, which takes no new work", b.Name, a)
 			}
 		}
 	}

@@ -429,6 +429,10 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
             {"key": "apiKey", "path": "factory-coordinator"}
         ],
         "factory-itsaplan-agent-task-agent": [{"key": "apiKey", "path": "task-agent"}],
+        # A drain agent keeps its key for the runs it still holds.
+        "factory-itsaplan-agent-homelab-codex": [
+            {"key": "apiKey", "path": "homelab-codex"}
+        ],
     }
     # The itsaplan bootstrap declares the same Secrets.
     for name in sources:
@@ -443,6 +447,13 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
             "key": "task-agent",
             "apiKeyFile": "/var/run/secrets/factory-itsaplan/task-agent",
             "concurrency": 10,
+        },
+        # Retired (HOME-898): claims nothing, keeps its key for held runs.
+        {
+            "key": "homelab-codex",
+            "apiKeyFile": "/var/run/secrets/factory-itsaplan/homelab-codex",
+            "concurrency": 1,
+            "drain": True,
         },
     ]
 
@@ -722,6 +733,10 @@ def test_peers_admit_the_connector_pod() -> None:
         (
             "connector.bindings.homelab.agents={factory-coordinator}",
             "agent factory-coordinator is not in connector.agents",
+        ),
+        (
+            "connector.bindings.homelab.agents={task-agent,homelab-codex}",
+            "agent homelab-codex drains and takes no new work",
         ),
         (
             "connector.coordinator=stranger",
