@@ -139,6 +139,7 @@ func run(log *slog.Logger) error {
 	wireOperatorUser(log, bridge)
 	wireShare(log, bridge)
 	wireServerAgents(log, bridge, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions)
+	wireUnsafe(log, bridge, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions)
 	wireExplorer(log, bridge, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions)
 	if err := wireOperator(log, bridge, rest, &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens}, sessions); err != nil {
 		return err
@@ -194,6 +195,9 @@ func run(log *slog.Logger) error {
 	// The verbatim archive (HOME-909) outlives the gateway, as the ingestor
 	// does, so the last events are written.
 	archiver, archiveStore := newArchive(log, policy, bridge.Places, reg)
+	if archiver != nil {
+		archiver.Unsafe = bridge // Unsafe mode turns are never archived (HOME-938).
+	}
 	archiveDone := make(chan struct{})
 	stopArchive := func() {}
 	if archiver != nil {

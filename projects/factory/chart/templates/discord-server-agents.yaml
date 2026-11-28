@@ -12,7 +12,7 @@ Hindsight of its own yet (slice 3), so the bridge recalls for it.
 {{- range $server := keys $d.serverAgents | sortAlpha }}
 {{- $a := index $d.serverAgents $server }}
 {{- if $a.enabled }}
-{{- $ns := printf "discord-%s" $a.guild }}
+{{- $ns := $a.namespace | default (printf "discord-%s" $a.guild) }}
 {{- $worker := printf "%s-worker" $a.name }}
 {{- $image := $d.hermesImage }}
 {{- $mcp := $a.mcpServers | default list }}
@@ -20,6 +20,11 @@ Hindsight of its own yet (slice 3), so the bridge recalls for it.
 {{- $github := and $d.github.enabled $d.bridge.enabled $a.route }}
 {{- if $github }}
 {{- $mcp = append $mcp (dict "name" "github" "url" (printf "http://github-mcp.%s.svc.cluster.local:8082/readonly" $d.bridge.namespace) "secret" "discord-github" "tools" $d.github.tools) }}
+{{- end }}
+{{- /* The unsafe mode agent (HOME-938) is plain chat: no route, tools or memory. */}}
+{{- $u := $d.unsafe | default dict }}
+{{- if and $u.enabled (eq $server ($u.agent | default "")) (or $a.route $mcp $a.serverTools $a.memory) }}
+{{- fail (printf "discord.serverAgents.%s is the unsafe mode agent: it takes no route, mcpServers, serverTools or memory" $server) }}
 {{- end }}
 {{- if and $a.serverTools (eq ($a.provider | default "openAI") "openAI") }}
 {{- fail (printf "discord.serverAgents.%s.serverTools needs provider anthropic: only the Messages API runs them" $server) }}
@@ -283,7 +288,7 @@ metadata:
 spec:
   template:
     inline:
-      description: {{ printf "The %s Discord server's agent (HOME-905)" $server | quote }}
+      description: {{ $a.description | default (printf "The %s Discord server's agent (HOME-905)" $server) | quote }}
       modelConfig:
         name: {{ $a.name }}
       {{- if or $mcp $a.serverTools }}

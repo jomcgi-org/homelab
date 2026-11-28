@@ -944,6 +944,65 @@ discord:
         tools for quick facts when you have them, web search when you have
         it. Then say what you checked; if you could not check, say so and
         that the answer comes from memory.
+    # Joe's unsafe mode agent, "gloves off" to people (HOME-938,
+    # discord.unsafe): plain chat with no
+    # tools on abliteration.ai's Messages API, in its own namespace and
+    # atespace, so its key, sessions and egress stay apart from the homelab
+    # agent's. Never routed: the bridge sends it only unsafe mode turns, and
+    # the artifact, history and GitHub tools admit routed agents only.
+    unsafe:
+      enabled: false
+      route: false
+      guild: "1501965852042330302"
+      namespace: discord-unsafe
+      name: unsafe
+      description: Joe's gloves-off plain chat, with no tools (HOME-938)
+      # Fields api-key (the gateway injects it as x-api-key) and base-url.
+      # Prepaid credits only, with auto-reload off.
+      llmItemPath: vaults/k8s-homelab/items/factory-discord-abliteration
+      provider: anthropic
+      model: abliterated-model-large-v2
+      # The Anthropic SDK adds /v1/messages (docs.abliteration.ai,
+      # "Anthropic compatibility").
+      baseUrl: https://api.abliteration.ai
+      cacheTTL: ""
+      resources:
+        cpu: "4"
+        memory: 8Gi
+      concurrency: 1
+      idleSuspendDelay: 10m
+      servers: own
+      serverTools: {}
+      mcpServers: []
+      memory: ""
+      worker:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            cpu: "4"
+            memory: 9Gi
+      systemPrompt: |
+        You are Bosun with your gloves off: Joe's own plain chat for a
+        short while, in his Discord server. Each task holds one JSON object
+        with Joe's message. You have no tools, no memory and no other
+        people's messages. Answer briefly in Markdown, under 1,500
+        characters. Never write a Markdown table. Never print credentials.
+  # Joe's unsafe mode, "gloves off" to people (HOME-938, discord/unsafe.go):
+  # his tag "take your gloves off [for 1h]" sends his tags in that channel to
+  # serverAgents.<agent> for `duration` (or his time, capped at
+  # maxDuration), and "gloves on" or the timer ends it. Those turns skip
+  # Hindsight, the ingest buffer, the archive and the normal agent's
+  # context. Off, the command answers that gloves off is not set up. On
+  # needs that agent enabled with no tools, its namespace in
+  # kagent.rbac.namespaces, the operator's user ID (operator.enabled or
+  # users: operator), and its 1Password item.
+  unsafe:
+    enabled: false
+    agent: unsafe
+    duration: 30m
+    maxDuration: 4h
   # Bosun's artifact tools (HOME-909, templates/discord-artifacts.yaml): an
   # MCP server in the bridge namespace that publishes files to the
   # bosun-artifacts Garage bucket, served at baseURL behind Authentik. Only

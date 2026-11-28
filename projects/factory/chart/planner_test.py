@@ -27,6 +27,7 @@ _NAMESPACES = [
     "factory-discord-agent",
     "factory-discord-operator",
     "discord-1501965852042330302",
+    "discord-unsafe",
     _NS,
 ]
 _SCHEDULES = [

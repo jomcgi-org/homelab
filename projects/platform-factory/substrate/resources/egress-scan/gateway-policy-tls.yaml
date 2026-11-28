@@ -1,0 +1,26 @@
+# Route policy for the terminated HTTPS listener, read by
+# render_egress_gateway.py. Bosun's gloves-off agent calls abliteration.ai
+# (HOME-938, factory chart discord.serverAgents.unsafe); every request body
+# is scanned before the gateway injects the key. Same limits as
+# gateway-policy.yaml: a body over 512 KiB is denied.
+conditional:
+  - condition: destination.hostname == "api.abliteration.ai" && destination.port == 443
+    host: egress-scan.ate-system.svc:8080
+    protocol:
+      grpc:
+        # Static context: the scanner uses it only as a bounded fallback for the
+        # source label. metadata.actor is what the gateway can say about the
+        # caller in CEL. Both are optional: the scanner labels a check without
+        # them as source unknown (egress-scan/README.md "Metrics").
+        context:
+          route: abliteration
+        metadata:
+          actor: '{"spiffe": source.spiffeId}'
+    failureMode: deny
+    includeRequestBody:
+      maxRequestBytes: 524288
+      allowPartialMessage: false
+      packAsBytes: true
+    policies:
+      http:
+        requestTimeout: 80ms

@@ -85,6 +85,10 @@ def _render(
             "--set",
             "discord.serverAgents.homelab.servers=own",
             "--set",
+            "discord.serverAgents.unsafe.enabled=false",
+            "--set",
+            "discord.unsafe.enabled=false",
+            "--set",
             "discord.bridge.policy.users=all",
             "--set",
             "kagent.rbac.namespaces={kagent,factory-r-homelab}",
@@ -2980,3 +2984,88 @@ def test_discord_explorer_is_on_in_the_deploy_values() -> None:
     assert deploy["broker"]["claude"]["modelAllowlist"][
         f"actor/{_EXPLORER_NS}/session-*"
     ] == ["claude-opus-5-5"]
+
+
+_UNSAFE = [
+    "discord.agent.enabled=true",
+    "discord.bridge.enabled=true",
+    "discord.bridge.enforceAgentPath=true",
+    "discord.bridge.policy.users=operator",
+    "string:discord.bridge.policy.guilds.1501965852042330302.ingest=true",
+    "discord.serverAgents.unsafe.enabled=true",
+    "discord.unsafe.enabled=true",
+    "discord.hermesImage.digest=sha256:" + "e" * 64,
+    "kagent.rbac.namespaces={kagent,factory-r-homelab,factory-discord-agent,discord-unsafe}",
+]
+
+
+def test_discord_unsafe_mode_ships_off_in_the_chart_and_on_in_deploy() -> None:
+    # HOME-938: the chart default is off (the bridge answers that gloves off
+    # is not set up); the deploy values turn it on with Joe's item.
+    chart = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())["discord"]
+    assert not chart["unsafe"]["enabled"]
+    assert not chart["serverAgents"]["unsafe"]["enabled"]
+    deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    assert deploy["discord"]["unsafe"]["enabled"] is True
+    assert deploy["discord"]["serverAgents"]["unsafe"]["enabled"] is True
+    assert "discord-unsafe" in deploy["kagent"]["rbac"]["namespaces"]
+
+
+def test_discord_unsafe_mode_agent_is_plain_chat_on_abliteration() -> None:
+    # HOME-938: its own namespace, key and session path; no tools, no memory
+    # and never routed, so the artifact, history and GitHub tools never admit
+    # its actor.
+    docs = _render(_UNSAFE)
+    ns = "discord-unsafe"
+    model = _in(docs, "ModelConfig", ns, "unsafe")["spec"]
+    assert model["provider"] == "Anthropic"
+    assert model["model"] == "abliterated-model-large-v2"
+    assert model["anthropic"] == {"baseUrl": "https://api.abliteration.ai"}
+    item = _in(docs, "OnePasswordItem", ns, "discord-llm")["spec"]
+    assert item["itemPath"] == "vaults/k8s-homelab/items/factory-discord-abliteration"
+    agent = _in(docs, "Agent", ns, "unsafe")["spec"]["template"]["inline"]
+    assert "tools" not in agent
+    assert _in(docs, "Harness", ns, "hermes")["spec"]["hermes"] == {}
+    assert not [d for d in docs if d["kind"] == "RemoteMCPServer" and d["metadata"].get("namespace") == ns]
+    policy = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory-discord", "discord-bridge-policy")["data"]["policy.json"]
+    )
+    assert policy["unsafe"] == {
+        "agent": f"{ns}/unsafe",
+        "duration": "30m",
+        "maxDuration": "4h",
+    }
+    assert "serverAgents" not in policy or f"{ns}/unsafe" not in policy["serverAgents"].values()
+    rules = _controller_egress(
+        _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")["spec"]
+    )["toPorts"][0]["rules"]["http"]
+    assert {"method": "POST", "path": f"^/agents/{ns}/unsafe$"} in rules
+    assert {
+        "method": "POST",
+        "path": "^/kagent\\.api\\.v1\\.SessionService/(CreateSession|RevertSession)$",
+    } in rules
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["discord.serverAgents.unsafe.route=true"],
+        ["discord.serverAgents.unsafe.memory=notes"],
+        ["discord.serverAgents.unsafe.serverTools.codeExecution=true"],
+        [
+            "discord.serverAgents.unsafe.mcpServers[0].name=notes",
+            "discord.serverAgents.unsafe.mcpServers[0].url=http://x",
+            "discord.serverAgents.unsafe.mcpServers[0].tools={notes_list}",
+        ],
+    ],
+)
+def test_discord_unsafe_mode_agent_refuses_tools(extra: list[str]) -> None:
+    with pytest.raises(RuntimeError, match="unsafe mode agent: it takes no route"):
+        _render(_UNSAFE + extra)
+
+
+def test_discord_unsafe_mode_checks_its_wiring() -> None:
+    with pytest.raises(RuntimeError, match="must name an enabled discord.serverAgents"):
+        _render(_UNSAFE + ["discord.serverAgents.unsafe.enabled=false"])
+    with pytest.raises(RuntimeError, match="needs the operator's user ID"):
+        _render(_UNSAFE + ["discord.bridge.policy.users=all"])

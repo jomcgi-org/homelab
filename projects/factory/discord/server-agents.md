@@ -1145,6 +1145,44 @@ Manage Events also lets the bot create events. Without a permission,
 Discord answers 403 and the bridge logs `event refused: the bot lacks the
 Create Events permission`.
 
+### Gloves off (HOME-938)
+
+Joe can turn one channel to a second agent for plain chat that the normal
+model's filter refuses (Joe, 2026-11-28). People see "gloves off"; code and
+config say `unsafe`. `unsafe.go` holds the bridge side.
+
+```mermaid
+stateDiagram-v2
+    [*] --> GlovesOn
+    GlovesOn --> GlovesOff: Joe tags "take your gloves off [for 1h]"
+    GlovesOff --> GlovesOn: Joe tags "gloves on"
+    GlovesOff --> GlovesOn: timer (bridge posts gloves-on GIF)
+    GlovesOff --> GlovesOn: bridge restart (no message)
+```
+
+- **Trigger.** Only Joe's tag. The bridge matches words, not a model: the
+  message has 12 words or fewer, all from a small command vocabulary, with
+  "gloves" (or 🥊) and "off" or "on". A duration such as "1h", "90 min" or
+  "half an hour" is optional: 30 min by default, 4 h at most.
+- **Agent.** `discord.serverAgents.unsafe`: namespace `discord-unsafe`,
+  abliteration.ai's Messages API (`abliterated-model-large-v2`), key from
+  1Password item `factory-discord-abliteration`. It has no MCP servers, no
+  server tools and no memory; the chart fails a render that gives it any. It
+  is never routed, so the artifact, history and GitHub tools refuse its
+  actor. Each gloves-off window has its own session.
+- **Silo.** An unsafe turn has no recall, no retain and no ingest. The
+  archive skips it. Every reply ends with
+  `-# 🥊 gloves off · gloves back on <t:unix:R>`. History readers (the
+  normal turn's channel context, the archive backfill, the Hindsight
+  backfill) drop a Bosun message with that footer and the message it
+  answers.
+- **Egress.** Workers may reach `api.abliteration.ai`; the egress gateway
+  scans each request body (`gateway-policy-tls.yaml`) before it injects
+  the key.
+- **GIFs.** `gloves/gloves-off.gif` and `gloves/gloves-on.gif` are
+  embedded in the bridge. To use other files, replace those two files.
+- **Billing.** Prepaid credits only, with auto-reload off.
+
 ## 5. Model and token cost
 
 **Recommendation.** A model per server in values, a hard token budget per
