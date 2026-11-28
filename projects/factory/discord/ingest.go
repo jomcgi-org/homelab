@@ -57,7 +57,15 @@ type ingestLine struct {
 	id   string
 	at   time.Time
 	text string
+	// held is a tagged message whose turn has not ended (Hold): no flush
+	// sends it and Recent leaves it out, until Release or Drop.
+	held   bool
+	heldAt time.Time
 }
+
+// maxHold releases a held line that no turn settled, such as after a
+// crashed turn; a turn ends well within it.
+const maxHold = time.Hour
 
 func (i *Ingestor) now() time.Time {
 	if i.Now != nil {
@@ -90,6 +98,53 @@ func channelKey(guildID, channelID string) string { return guildID + "/" + chann
 // Add buffers one line. A message ID seen before adds nothing, so a resumed
 // gateway cannot store a message twice. An empty ID is never a repeat.
 func (i *Ingestor) Add(guildID, channelID, messageID string, at time.Time, text string) {
+	i.add(guildID, channelID, messageID, at, text, false)
+}
+
+// AddHeld buffers the line of a tagged message whose turn decides whether
+// it may be stored (HOME-938): a refused message never reaches Hindsight
+// or a later prompt. The turn's end releases or drops it.
+// It reports whether it buffered the line: a repeated message ID adds
+// nothing, so its hold belongs to the first delivery.
+func (i *Ingestor) AddHeld(guildID, channelID, messageID string, at time.Time, text string) bool {
+	return i.add(guildID, channelID, messageID, at, text, true)
+}
+
+// Release lets a held line flush.
+func (i *Ingestor) Release(guildID, channelID, messageID string) {
+	i.settle(guildID, channelID, messageID, false)
+}
+
+// Drop removes a buffered line, held or not.
+func (i *Ingestor) Drop(guildID, channelID, messageID string) {
+	i.settle(guildID, channelID, messageID, true)
+}
+
+func (i *Ingestor) settle(guildID, channelID, messageID string, drop bool) {
+	if i == nil || messageID == "" {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	c, ok := i.chans[channelKey(guildID, channelID)]
+	if !ok {
+		return
+	}
+	for n, l := range c.lines {
+		if l.id != messageID {
+			continue
+		}
+		if drop {
+			c.bytes -= len(l.text)
+			c.lines = append(c.lines[:n:n], c.lines[n+1:]...)
+		} else {
+			c.lines[n].held = false
+		}
+		return
+	}
+}
+
+func (i *Ingestor) add(guildID, channelID, messageID string, at time.Time, text string, held bool) bool {
 	now := i.now()
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -98,7 +153,7 @@ func (i *Ingestor) Add(guildID, channelID, messageID string, at time.Time, text 
 			i.seen = map[string]time.Time{}
 		}
 		if _, dup := i.seen[messageID]; dup {
-			return
+			return false
 		}
 		i.seen[messageID] = now
 		if len(i.seen)%1024 == 0 {
@@ -113,9 +168,14 @@ func (i *Ingestor) Add(guildID, channelID, messageID string, at time.Time, text 
 	if len(c.lines) == 0 {
 		c.first = now
 	}
-	c.lines = append(c.lines, ingestLine{id: messageID, at: at, text: text})
+	line := ingestLine{id: messageID, at: at, text: text}
+	if held {
+		line.held, line.heldAt = true, now
+	}
+	c.lines = append(c.lines, line)
 	c.bytes += len(text)
 	i.trimLocked(c)
+	return true
 }
 
 func (i *Ingestor) channelLocked(guildID, channelID string) *ingestChannel {
@@ -162,10 +222,32 @@ func (i *Ingestor) flush(ctx context.Context, c *ingestChannel) error {
 	c.flush.Lock()
 	defer c.flush.Unlock()
 	i.mu.Lock()
-	lines := c.lines
-	c.lines, c.bytes, c.first = nil, 0, time.Time{}
+	// Held lines stay buffered until their turn settles them.
+	var lines, held []ingestLine
+	now := i.now()
+	for _, l := range c.lines {
+		if l.held && now.Sub(l.heldAt) < maxHold {
+			held = append(held, l)
+			continue
+		}
+		l.held = false
+		lines = append(lines, l)
+	}
+	c.lines, c.bytes, c.first = held, 0, time.Time{}
+	for _, l := range held {
+		c.bytes += len(l.text)
+	}
+	if len(held) > 0 {
+		c.first = now
+	}
 	c.sending = lines
 	i.mu.Unlock()
+	if len(lines) == 0 {
+		i.mu.Lock()
+		c.sending = nil
+		i.mu.Unlock()
+		return nil
+	}
 	defer func() {
 		i.mu.Lock()
 		c.sending = nil
@@ -203,7 +285,7 @@ func (i *Ingestor) Recent(guildID, channelID, skipID string, maxLines, maxChars 
 	chars := 0
 	for n := len(all) - 1; n >= 0 && len(out) < maxLines; n-- {
 		l := all[n]
-		if skipID != "" && l.id == skipID {
+		if (skipID != "" && l.id == skipID) || l.held {
 			continue
 		}
 		if chars+len(l.text) > maxChars {

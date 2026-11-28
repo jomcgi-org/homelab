@@ -59,6 +59,32 @@ type Archiver struct {
 	unsafe map[string]bool
 }
 
+// ArchiveForgetter removes a message's live archive row (Bridge.Archive).
+type ArchiveForgetter interface {
+	Forget(guildID, channelID, id string)
+}
+
+// Forget clears the archive row of a message that the provider's filter
+// refused (HOME-938) and keeps a later backfill page or edit from writing it
+// again. It never blocks: a full queue drops the delete and logs it.
+func (a *Archiver) Forget(guildID, channelID, id string) {
+	if a == nil || id == "" {
+		return
+	}
+	a.mu.Lock()
+	if a.unsafe == nil || len(a.unsafe) >= maxArchiveUnsafe {
+		a.unsafe = map[string]bool{}
+	}
+	a.unsafe[id] = true
+	a.mu.Unlock()
+	select {
+	case a.queue() <- archiveOp{del: &archiveDelete{guildID: guildID, channelID: channelID, ids: []string{id}}}:
+	default:
+		a.Metrics.dropped()
+		a.warn("archive queue full; refused message not cleared", "message", id)
+	}
+}
+
 // UnsafeMarks names unsafe mode turns (Bridge.UnsafeTurn, unsafe.go).
 type UnsafeMarks interface {
 	// UnsafeTurn decides whether a live message is an unsafe turn.
@@ -73,6 +99,17 @@ const maxArchiveUnsafe = 4096
 // skipUnsafe reports whether m is an unsafe mode turn or reply. With live,
 // a message of Joe's is decided now; a backfill page only reads decisions.
 func (a *Archiver) skipUnsafe(m HistoryMessage, live bool) bool {
+	if ref := blockedReplyRef(m, a.bot()); ref != "" {
+		// Bosun's plain blocked reply is kept; the refused message it
+		// answers is not archived again by a backfill page.
+		a.mu.Lock()
+		if a.unsafe == nil || len(a.unsafe) >= maxArchiveUnsafe {
+			a.unsafe = map[string]bool{}
+		}
+		a.unsafe[ref] = true
+		a.mu.Unlock()
+		return false
+	}
 	if ref, ok := unsafeReplyRef(m, a.bot()); ok {
 		a.mu.Lock()
 		if a.unsafe == nil || len(a.unsafe) >= maxArchiveUnsafe {

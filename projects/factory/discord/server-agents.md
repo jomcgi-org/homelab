@@ -1305,13 +1305,38 @@ stateDiagram-v2
   answers.
 - **Restart.** A restart ends gloves off with no message. The catch-up
   after it leaves unanswered a tag of Joe's that Bosun's notices place in
-  gloves off; it reads one page before its window to find the notice.
+  gloves off; it reads one page before its window to find the notice, and
+  gives a channel no catch-up turn when it cannot read that page.
 - **Kept where.** "No memory" means no Hindsight, archive or ingest. The
   agent's own sessions stay in kagent's session store and in its
   snapshots (`s3://ate-snapshots/discord-unsafe/`), apart from Bosun's.
 - **Egress.** Workers may reach `api.abliteration.ai`; the egress gateway
   scans each request body (`gateway-policy-tls.yaml`) before it injects
   the key.
+- **Offer after a block.** When the normal model's filter blocks Joe's
+  message, the bridge (`offer.go`) answers with a playful line, the fixed
+  "React 🥊 if you want me to take my gloves off." and its own 🥊, in place
+  of the blocked reply. The gloves-off model writes the line in one
+  stateless call: a fresh session, deleted after, that gets only the
+  blocked text. After 5 s, an error or an empty answer, a canned line
+  stands in. The offer carries the gloves-off footer marker, so history
+  readers drop it and the blocked message. Joe's own 🥊 within 10 min
+  turns gloves off (default time) and replays the message as a gloves-off
+  turn that answers it. The bridge keeps the message in memory only until
+  the offer ends. Without gloves off, or for another author, the reply
+  stays the blocked one. A tagged message waits in the ingest buffer until
+  its turn ends; a refused one is dropped there and its archive row is
+  cleared, so it never reaches Hindsight, the archive or a later prompt. A
+  🥊 or 🔄 whose replay finds no queue place keeps its offer or notice, and
+  each no-credits notice lives 24 h from its own post (HOME-945).
+- **Out of credits.** abliteration.ai answers 402 for an empty balance;
+  the kagent fork reports it as `insufficient_credits`. A gloves-off turn
+  that fails so gets a marked notice with the top-up link and Bosun's 🔄.
+  Joe's own 🔄 within 24 h runs the same turn once more, in the same
+  session, under a new message ID; a turn still out of credits gets a new
+  notice, never an automatic retry. A retry never opens an ended window
+  again. A 429 stays a plain failure. The offer line falls back to a
+  canned line with no notice. `credits.go` holds it.
 - **GIFs.** `gloves/gloves-off.gif` and `gloves/gloves-on.gif` are
   embedded in the bridge. To use other files, replace those two files.
 - **Billing.** Prepaid credits only, with auto-reload off.

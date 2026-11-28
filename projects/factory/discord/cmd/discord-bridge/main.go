@@ -169,8 +169,9 @@ func run(log *slog.Logger) error {
 	// A server with `ingest` stores every human message (HOME-833). The
 	// ingestor outlives the gateway so the last turns' lines are stored.
 	intents := discord.IntentsFor(policy)
-	if bridge.Share != nil {
-		// Joe's ✅ confirms a share link (discord/share.go).
+	if bridge.Share != nil || bridge.Unsafe != nil {
+		// Joe's ✅ confirms a share link (discord/share.go); his 🥊 takes a
+		// gloves-off offer (discord/offer.go).
 		intents |= discord.IntentGuildMessageReactions
 	}
 	ingestDone := make(chan struct{})
@@ -196,7 +197,8 @@ func run(log *slog.Logger) error {
 	// does, so the last events are written.
 	archiver, archiveStore := newArchive(log, policy, bridge.Places, reg)
 	if archiver != nil {
-		archiver.Unsafe = bridge // Unsafe mode turns are never archived (HOME-938).
+		archiver.Unsafe = bridge  // Unsafe mode turns are never archived (HOME-938).
+		bridge.Archive = archiver // A refused message's row is cleared (HOME-938).
 	}
 	archiveDone := make(chan struct{})
 	stopArchive := func() {}
@@ -278,7 +280,7 @@ func run(log *slog.Logger) error {
 		OnReady:   onReady,
 		OnMessage: func(m discord.Message) { bridge.Handle(work, m) },
 		// Off the gateway's reader: a confirmed share signs and posts.
-		OnReaction: func(r discord.ReactionAdd) { go bridge.HandleReaction(ctx, r) },
+		OnReaction: func(r discord.ReactionAdd) { go bridge.HandleReaction(work, r) },
 		Places:     bridge.Places,
 		Log:        log,
 		Intents:    intents,

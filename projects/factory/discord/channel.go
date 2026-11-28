@@ -66,7 +66,7 @@ type HistorySticker struct {
 // With seed, for a new session's first turn (HOME-944), Bosun's messages
 // do not end the lines: it keeps the newest maxSeedLines, Bosun's own as
 // "Bosun (you)" lines, so the session gets the channel's recent thread. It
-// stops at Bosun's newest ReplyBlocked message.
+// stops at Bosun's newest ReplyBlocked message or gloves-off offer.
 func (b *Bridge) sinceLastTurn(ctx context.Context, m Message, seed bool) (lines []ChannelLine, ok bool) {
 	msgs, err := b.History.MessagesBefore(ctx, m.ChannelID, m.ID)
 	if err != nil {
@@ -87,8 +87,16 @@ func (b *Bridge) sinceLastTurn(ctx context.Context, m Message, seed bool) (lines
 			continue
 		}
 		if ref, ok := unsafeReplyRef(h, bot); ok {
-			unsafe[ref] = true
+			unsafe[ref] = true // Its message is never a line or a quote.
+			if seed && isOffer(h.Text()) {
+				// A gloves-off offer answers a refused message (offer.go):
+				// a seed stops there, as at ReplyBlocked.
+				break
+			}
 			continue
+		}
+		if ref := blockedReplyRef(h, bot); ref != "" {
+			unsafe[ref] = true // Refused: a later reply may not quote it.
 		}
 		if unsafe[h.ID] || b.UnsafeMessage(h.ID) {
 			continue
@@ -121,7 +129,7 @@ func (b *Bridge) sinceLastTurn(ctx context.Context, m Message, seed bool) (lines
 		if bot != "" && h.Author.ID == bot {
 			l, ok = b.ownLine(m.GuildID, h)
 		} else {
-			l, ok = b.channelLine(m.GuildID, h)
+			l, ok = b.channelLine(m.GuildID, h, unsafe)
 		}
 		if !ok {
 			continue
@@ -169,7 +177,9 @@ func turnTargets(m Message, since []ChannelLine) Targets {
 
 // channelLine is one history message as a prompt line. Other bots, webhooks
 // and system messages are left out, as the ingestor leaves them out.
-func (b *Bridge) channelLine(guildID string, h HistoryMessage) (ChannelLine, bool) {
+// refused holds messages found refused or gloves-off while reading the
+// history; a line never quotes one.
+func (b *Bridge) channelLine(guildID string, h HistoryMessage, refused map[string]bool) (ChannelLine, bool) {
 	if h.Author.Bot || h.WebhookID != "" || h.Author.ID == "" || !conversationTypes[h.Type] || b.blockedID(h.ID) {
 		return ChannelLine{}, false // A blocked message never reaches a prompt.
 	}
@@ -179,13 +189,34 @@ func (b *Bridge) channelLine(guildID string, h HistoryMessage) (ChannelLine, boo
 		return ChannelLine{}, false
 	}
 	l := ChannelLine{MessageID: h.ID, Author: h.Author.Username, SentAt: SentAt(h.Message).UTC().Format(time.RFC3339), Text: text}
-	if r := h.Referenced; h.Type == 19 && r != nil && !b.blockedID(r.ID) {
+	if r := h.Referenced; h.Type == 19 && r != nil && b.quotable(r, refused) {
 		l.ReplyTo = &LineReply{Author: b.authorName(r.Author), Text: clipRunes(b.Places.Resolve(guildID, r.Text(), r.Mentions), maxQuoteChars)}
 		if r.Author.Username == "" {
 			l.ReplyTo.Author = "unknown"
 		}
 	}
 	return l, true
+}
+
+// quotable reports whether a line may quote the message r it replies to:
+// not a refused message, a gloves-off turn, or Bosun's gloves-off offer or
+// reply (HOME-945). A reply to the offer, such as Joe's "lol", keeps its
+// own text and loses only the quote.
+func (b *Bridge) quotable(r *Referenced, refused map[string]bool) bool {
+	if refused[r.ID] || b.blockedID(r.ID) || b.UnsafeMessage(r.ID) {
+		return false
+	}
+	bot := b.bot()
+	return bot == "" || r.Author.ID != bot || !IsUnsafeReply(r.Text())
+}
+
+// blockedReplyRef returns the message that h, Bosun's plain ReplyBlocked,
+// answers, or "".
+func blockedReplyRef(h HistoryMessage, bot string) string {
+	if bot == "" || h.Author.ID != bot || h.Reference == nil || strings.TrimSpace(h.Text()) != ReplyBlocked {
+		return ""
+	}
+	return h.Reference.MessageID
 }
 
 // ownLine is Bosun's own message as a prompt line, by "Bosun (you)".

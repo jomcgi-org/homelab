@@ -112,7 +112,10 @@ func (b *Bridge) catchUpChannel(ctx context.Context, src CatchUpSource, gid stri
 		}
 	}
 	slices.SortFunc(msgs, func(a, c HistoryMessage) int { return cmp.Compare(snowflakeID(a.ID), snowflakeID(c.ID)) })
-	gloves := b.glovesDuring(ctx, c.ID, cutoff, msgs, bot)
+	gloves, ok := b.glovesDuring(ctx, c.ID, cutoff, msgs, bot)
+	if !ok {
+		return 0 // Fail closed: a tag could be a gloves-off one (HOME-938).
+	}
 	answered := map[string]bool{}
 	for _, h := range msgs {
 		if h.Author.ID == bot && h.Reference != nil && h.Reference.MessageID != "" {
@@ -161,19 +164,21 @@ func snowflakeID(id string) uint64 {
 // sent while Bosun's notices say gloves off was on (HOME-938): after a
 // "🥊 Gloves off until <t:X:R>" notice and before X or a "Gloves back on".
 // The page before cutoff is read too, for a notice older than the window.
-// A message the bridge cannot place stays a normal one.
-func (b *Bridge) glovesDuring(ctx context.Context, channelID string, cutoff time.Time, msgs []HistoryMessage, bot string) map[string]bool {
+// ok is false when that page cannot be read: the channel then gets no
+// catch-up turn, as when its own messages cannot be read.
+func (b *Bridge) glovesDuring(ctx context.Context, channelID string, cutoff time.Time, msgs []HistoryMessage, bot string) (out map[string]bool, ok bool) {
 	var older []HistoryMessage
 	if b.History != nil && b.Config.Unsafe.enabled() {
 		page, err := b.History.MessagesBefore(ctx, channelID, Snowflake(cutoff))
 		if err != nil {
 			b.Log.WarnContext(ctx, "catch-up: history before the window unavailable", "channel", channelID, "error", err)
+			return nil, false
 		}
 		older = slices.Clone(page)
 		slices.SortFunc(older, func(a, c HistoryMessage) int { return cmp.Compare(snowflakeID(a.ID), snowflakeID(c.ID)) })
 	}
 	var until time.Time
-	out := map[string]bool{}
+	out = map[string]bool{}
 	for _, h := range append(older, msgs...) {
 		at := SentAt(h.Message)
 		if h.Author.ID == bot {
@@ -189,7 +194,7 @@ func (b *Bridge) glovesDuring(ctx context.Context, channelID string, cutoff time
 			out[h.ID] = true
 		}
 	}
-	return out
+	return out, true
 }
 
 var glovesOffNotice = regexp.MustCompile(`^🥊 Gloves off until <t:(\d+):R>`)
