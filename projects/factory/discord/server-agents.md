@@ -682,27 +682,12 @@ purges an allowlisted server. Backups keep the rows until they age out (14
 days). Turn the whole archive off with `discord.archive.enabled: false`;
 the rows stay until the database is dropped.
 
-**Wiring (not live).** The "Bosun Hermes: tools" work adds MCP servers to
-the server-agents template. Add this entry for the homelab agent:
-
-```yaml
-discord:
-  serverAgents:
-    homelab:
-      mcpServers:
-        - name: history
-          url: http://bosun-history.factory-discord.svc.cluster.local:8080/mcp
-          actorJwt:
-            audiences: [bosun-history]
-          tools: [history_search, history_around, history_day]
-```
-
-Add this line to Bosun's prompt, beside the memory guidance:
-
-> Message history: history_search, history_around and history_day read the
-> exact messages of this server; pass the server ID of the current message.
-> Use memories for what you know. Use history for exact quotes, dates, what
-> happened around a message, and to check a memory before you rely on it.
+**Wiring.** Deploy values bind it to the homelab agent
+(`discord.serverAgents.homelab.mcpServers`, HOME-915): RemoteMCPServer
+`history` at `http://bosun-history.factory-discord.svc.cluster.local:8080/mcp`,
+`actorJwt.audiences: [bosun-history]`, tools `history_search`,
+`history_around` and `history_day`. The tools prompt says when to use
+history and when memories, and the Capabilities paragraph lists it.
 
 ### Research (HOME-909)
 

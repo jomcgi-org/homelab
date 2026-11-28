@@ -496,6 +496,14 @@ discord:
           actorJwt:
             audiences: [bosun-artifacts]
           tools: [put, template, list]
+        # Bosun's message archive (discord.archive, templates/discord-history.yaml):
+        # read-only, one allowlisted server per call. No Secret: the gateway
+        # injects an actor JWT.
+        - name: history
+          url: http://bosun-history.factory-discord.svc.cluster.local:8080/mcp
+          actorJwt:
+            audiences: [bosun-history]
+          tools: [history_search, history_around, history_day]
   # Bosun's artifact tools at artifact.jomcgi.dev (HOME-917).
   artifacts:
     enabled: true
