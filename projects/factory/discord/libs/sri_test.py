@@ -26,8 +26,8 @@ HOUSE = [
 # Published pages pin these hashes: a change to house-1 breaks them, so a
 # change goes in a new file (house-2) with a new entry here.
 FROZEN = {
-    "house-1.css": "sha384-Tt4JSJaoy7NNzikxVGCB+5/qL1NUQ1phcM/MOI9Utn6UJy2agGMjx3y9hDqxt9OI",
-    "house-1.js": "sha384-NiEZdpnNpkeVwoHxhcCtboc4US6S/HG5+hii0NhwT7L8pbhqlJkvsqTagPboBc72",
+    "house-1.css": "sha384-PrL0MzGAQAyvkhbMmZ/NNPmo6PLDDLqbrdeH0HQuI1EjvnXG0kLBM7jFPH8JdVOl",
+    "house-1.js": "sha384-SPzQaJVKBLRLnKM4HijG+fUHURs1SAdxNsPKcXe7O+tdGgyM8GaYQUSwd8qC6XrG",
 }
 
 

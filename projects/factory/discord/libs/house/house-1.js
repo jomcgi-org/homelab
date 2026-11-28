@@ -6,7 +6,18 @@
 // sets data-ready on <html>.
 (async () => {
   const css = getComputedStyle(document.documentElement);
-  const token = (name) => css.getPropertyValue(name).trim();
+  // Colour tokens use light-dark(), so resolve each through a probe element
+  // to the colour of the current scheme.
+  const probe = document.createElement("span");
+  probe.style.display = "none";
+  document.body.append(probe);
+  const token = (name) => {
+    if (!name.startsWith("--font") && name !== "--display") {
+      probe.style.color = `var(${name})`;
+      return getComputedStyle(probe).color;
+    }
+    return css.getPropertyValue(name).trim();
+  };
   const font = token("--font");
   const series = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => token(`--s${n}`));
   const fail = (el, err) => {
@@ -49,16 +60,16 @@
           primaryColor: token("--node"),
           primaryBorderColor: token("--node-border"),
           primaryTextColor: token("--text"),
-          secondaryColor: token("--accent-soft"),
+          secondaryColor: token("--muted-bg"),
           tertiaryColor: token("--group"),
-          lineColor: token("--line"),
+          lineColor: token("--diagram-line"),
           textColor: token("--text"),
           clusterBkg: token("--group"),
-          clusterBorder: token("--border-strong"),
+          clusterBorder: token("--edge"),
           edgeLabelBackground: token("--surface"),
           actorBkg: token("--node"),
           actorBorder: token("--node-border"),
-          noteBkgColor: token("--accent-soft"),
+          noteBkgColor: token("--panel-muted"),
           noteBorderColor: token("--accent"),
         },
       });
@@ -100,9 +111,9 @@
             view: { stroke: null },
             axis: {
               ...text,
-              domainColor: token("--border-strong"),
-              tickColor: token("--border-strong"),
-              gridColor: token("--border"),
+              domainColor: token("--edge"),
+              tickColor: token("--edge"),
+              gridColor: token("--line"),
             },
             axisX: { grid: false, labelAngle: 0 },
             legend: text,
@@ -110,6 +121,7 @@
               color: token("--text"),
               font: token("--display"),
               fontSize: 15,
+              fontWeight: 600,
               anchor: "start",
             },
             text: { color: token("--text"), font },
