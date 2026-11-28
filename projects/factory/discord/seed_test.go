@@ -312,3 +312,34 @@ func TestABlockedTurnBumpsTheGenerationInItsEpoch(t *testing.T) {
 		t.Errorf("new epoch: %s, want generation 0", s.ContextID)
 	}
 }
+
+// Gloves-off turns (HOME-938) never reach a seed: a Bosun reply with the
+// unsafe footer, the message it answers, and a message the bridge decided
+// was an unsafe turn. Bosun's other messages stay, as "Bosun (you)" lines.
+func TestTheSeedLeavesGlovesOffTurnsOut(t *testing.T) {
+	b, _, _ := ingestBridge(&fakeAgent{})
+	server := &freshSessionAgent{}
+	b.Servers = map[string]SessionAgent{guild: server}
+	b.decided = map[string]unsafeDecision{"15": {unsafe: true, at: b.now()}}
+	footed := bosunSaid("12", 3)
+	footed.Components = []Component{{Type: componentText, Content: "edgy\n\n" + unsafeFooter(time.Unix(1, 0))}}
+	footed.Reference = &Reference{MessageID: "11"}
+	b.History = &channelHistory{msgs: []HistoryMessage{
+		said("16", "ann", "after", 6),
+		said("15", "joe", "a live spicy one", 5),
+		footed,
+		said("11", "joe", "the spicy joke", 2),
+		said("10", "ann", "before", 1),
+		bosunSaid("9", 0),
+	}}
+	b.Turn(context.Background(), tagged("200", "hi"))
+	prompt := server.lastPrompt()
+	if strings.Contains(prompt, "spicy") || strings.Contains(prompt, "edgy") || strings.Contains(prompt, unsafeMarker) {
+		t.Errorf("a gloves-off turn reached the seed: %s", prompt)
+	}
+	got, seeded := seedLines(t, prompt)
+	want := []string{OwnAuthor + ": an earlier answer", "ann: before", "ann: after"}
+	if !seeded || strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("seeded=%v, lines %q; want %q", seeded, got, want)
+	}
+}
