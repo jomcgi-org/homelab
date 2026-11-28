@@ -25,6 +25,8 @@ func TestRequestRepliesAnswerOnceInAllowedServers(t *testing.T) {
 			w.Write([]byte(`{"id":"9"}`))
 		case r.URL.Path == "/channels/700" && r.Method == "GET":
 			w.Write([]byte(`{"id":"700","guild_id":"100"}`))
+		case r.URL.Path == "/channels/702" && r.Method == "GET":
+			w.WriteHeader(404) // A deleted thread.
 		case r.URL.Path == "/channels/701" && r.Method == "GET":
 			w.Write([]byte(`{"id":"701","guild_id":"999"}`))
 		case r.URL.Path == "/channels/700/messages" && r.Method == "GET":
@@ -57,7 +59,8 @@ func TestRequestRepliesAnswerOnceInAllowedServers(t *testing.T) {
 				{"request_id":1,"guild_id":"100","channel_id":"700","message_id":"800","title":"Add a status page","state":"done",
 				 "ticket_url":"https://factory-plan.jomcgi.dev/factory/issue/HOME-950","prs":[{"url":"https://github.com/jomcgi-org/homelab/pull/8820","merged":true}]},
 				{"request_id":2,"guild_id":"999","channel_id":"701","message_id":"801","title":"x","state":"done","prs":[]},
-				{"request_id":3,"guild_id":"100","channel_id":"701","message_id":"802","title":"y","state":"done","prs":[]}]}`))
+				{"request_id":3,"guild_id":"100","channel_id":"701","message_id":"802","title":"y","state":"done","prs":[]},
+				{"request_id":4,"guild_id":"100","channel_id":"702","message_id":"803","title":"z","state":"done","prs":[]}]}`))
 		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/replies/"):
 			if ackFails {
 				ackFails = false
@@ -92,8 +95,9 @@ func TestRequestRepliesAnswerOnceInAllowedServers(t *testing.T) {
 		len(p.AllowedMentions.Parse) != 0 || p.AllowedMentions.RepliedUser {
 		t.Fatalf("post = %+v", p)
 	}
-	// The skipped requests are recorded too, so they leave the list.
-	if strings.Join(sent, " ") != "/replies/1/sent /replies/2/sent /replies/3/sent" {
+	// The skipped requests are recorded too, so they leave the list; a
+	// deleted channel does not hold the later replies.
+	if strings.Join(sent, " ") != "/replies/1/sent /replies/2/sent /replies/3/sent /replies/4/sent" {
 		t.Fatalf("sent = %v", sent)
 	}
 }

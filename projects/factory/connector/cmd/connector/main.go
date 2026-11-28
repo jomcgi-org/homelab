@@ -336,6 +336,7 @@ func run(log *slog.Logger) error {
 		CILogs:          ciLogs,
 		GoalReasons:     goalReasons,
 
+		BosunRequests:    cfg.File.BosunRequests,
 		PlannerSchedules: cfg.File.PlannerSchedules,
 		PlannerTracked:   cfg.File.PlannerTracked,
 		Planner:          plannerRuntime(cfg.File.Planner),

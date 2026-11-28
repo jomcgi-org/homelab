@@ -13,6 +13,7 @@ type findingSessionAgent struct {
 	fakeSessionAgent
 	recorded *SessionPlaces
 	seen     map[string]bool // session -> recorded before its turn
+	during   map[string]SessionPlace
 }
 
 func (f *findingSessionAgent) Session(_ context.Context, key string) (OperatorSession, error) {
@@ -20,12 +21,14 @@ func (f *findingSessionAgent) Session(_ context.Context, key string) (OperatorSe
 }
 
 func (f *findingSessionAgent) Turn(ctx context.Context, key, id, prompt string, images ...TurnImage) (string, error) {
-	_, ok := f.recorded.Lookup("0193ab-" + key)
+	p, ok := f.recorded.Lookup("0193ab-" + key)
 	f.mu.Lock()
 	if f.seen == nil {
 		f.seen = map[string]bool{}
+		f.during = map[string]SessionPlace{}
 	}
 	f.seen[key] = ok
+	f.during[key] = p
 	f.mu.Unlock()
 	return f.fakeSessionAgent.Turn(ctx, key, id, prompt, images...)
 }
@@ -60,9 +63,13 @@ func TestTheBridgeRecordsEachSessionsServerBeforeItsTurn(t *testing.T) {
 			t.Errorf("place of %s = %+v, %v", c, p, ok)
 		}
 	}
-	// The turn's message and author come from Discord, for bosun-requests.
-	if p, _ := places.Lookup("0193ab-301"); p.Message != "2" || p.Author != tagged("2", "here").Author.ID || p.Author == "" {
+	// During the turn, the record names its message and author, for
+	// bosun-requests; after it, neither (HOME-941).
+	if p := server.during["301"]; p.Message != "2" || p.Author == "" || p.Author != tagged("2", "here").Author.ID {
 		t.Errorf("turn of 301 = %+v", p)
+	}
+	if p, _ := places.Lookup("0193ab-301"); p.Message != "" || p.Author != "" || p.Server != guild {
+		t.Errorf("after the turn of 301 = %+v", p)
 	}
 }
 
