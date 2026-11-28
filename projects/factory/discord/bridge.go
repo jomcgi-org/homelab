@@ -470,8 +470,10 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	if r := m.Referenced; r != nil && b.blockedID(r.ID) {
 		m.Referenced = nil // A reply to a blocked message quotes none of it.
 	}
-	if r := m.Referenced; r != nil && r.Author.ID == b.bot() && IsUnsafeReply(r.Text()) {
-		m.Referenced = nil // An unsafe mode reply never reaches the normal agent.
+	if r := m.Referenced; r != nil && ((r.Author.ID == b.bot() && IsUnsafeReply(r.Text())) || b.UnsafeMessage(r.ID)) {
+		// A gloves-off reply, or Joe's own gloves-off message, never
+		// reaches the normal agent: not its text, not its images.
+		m.Referenced = nil
 	}
 	// A server agent sees the message's images and the replied-to
 	// message's, in that order (HOME-939). Bosun's agent gets text only.
