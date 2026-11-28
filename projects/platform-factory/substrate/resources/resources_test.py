@@ -131,7 +131,7 @@ def _mounted_gateway_config(docs: list[dict]) -> dict:
     return _one(docs, "ConfigMap", mounted)
 
 
-def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
+def test_egress_scan_changes_only_the_hindsight_and_browser_routes() -> None:
     applied = _mounted_gateway_config(_docs())
     config = yaml.safe_load(applied["data"]["config.yaml"])
     (route,) = next(
@@ -141,25 +141,31 @@ def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
         for listener in bind["listeners"]
         if listener["protocol"] == "HTTP"
     )["routes"]
-    (check,) = route["policies"].pop("extAuthz")["conditional"]
-    assert check["condition"] == (
-        'destination.hostname == "hindsight-api.hindsight.svc.cluster.local"'
-        " && destination.port == 8888"
-    )
-    assert check["host"] == "egress-scan.ate-system.svc:8080"
-    assert check["failureMode"] == "deny"
-    assert check["protocol"] == {
-        "grpc": {
-            "context": {"route": "hindsight"},
-            "metadata": {"actor": '{"spiffe": source.spiffeId}'},
+    checks = route["policies"].pop("extAuthz")["conditional"]
+    wanted = [
+        ("hindsight-api.hindsight.svc.cluster.local", 8888, "hindsight"),
+        # Bosun's browser (HOME-932): the URLs and text the agent types.
+        ("browser-mcp.factory-discord.svc.cluster.local", 8080, "browser"),
+    ]
+    assert len(checks) == len(wanted)
+    for check, (host, port, name) in zip(checks, wanted):
+        assert check["condition"] == (
+            f'destination.hostname == "{host}" && destination.port == {port}'
+        )
+        assert check["host"] == "egress-scan.ate-system.svc:8080"
+        assert check["failureMode"] == "deny"
+        assert check["protocol"] == {
+            "grpc": {
+                "context": {"route": name},
+                "metadata": {"actor": '{"spiffe": source.spiffeId}'},
+            }
         }
-    }
-    assert check["includeRequestBody"] == {
-        "maxRequestBytes": 524288,
-        "allowPartialMessage": False,
-        "packAsBytes": True,
-    }
-    assert check["policies"] == {"http": {"requestTimeout": "80ms"}}
+        assert check["includeRequestBody"] == {
+            "maxRequestBytes": 524288,
+            "allowPartialMessage": False,
+            "packAsBytes": True,
+        }
+        assert check["policies"] == {"http": {"requestTimeout": "80ms"}}
     assert config == yaml.safe_load((_HERE / "atenet-egress-config.yaml").read_text())
 
 
@@ -1213,10 +1219,10 @@ def _check_gateway_covers_detector(deadline: str, gateway_timeout: str) -> None:
 
 def test_gateway_timeout_covers_the_detector_deadline() -> None:
     policy = yaml.safe_load((_HERE / "egress-scan" / "gateway-policy.yaml").read_text())
-    (check,) = policy["conditional"]
-    timeout = check["policies"]["http"]["requestTimeout"]
-    assert timeout == _GATEWAY_TIMEOUT
-    _check_gateway_covers_detector(_detector_values()["deadline"], timeout)
+    for check in policy["conditional"]:
+        timeout = check["policies"]["http"]["requestTimeout"]
+        assert timeout == _GATEWAY_TIMEOUT
+        _check_gateway_covers_detector(_detector_values()["deadline"], timeout)
 
 
 def test_the_coupling_check_fails_when_the_gateway_is_too_short() -> None:

@@ -3,6 +3,9 @@
 # maxScanTime) and the gateway must not cancel a check that the scanner still
 # answers. resources_test.py checks it. The second scan tier (Semgrep) left on
 # 2026-11-24 (ARCHITECTURE.md "Decided" 9); it had a 310ms timeout.
+# The first entry whose condition matches is used; a request no entry matches
+# is not scanned. Bosun's browser route (HOME-932) carries the URLs and text
+# that the agent types into pages.
 conditional:
   - condition: destination.hostname == "hindsight-api.hindsight.svc.cluster.local" && destination.port == 8888
     host: egress-scan.ate-system.svc:8080
@@ -14,6 +17,22 @@ conditional:
         # them as source unknown (egress-scan/README.md "Metrics").
         context:
           route: hindsight
+        metadata:
+          actor: '{"spiffe": source.spiffeId}'
+    failureMode: deny
+    includeRequestBody:
+      maxRequestBytes: 524288
+      allowPartialMessage: false
+      packAsBytes: true
+    policies:
+      http:
+        requestTimeout: 80ms
+  - condition: destination.hostname == "browser-mcp.factory-discord.svc.cluster.local" && destination.port == 8080
+    host: egress-scan.ate-system.svc:8080
+    protocol:
+      grpc:
+        context:
+          route: browser
         metadata:
           actor: '{"spiffe": source.spiffeId}'
     failureMode: deny
