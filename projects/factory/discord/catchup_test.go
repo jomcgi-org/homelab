@@ -171,8 +171,10 @@ func TestCatchUpFailsClosedWithoutTheEarlierPage(t *testing.T) {
 	b.Config.Unsafe = UnsafeConfig{Agent: unsafeRef, Duration: 30 * time.Minute, MaxDuration: 4 * time.Hour}
 	b.History = &channelHistory{err: errors.New("discord down")}
 	now := b.now()
-	tag := HistoryMessage{Message: Message{ID: at(now.Add(-3*time.Minute), 3), ChannelID: channel,
-		Author: User{ID: "u1", Username: "joe"}, Content: "<@" + bot + "> hi", Mentions: []User{{ID: bot}}}}
+	tag := HistoryMessage{Message: Message{
+		ID: at(now.Add(-3*time.Minute), 3), ChannelID: channel,
+		Author: User{ID: "u1", Username: "joe"}, Content: "<@" + bot + "> hi", Mentions: []User{{ID: bot}},
+	}}
 	src := &catchUpSource{
 		channels: []Channel{{ID: channel, Type: 0, LastMessageID: tag.ID}},
 		messages: map[string][]HistoryMessage{channel: {tag}},
