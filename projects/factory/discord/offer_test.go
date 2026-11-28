@@ -90,8 +90,15 @@ func TestABlockedTurnOffersGlovesOff(t *testing.T) {
 	cancel()
 	b.Wait()
 	text := rep.texts()[0]
-	if !strings.HasPrefix(text, offerLine("1")) || !strings.Contains(text, "-# offer ends <t:") {
+	if !strings.HasPrefix(text, offerLine("1")+" "+offerAsk+"\n") || !strings.Contains(text, "offer · ends <t:") {
 		t.Errorf("offer = %q", text)
+	}
+	// The offer is marked like a gloves-off reply, so history readers drop
+	// it and the blocked message it answers.
+	h := HistoryMessage{Message: Message{ID: "o1", Author: User{ID: bot}, Reference: &Reference{MessageID: "1"}}}
+	h.Components = []Component{{Type: componentText, Content: text}}
+	if ref, ok := unsafeReplyRef(h, bot); !ok || ref != "1" {
+		t.Errorf("offer is not a marked reply: %q", text)
 	}
 	if strings.Contains(text, "spicy") || strings.Contains(strings.ToLower(text), "unsafe") {
 		t.Errorf("the offer holds the message or the word unsafe: %q", text)
@@ -224,5 +231,86 @@ func TestABlockedTurnWithoutGlovesOffSaysBlocked(t *testing.T) {
 				t.Errorf("reply = %q, reactions %v; want %q", got, rep.reacts, ReplyBlocked)
 			}
 		})
+	}
+}
+
+// offerWriter is the gloves-off Agent writing offer lines.
+type offerWriter struct {
+	mu      sync.Mutex
+	ids     []string
+	prompts []string
+	answer  string
+	err     error
+	delay   time.Duration
+}
+
+func (f *offerWriter) Turn(ctx context.Context, id, prompt string) (string, error) {
+	f.mu.Lock()
+	f.ids = append(f.ids, id)
+	f.prompts = append(f.prompts, prompt)
+	f.mu.Unlock()
+	if f.delay > 0 {
+		select {
+		case <-time.After(f.delay):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	return f.answer, f.err
+}
+
+// The gloves-off model writes the line from the blocked text alone; the
+// bridge adds the ask. An error, an empty answer or a slow one uses a
+// canned line.
+func TestTheGlovesOffModelWritesTheOfferLine(t *testing.T) {
+	offerLineTimeout = 100 * time.Millisecond
+	defer func() { offerLineTimeout = 5 * time.Second }()
+	for name, tc := range map[string]struct {
+		w    *offerWriter
+		want string
+	}{
+		"written": {&offerWriter{answer: "\"Dario saw that joke and fainted.\"\nExtra line"}, "Dario saw that joke and fainted."},
+		"error":   {&offerWriter{err: blockedErr}, offerLine("1")},
+		"empty":   {&offerWriter{answer: "  \n"}, offerLine("1")},
+		"slow":    {&offerWriter{answer: "too late", delay: time.Second}, offerLine("1")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b, _, _, rep, _ := offerBridge(t)
+			b.OfferWriter = tc.w
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			b.Handle(ctx, byJoe(tagged("1", "the spicy joke")))
+			waitFor(t, func() bool { return len(rep.texts()) == 1 })
+			cancel()
+			b.Wait()
+			if got := rep.texts()[0]; !strings.HasPrefix(got, tc.want+" "+offerAsk+"\n") {
+				t.Errorf("offer = %q, want line %q", got, tc.want)
+			}
+			tc.w.mu.Lock()
+			defer tc.w.mu.Unlock()
+			if len(tc.w.ids) != 1 || tc.w.ids[0] != "offer-1" {
+				t.Errorf("writer calls = %v, want one as offer-1", tc.w.ids)
+			}
+			p := tc.w.prompts[0]
+			if !strings.Contains(p, `{"message":"the spicy joke"}`) || strings.Contains(p, "memories") || strings.Contains(p, "channel") {
+				t.Errorf("writer prompt = %q", p)
+			}
+		})
+	}
+}
+
+func TestCleanOfferLine(t *testing.T) {
+	long := strings.Repeat("word ", 40)
+	for in, want := range map[string]string{
+		"Dario clutched his pearls.":              "Dario clutched his pearls.",
+		"> \"Dario clutched his pearls.\"":        "Dario clutched his pearls.",
+		"\n\nDario fainted. React 🥊 if you dare.": "Dario fainted.",
+		"":            "",
+		"React 🥊 now": "",
+		long:          strings.TrimSpace(strings.Repeat("word ", 25)),
+	} {
+		if got := cleanOfferLine(in); got != want {
+			t.Errorf("cleanOfferLine(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
