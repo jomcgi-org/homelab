@@ -8,7 +8,8 @@ metadata:
       behind it. Both admit factory-operators and authentik Admins, and every sign-in
       needs a second factor. The edge also admits household, which the edge
       authorizes on home.jomcgi.dev only, and the discord-<server-id> groups,
-      which it authorizes on artifact.jomcgi.dev/<server-id>/ only.
+      which it authorizes on artifact.jomcgi.dev/<server-id>/ and
+      notes.jomcgi.dev/<server-id>/ only.
 entries:
   - model: authentik_core.group
     identifiers:
@@ -31,7 +32,8 @@ entries:
   # the servers they are in, at enrollment and at every sign-in. The
   # discord_server_id attribute marks a group for that sync. The edge-app
   # binding lets members sign in; the edge allows each group on
-  # artifact.jomcgi.dev/<server-id>/ only, and every other route denies it.
+  # artifact.jomcgi.dev/<server-id>/ and notes.jomcgi.dev/<server-id>/ only,
+  # and every other route denies it.
   - model: authentik_core.group
     identifiers:
       name: discord-185442367703220224
@@ -139,6 +141,8 @@ entries:
           url: https://home.jomcgi.dev/oauth2/callback
         - matching_mode: strict
           url: https://artifact.jomcgi.dev/oauth2/callback
+        - matching_mode: strict
+          url: https://notes.jomcgi.dev/oauth2/callback
       authorization_flow:
         !Find [
           authentik_flows.flow,

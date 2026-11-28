@@ -1,0 +1,52 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>{{.Title}} · Notes</title>
+<link rel="stylesheet" href="/{{.Server}}/_static/notes.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="/{{.Server}}/">Notes</a>
+  <form class="search" action="/{{.Server}}/search" method="get" role="search">
+    <input type="search" name="q" value="{{.Query}}" placeholder="Search notes" aria-label="Search notes" maxlength="200">
+  </form>
+  <a class="graph-link" href="/{{.Server}}/graph">Graph</a>
+</header>
+<div class="layout">
+<nav class="tree" aria-label="Notes">
+  <details class="tree-toggle" open>
+    <summary>{{.Count}} notes{{if .Truncated}} (some not shown){{end}}</summary>
+    {{template "folder" (dict2 .Server .Current .Tree)}}
+  </details>
+</nav>
+<main>
+{{end}}
+
+{{define "folder"}}<ul>
+{{- range .Folder.Folders}}
+  <li class="dir"><details open><summary>{{.Name}}</summary>{{template "folder" (dict2 $.Server $.Current .)}}</details></li>
+{{- end}}
+{{- range .Folder.Notes}}
+  <li class="file"><a href="{{noteURL $.Server .Path}}"{{if eq .Path $.Current}} aria-current="page"{{end}}>{{.Name}}</a></li>
+{{- end}}
+</ul>{{end}}
+
+{{define "backlinks"}}{{if .Note}}
+<section class="backlinks" aria-label="Backlinks">
+  <h2>Linked from</h2>
+  {{- if .Backlinks}}
+  <ul>{{range .Backlinks}}<li><a href="{{noteURL $.Server .Path}}">{{.Name}}</a>{{with folder .Path}} <span class="muted">{{.}}</span>{{end}}</li>{{end}}</ul>
+  {{- else}}
+  <p class="muted">No note links here.</p>
+  {{- end}}
+</section>
+{{end}}{{end}}
+
+{{define "foot"}}</main>
+</div>
+</body>
+</html>
+{{end}}

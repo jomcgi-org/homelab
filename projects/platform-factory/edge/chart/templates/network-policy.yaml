@@ -117,6 +117,15 @@ spec:
               protocol: TCP
             - port: "3900"
               protocol: TCP
+    # The notes viewer, for notes.jomcgi.dev.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.notes.namespace }}
+            app.kubernetes.io/name: {{ .Values.notes.service }}
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: scotland-connector

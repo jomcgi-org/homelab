@@ -344,4 +344,7 @@ def test_the_artifact_share_key_is_read_only(monkeypatch):
     access = {(ns, name): a for _, _, ns, name, a in granted}
     assert access["factory-discord", "bosun-artifacts-share-s3"] == "read"
     assert access["factory-discord", "bosun-artifacts-s3"] == "readwrite"
+    # The notes viewer (HOME-920) only reads; Bosun's notes key writes.
+    assert access["factory-discord", "bosun-notes-viewer-s3"] == "read"
+    assert access["factory-discord", "bosun-notes-s3"] == "readwrite"
     assert {a for a in access.values()} == {"read", "readwrite"}

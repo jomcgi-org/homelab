@@ -1,0 +1,152 @@
+{{- /*
+The members' read-only viewer of Bosun's notes vault (HOME-920,
+projects/factory/discord/notesview), served at https://notes.jomcgi.dev/<server-id>/
+behind Authentik (projects/platform-factory/edge/chart/templates/notes-route.yaml).
+The edge admits group discord-<server-id> and authentik Admins to each
+server's folder. The pod holds a read-only key on bucket bosun-notes
+(bosun-notes-viewer-s3, filled by garage-init) and serves only the
+allowlisted servers (bridge.policy.guilds). It writes nothing.
+*/}}
+{{- $d := .Values.discord }}
+{{- $notes := $d.notes | default dict }}
+{{- $view := $notes.viewer | default dict }}
+{{- if and $d.bridge.enabled $notes.enabled $view.enabled }}
+{{- $ns := $d.bridge.namespace }}
+{{- $name := "bosun-notes-view" }}
+{{- $servers := keys ($d.bridge.policy.guilds | default dict) | sortAlpha }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: view
+          image: {{ include "factory.connectorImage" . | quote }}
+          imagePullPolicy: {{ .Values.connector.image.pullPolicy }}
+          command: [/usr/local/bin/bosun-notes-view]
+          env:
+            - name: ADDR
+              value: ":8080"
+            - name: NOTES_SERVERS
+              value: {{ join "," $servers | quote }}
+            - name: INDEX_TTL
+              value: {{ $view.indexTTL | quote }}
+            # The read-only key. Not optional: a new pod waits for
+            # garage-init to fill the Secret.
+            {{- range $k := list "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_ENDPOINT_URL" "AWS_REGION" "BUCKET" }}
+            - name: {{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: bosun-notes-viewer-s3
+                  key: {{ $k }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml $view.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+# The edge's notes route reaches this Service across namespaces.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: edge-bosun-notes-view
+  namespace: {{ $ns }}
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: edge
+  to:
+    - group: ""
+      kind: Service
+      name: {{ $name }}
+{{- if .Values.networkPolicy.cilium }}
+---
+# In: only the edge proxy. Out: only Garage's S3 API. DNS is the cluster
+# baseline's.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: edge
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
+{{- end }}
+{{- end }}
