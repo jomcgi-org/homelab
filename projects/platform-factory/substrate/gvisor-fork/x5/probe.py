@@ -35,10 +35,10 @@ import time
 from urllib.parse import urlsplit
 
 ALLOWED_URL = os.environ.get(
-    "ALLOWED_URL", "http://mcp-grafana.grafana.svc.cluster.local:8000/mcp"
+    "ALLOWED_URL", "http://mcp-grafana.grafana.svc.cluster.local:8000/mcp"  # ratchet-allow: svc-url (the gate target; policy.yaml admits exactly this host)
 )
 DENIED_URL = os.environ.get(
-    "DENIED_URL", "http://hindsight-api.hindsight.svc.cluster.local:8888/"
+    "DENIED_URL", "http://hindsight-api.hindsight.svc.cluster.local:8888/"  # ratchet-allow: svc-url (the gate checks this host outside the policy is refused)
 )
 DNS_NAME = os.environ.get("DNS_NAME", "example.com")
 TIMEOUT = float(os.environ.get("PROBE_TIMEOUT_SECONDS", "10"))
