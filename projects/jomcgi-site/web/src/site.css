@@ -8,11 +8,12 @@
   gap: var(--spacing-8);
 }
 
-/* The design language, the same on a phone and a desktop.
+/* The design language, the same on a phone and a desktop. DESIGN.md states
+ * it in full.
  *
  * Type: one family. Size and tight tracking carry the hierarchy.
  *   title    h1  2rem to 3.25rem, semibold, tight
- *   section  h2  1.25rem, semibold
+ *   section  h2  1.25rem, semibold (1.5rem in blog prose)
  *   heading  h3  1rem, semibold (h4 the same)
  *   body         1rem / 1.6
  *   small        0.875rem, for supporting text
@@ -244,6 +245,7 @@
 .cv-contact a,
 .cv-index a {
   color: var(--color-text-accent);
+  text-decoration: underline;
   text-underline-offset: 0.2em;
 }
 

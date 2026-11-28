@@ -118,6 +118,7 @@ type that owns the question, or ask Joe for a new row here.
 | `docs/runbooks/<name>.md` | How to do one named procedure | `docs/runbooks/README.md` |
 | Scoped `AGENTS.md` | Which rules an agent follows in this directory | Root `AGENTS.md` |
 | `REVIEW.md` | Which rules a review enforces. Joe decides changes | Root `REVIEW.md` "Joe decides" |
+| Web app `DESIGN.md` | Which type, colour and space rules the app's pages follow | The app's theme tokens (`projects/jomcgi-site/web/DESIGN.md`) |
 | `INVARIANTS.yaml` | Which rules must always hold in this directory, what enforces each and which test proves it | `docs/templates/INVARIANTS.yaml` |
 | HOME issue | Rollout steps, acceptance checks, open questions | `docs/agents/reference.md` "Ticket shape" |
 | PR description | What changes and its evidence | `docs/agents/pull-requests.md` |

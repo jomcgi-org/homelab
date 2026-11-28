@@ -202,8 +202,8 @@ export function Scatter<T extends Model>({
     const p = pts[i]!,
       cx = xs(p.x),
       cy = ys(p.y),
-      w = p.name.length * 6.1 + 4,
-      h = 12;
+      w = p.name.length * 7 + 4,
+      h = 14;
     const tries: (Label & { b: number[] })[] = [
       {
         x: cx + 9,

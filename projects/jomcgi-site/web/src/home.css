@@ -334,7 +334,7 @@ html:has(.home) {
 }
 .home .key .legend {
   font-family: var(--font-family-home-code);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--color-text-secondary);
   letter-spacing: 0.01em;
   text-align: center;
@@ -404,7 +404,7 @@ html:has(.home) {
 }
 .home .writing .lab {
   font-family: var(--font-family-home-code);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   color: var(--color-text-secondary);
   letter-spacing: 0.02em;
 }
@@ -554,8 +554,9 @@ html:has(.home) {
     width: 2.5rem;
     height: 2.5rem;
   }
+  /* Legends are the only label on a touch screen, so they stay 12px. */
   .home .key .legend {
-    font-size: 0.56rem;
+    font-size: 0.75rem;
     letter-spacing: 0;
   }
   /* On phones, the footer blog link leads to the latest posts. */
@@ -628,7 +629,7 @@ html:has(.home) {
       height: 2.7rem;
     }
     .home .key .legend {
-      font-size: 0.62rem;
+      font-size: 0.75rem;
     }
   }
   /* Phones keep the name readout, so its height can fit wrapped text. */
