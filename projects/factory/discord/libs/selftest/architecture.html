@@ -6,8 +6,8 @@
     <title>Self-test: architecture</title>
     <link
       rel="stylesheet"
-      href="/_lib/house-1.css"
-      integrity="sha384-oWMsm4jALoVOD2EWe0AkXNEKEt+4L3gH2oWjZ4puAs/OZARfQJFLZBG+Tlezyhl1"
+      href="/_lib/house-2.css"
+      integrity="sha384-a2fadyQmBhj6Aujn4v94i0XtFMp6Ab2iatksRuqSrURuIf26LE2KB0rBR5ouNLB2"
       crossorigin="anonymous"
     />
   </head>
@@ -25,9 +25,9 @@
       </header>
 
       <section class="section">
-        <figure class="figure">
+        <figure class="figure" tabindex="0">
           <pre class="mermaid">
-flowchart LR
+flowchart TD
   UI[Client / UI] -- HTTP --> API[Query API<br>governance chokepoint]
   API --> DF[DataFusion engine]
   DF --> ICE[(Iceberg tables<br>S3 / MinIO)]
@@ -105,8 +105,8 @@ flowchart LR
       crossorigin="anonymous"
     ></script>
     <script
-      src="/_lib/house-1.js"
-      integrity="sha384-9EOYVkdNo9W4GjxIL8cWRcTyJMNXZjkZn/PalibQakU5HfCPm2WvBFRQ6of/891+"
+      src="/_lib/house-2.js"
+      integrity="sha384-QnBr/08aY6bzFwE+905otA0BI+TfSTDpsUrz/7FoJ5xlO9gNcC2ugi/gsjDa6H3E"
       crossorigin="anonymous"
     ></script>
   </body>
