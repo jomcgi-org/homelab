@@ -39,6 +39,8 @@ HERMES_VERSION = "0.23.4"
 # The v0.23.4 tag's commit in NousResearch/hermes-agent.
 HERMES_COMMIT = "8fc0374447313e276f6b9a2764bfc750190c966a"
 MODEL = "fake/model"
+# A message the fake model's filter refuses, like a provider safety filter.
+BLOCKED = "kagent-blocked-marker"
 # Upstream parts the slim image leaves out (slim.py DROP, and the apt layer).
 _LEFT_OUT = (
     "opt/hermes/tools/chromium-",
@@ -220,6 +222,10 @@ class _FakeModel(BaseHTTPRequestHandler):
         users = [m for m in messages if m.get("role") == "user"]
         text = f"Hermes answer {len(users)}"
         usage = {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
+        # Like a provider safety filter, which judges the whole transcript.
+        if any(BLOCKED in json.dumps(m.get("content")) for m in users):
+            self._refuse(bool(body.get("stream")), usage)
+            return
         # "remember <fact>" makes one memory tool call, as a model would.
         call = None
         last = messages[-1] if messages else {}
@@ -297,6 +303,50 @@ class _FakeModel(BaseHTTPRequestHandler):
             for c in chunks
         )
         self._send(stream + "data: [DONE]\n\n", "text/event-stream")
+
+
+    def _refuse(self, stream: bool, usage: dict) -> None:
+        refusal = "I won't help with that."
+        if not stream:
+            message = {"role": "assistant", "content": None, "refusal": refusal}
+            self._send(
+                json.dumps(
+                    {
+                        "id": "c",
+                        "object": "chat.completion",
+                        "model": MODEL,
+                        "usage": usage,
+                        "choices": [
+                            {"index": 0, "finish_reason": "stop", "message": message}
+                        ],
+                    }
+                )
+            )
+            return
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "refusal": refusal},
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": usage,
+            },
+        ]
+        stream_body = "".join(
+            "data: "
+            + json.dumps(
+                {"id": "c", "object": "chat.completion.chunk", "model": MODEL, **c}
+            )
+            + "\n\n"
+            for c in chunks
+        )
+        self._send(stream_body + "data: [DONE]\n\n", "text/event-stream")
 
 
 def _free_port() -> int:
@@ -454,14 +504,27 @@ def _gateway(rootfs, memory: bool):
         log.close()
 
 
-def _respond(gw: dict, session: str, text: str) -> dict:
-    """Send one turn the way kagent-hermes does (driver client.respond)."""
+def _respond(
+    gw: dict,
+    session: str,
+    text: str,
+    previous: str | None = None,
+    key: str | None = None,
+) -> dict:
+    """Send one turn the way kagent-hermes does (driver client.respond).
+
+    A turn chains to the session's last answered response (`previous`), or
+    by conversation name when the session has none.
+    """
     body = {
         "input": text,
         "instructions": "You answer for the homelab server.",
         "store": True,
-        "conversation": session,
     }
+    if previous:
+        body["previous_response_id"] = previous
+    else:
+        body["conversation"] = session
     req = urllib.request.Request(
         gw["url"] + "/v1/responses",
         data=json.dumps(body).encode(),
@@ -470,11 +533,27 @@ def _respond(gw: dict, session: str, text: str) -> dict:
             "Content-Type": "application/json",
             "Authorization": "Bearer " + gw["key"],
             "X-Hermes-Session-Key": session,
-            "Idempotency-Key": "kagent-task-" + secrets.token_hex(8),
+            "Idempotency-Key": key or "kagent-task-" + secrets.token_hex(8),
         },
     )
     with urllib.request.urlopen(req, timeout=120) as resp:
         return json.loads(resp.read())
+
+
+def _forget(gw: dict, response_id: str) -> int:
+    """Delete a stored response the way kagent-hermes does (driver client.forget)."""
+    req = urllib.request.Request(
+        gw["url"] + "/v1/responses/" + response_id,
+        method="DELETE",
+        headers={"Authorization": "Bearer " + gw["key"]},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.status
+
+
+def _last_users() -> list:
+    turns = [c for c in _FakeModel.calls if c["path"].endswith("/chat/completions")]
+    return [m["content"] for m in turns[-1]["body"]["messages"] if m["role"] == "user"]
 
 
 def _answer(out: dict) -> str:
@@ -681,3 +760,41 @@ def test_memory_config_gives_only_the_memory_tool_and_loads_the_files(
     memory = (memory_gateway["home"] / "memories" / "MEMORY.md").read_text()
     assert memory == _MEMORY + "\n§\nJoe walks the Cuillin"
     assert (memory_gateway["home"] / "memories" / "USER.md").read_text() == _USER
+
+
+def test_a_refused_turn_leaves_the_chain(gateway) -> None:
+    """Hermes stores a refused turn and moves the conversation name to it.
+
+    kagent-hermes chains to the last answered response and deletes a refused
+    one, so one refused message does not refuse every later turn.
+    """
+    # By conversation name alone, the refusal blocks the next turn.
+    stuck = "kagent-" + secrets.token_hex(16)
+    _answer(_respond(gateway, stuck, "Hello"))
+    assert _respond(gateway, stuck, f"A {BLOCKED} joke")["status"] == "failed"
+    assert _respond(gateway, stuck, "Can't or won't?")["status"] == "failed"
+
+    session = "kagent-" + secrets.token_hex(16)
+    head = _respond(gateway, session, "Hello")
+    _answer(head)
+    refused = _respond(gateway, session, f"A {BLOCKED} joke", previous=head["id"])
+    assert refused["status"] == "failed"
+    # driver.TurnError.Reason reads this prefix.
+    assert refused["error"]["message"].startswith("content_policy_blocked:")
+    assert _forget(gateway, refused["id"]) == 200
+
+    key = "kagent-task-" + secrets.token_hex(8)
+    after = _respond(gateway, session, "Can't or won't?", previous=head["id"], key=key)
+    assert _answer(after) == "Hermes answer 2"
+    assert _last_users() == ["Hello", "Can't or won't?"]
+    # A retry of the same task replays the first answer.
+    retry = _respond(gateway, session, "Can't or won't?", previous=head["id"], key=key)
+    assert retry["id"] == after["id"]
+
+    # An older session that chained by name only: deleting the refused turn
+    # frees the name, and the next turn starts again.
+    legacy = "kagent-" + secrets.token_hex(16)
+    _answer(_respond(gateway, legacy, "Hello"))
+    refused = _respond(gateway, legacy, f"A {BLOCKED} joke")
+    assert _forget(gateway, refused["id"]) == 200
+    assert _answer(_respond(gateway, legacy, "Can't or won't?")) == "Hermes answer 1"
