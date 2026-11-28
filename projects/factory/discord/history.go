@@ -152,7 +152,7 @@ type HistoryMessage struct {
 	// Edited is when the message was last edited; nil when never.
 	Edited *time.Time `json:"edited_timestamp"`
 	// Thread is the thread started from the message, if any.
-	Thread *Channel `json:"thread,omitempty"`
+	Thread    *Channel   `json:"thread,omitempty"`
 	Reactions []Reaction `json:"reactions,omitempty"`
 }
 
