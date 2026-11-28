@@ -52,7 +52,7 @@ data:
                 key: /run/podidentity.podcert.ate.dev/credential-bundle.pem
                 root: /run/servicedns.podcert.ate.dev/trust-bundle.pem
           policies:
-            substrateEgress:
+            substrateEgress: &id001
               host: api.ate-system.svc:443
               policies:
                 backendTLS:
@@ -68,6 +68,22 @@ data:
                       cert: /run/podidentity.podcert.ate.dev/credential-bundle.pem
                       key: /run/podidentity.podcert.ate.dev/credential-bundle.pem
                       root: /run/servicedns.podcert.ate.dev/trust-bundle.pem
+        - name: workers-ai
+          hostnames:
+          - api.cloudflare.com
+          backends:
+          - host: api.cloudflare.com:443
+            policies:
+              backendTLS:
+                hostname: api.cloudflare.com
+                root: /etc/ssl/certs/ca-certificates.crt
+          policies:
+            substrateEgress: *id001
+            directResponse:
+              conditional:
+              - condition: request.method != 'POST' || !request.path.matches('^/client/v4/accounts/7c56b458cd657d96b095c63d181c051f/ai/run/@cf/cloudflare/(clef(-flash|-omni)?|clairic)$')
+                status: 403
+                body: Workers AI route denied
         - backends:
           - dynamic: {}
             policies:

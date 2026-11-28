@@ -63,6 +63,7 @@ automountServiceAccountToken: false
 {{- $reader := ternary "factory-binding-secret-reader" "substrate-credential-provider" $cutover }}
 {{- if $cutover }}
 {{- $secrets := list }}
+{{- if and .coder (eq $ns "factory-r-homelab") }}{{- $secrets = append $secrets "factory-workers-ai" }}{{- end }}
 {{- if has "github-git" $a.egress }}{{- $secrets = append $secrets "github-git" }}{{- end }}
 {{- range $server := $servers }}
 {{- if eq $server.secret "hindsight-mcp" }}{{ fail "the legacy hindsight-mcp credential is unavailable to this binding" }}{{ end }}
@@ -208,6 +209,33 @@ spec:
         secretKeyRef:
           name: github-git
           key: basic
+{{- end }}
+{{- if and .coder (eq $ns "factory-r-homelab") }}
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: factory-workers-ai
+  namespace: {{ $ns }}
+  labels:
+    substrate.ate.dev/injectable: "true"
+spec:
+  itemPath: vaults/k8s-homelab/items/factory-workers-ai
+---
+apiVersion: api.kagent.dev/v1alpha3
+kind: EgressPolicy
+metadata:
+  name: workers-ai
+  namespace: {{ $ns }}
+spec:
+  destinations:
+    - origin: https://api.cloudflare.com
+      authentication:
+        header: Authorization
+        prefix: "Bearer "
+        secretKeyRef:
+          name: factory-workers-ai
+          key: token
 {{- end }}
 {{- if $toolchain }}
 ---

@@ -306,6 +306,13 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+    # Workers AI calls admitted by the terminated HTTPS route.
+    - toFQDNs:
+        - matchName: api.cloudflare.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
     # The Discord agents' model calls (factory chart `discord.agent` and
     # `discord.serverAgents`), with the key the gateway injects: OpenRouter,
     # or Anthropic's Messages API, and abliteration.ai's for the gloves-off
