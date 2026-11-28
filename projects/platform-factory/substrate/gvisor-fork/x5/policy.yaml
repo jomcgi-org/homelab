@@ -1,0 +1,12 @@
+# EgressPolicy (protojson ateapi.EgressPolicy) that x5.py gives each forked
+# child before it resumes it: cleartext HTTP to mcp-grafana's port 8000 and
+# nothing else. A fork template cannot carry a golden egress policy (golden
+# snapshots are off), so the policy is set per child, as the fork runner
+# (HOME-922) will set the caller's MCP rules. No credential is injected: the
+# probe's MCP call is unauthenticated and expects mcp-grafana's own 401.
+rules:
+  - http:
+      hostnames:
+        - mcp-grafana.grafana.svc.cluster.local
+      ports:
+        numbers: [8000]

@@ -125,7 +125,7 @@ spec:
     # Keys under ate.dev are reserved (the CRD refuses them). README, step 8,
     # "The atespace pin".
     annotations:
-      factory.jomcgi.dev/worker-restart: "2026-11-23 clear the conformance atespace pin"
+      factory.jomcgi.dev/worker-restart: "2026-11-28 clear the conformance-7 atespace pin for X5"
     serviceAccountName: fork-worker
     nodeAffinity:
       preferredDuringSchedulingIgnoredDuringExecution:

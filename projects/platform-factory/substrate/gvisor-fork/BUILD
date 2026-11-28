@@ -15,6 +15,7 @@ filegroup(
         "*.yaml",
         "assets/*",
         "conformance/*",
+        "x5/*",
     ]),
     visibility = [
         "//projects/platform-factory/image-audit:__pkg__",
@@ -30,6 +31,7 @@ py_test(
         "assets/*",
         "conformance/*",
         "latency/*",
+        "x5/*",
     ]) + [
         "@multitool//tools/kustomize",
     ],

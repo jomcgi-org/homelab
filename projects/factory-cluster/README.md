@@ -1034,6 +1034,43 @@ Then check that an existing actor still starts (the smoke test in "Agent
 Substrate"). To roll back, revert the PR: the images return to
 `fork-8cf248b96e08`.
 
+#### Gate X5 for fork children (HOME-924)
+
+The Job `gvisor-fork-x5-1` (`gvisor-fork/x5/`) runs once on sync. It needs the
+gateway egress re-pin above and the `ate-client` SPIFFE ID in the router's
+ingress allowlist (`values/substrate.yaml`, Joe chose a permanent grant on
+2026-11-28). The same change restarts the pool's worker
+(`factory.jomcgi.dev/worker-restart`), so the `fork-x5` atespace is its first
+seed. Merge it only after `gvisor-fork-conformance-7` is Complete.
+
+```mermaid
+flowchart LR
+  J[x5 Job, ate-client] -->|create actor, EgressPolicy, resume| A[ate-api]
+  J -->|POST /run, mTLS| R[atenet router] --> C[fork child]
+  C -->|mcp-grafana:8000, allowed| G[egress gateway] --> M[mcp-grafana]
+  C -.->|hindsight:8888, refused| G
+  C -.->|DNS example.com, refused| G
+```
+
+Each child gets its own `EgressPolicy` (`x5/policy.yaml`: HTTP to
+`mcp-grafana.grafana.svc.cluster.local:8000` only), because a fork template
+cannot carry a golden egress policy. The fork runner (HOME-922) will set the
+caller's MCP rules the same way. The probe holds no MCP token, so mcp-grafana's
+own 401 is the expected answer. Ten children run one at a time, and ten from a
+prepared pool of four.
+
+Verify, read-only:
+
+```sh
+kubectl -n ate-system logs job/gvisor-fork-x5-1 | grep '^X5 ' | grep -E 'event=(stats|summary|error)'
+kubectl -n ate-system logs job/gvisor-fork-x5-1 | grep '^X5 ' | grep 'pass_.*=False'   # none
+```
+
+`event=summary result=ok` passes the gate. The stats lines give p50 and p95 of
+`send_to_result_ms` and `mcp_ms` in modes `ondemand` and `pool`. To roll back,
+remove `x5` from `gvisor-fork/kustomization.yaml`; the ate-client router grant
+stays.
+
 #### Isolation gates
 
 X1 to X7 and X9 run in the cluster during the scanner's 7-day observe window
