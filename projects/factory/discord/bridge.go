@@ -162,6 +162,9 @@ type Bridge struct {
 	// Unsafe answers unsafe mode turns (HOME-938, unsafe.go), one session
 	// per channel window; nil while Config.Unsafe is zero.
 	Unsafe SessionAgent
+	// OfferWriter writes a gloves-off offer's line on the gloves-off Agent,
+	// one stateless turn per offer (offer.go); nil uses canned lines.
+	OfferWriter Agent
 
 	mu    sync.Mutex
 	botID string
