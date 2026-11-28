@@ -299,8 +299,9 @@ type OperatorSessions interface {
 	RevertSession(ctx context.Context, id string) (*kagent.Session, error)
 }
 
-// maxSessionGenerations bounds the replacements of a thread's session.
-const maxSessionGenerations = 16
+// maxSessionGenerations bounds the replacements of a thread's session. A
+// blocked turn uses one, so the bound leaves room for many (HOME-909).
+const maxSessionGenerations = 64
 
 // OperatorRequestID is the request ID of a thread's session. kagent returns
 // the same session for the same request ID, so a restarted bridge finds the
@@ -369,6 +370,9 @@ type KagentOperator struct {
 
 	mu    sync.Mutex
 	known map[string]string // thread -> context ID
+	// first is the generation a key's session search starts at: past a
+	// session dropped after a blocked turn, before kagent deletes it.
+	first map[string]int
 }
 
 // Session finds or creates the thread's session.
@@ -379,7 +383,10 @@ func (k *KagentOperator) Session(ctx context.Context, threadID string) (Operator
 	if ok {
 		return OperatorSession{ContextID: id}, nil
 	}
-	for gen := range maxSessionGenerations {
+	k.mu.Lock()
+	start := k.first[threadID]
+	k.mu.Unlock()
+	for gen := start; gen < maxSessionGenerations; gen++ {
 		s, err := k.Sessions.CreateSession(ctx, k.Agent, k.requestID(threadID, gen))
 		if errors.Is(err, kagent.ErrSessionNotFound) || errors.Is(err, kagent.ErrSessionUnrecoverable) {
 			continue
@@ -410,6 +417,10 @@ func (k *KagentOperator) Session(ctx context.Context, threadID string) (Operator
 			k.known = map[string]string{}
 		}
 		k.known[threadID] = s.ContextID
+		if k.first == nil {
+			k.first = map[string]int{}
+		}
+		k.first[threadID] = gen
 		k.mu.Unlock()
 		return OperatorSession{ContextID: s.ContextID, Fresh: page.TotalSize == 0 && len(page.Tasks) == 0}, nil
 	}
@@ -444,19 +455,28 @@ func (k *KagentOperator) Turn(ctx context.Context, threadID, messageID, prompt s
 	return answer, err
 }
 
-// dropBlocked deletes a session whose turn the provider's safety filter
+// dropBlocked drops a session whose turn the provider's safety filter
 // refused. The provider judges the whole conversation, and Hermes keeps
 // the refused message in it, so every later turn in that session is
-// refused too. The deleted session moves the key to its next generation:
-// the next turn starts a clean session (HOME-909).
+// refused too. The key's next turn starts at the next generation, a clean
+// session, and kagent deletes the old one off the channel's worker
+// (HOME-909).
 func (k *KagentOperator) dropBlocked(key, contextID string) {
+	k.mu.Lock()
+	if k.first == nil {
+		k.first = map[string]int{}
+	}
+	k.first[key]++
+	k.mu.Unlock()
 	d, ok := k.Sessions.(SessionDeleter)
 	if !ok {
 		return
 	}
-	if err := deleteSession(d, contextID); err != nil && k.Log != nil {
-		k.Log.Warn("blocked session not deleted", "key", key, "session", contextID, "error", err)
-	}
+	go func() {
+		if err := deleteSession(d, contextID); err != nil && k.Log != nil {
+			k.Log.Warn("blocked session not deleted", "key", key, "session", contextID, "error", err)
+		}
+	}()
 }
 
 func (k *KagentOperator) turn(ctx context.Context, contextID, messageID, prompt string) (string, error) {
