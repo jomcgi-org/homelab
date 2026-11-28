@@ -459,8 +459,16 @@ def test_notes_viewer_admits_each_server_group_on_its_folder_only(docs):
     rules = {rule["name"]: rule for rule in route["rules"]}
     assert list(rules) == [f"server-{s}" for s in SERVERS] + ["admins"]
     for name, rule in rules.items():
-        prefix = "/" if name == "admins" else "/" + name.removeprefix("server-") + "/"
-        assert rule["matches"] == [{"path": {"type": "PathPrefix", "value": prefix}}]
+        server = name.removeprefix("server-")
+        matches = (
+            [{"path": {"type": "PathPrefix", "value": "/"}}]
+            if name == "admins"
+            else [
+                {"path": {"type": "PathPrefix", "value": f"/{server}/"}},
+                {"path": {"type": "Exact", "value": f"/{server}"}},
+            ]
+        )
+        assert rule["matches"] == matches
         assert rule["backendRefs"] == [
             {
                 "group": "",
