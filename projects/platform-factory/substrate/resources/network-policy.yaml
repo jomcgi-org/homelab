@@ -317,6 +317,16 @@ spec:
         - ports:
             - port: "8082"
               protocol: TCP
+    # Bosun's headless browser (factory chart discord-browser.yaml, HOME-931).
+    # It holds no credential; egress-scan checks these calls (HOME-932).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: browser-mcp
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
     # The homelab Discord Hermes agent's Scotland outdoors MCP server
     # (factory chart `discord.serverAgents.<key>.mcpServers`), public and
     # read-only, with no credential. kagent admits it only for that actor.

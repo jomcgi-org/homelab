@@ -285,7 +285,8 @@ identity at the gateway, never from the prompt.
 Joe chose the homelab agent's tools on 2026-11-27
 ([HOME-915](https://factory-plan.jomcgi.dev/factory/issue/HOME-915)): web
 search, web fetch, code execution, the Scotland outdoors planner, Hindsight
-recall and factory MCP. Code execution and the Scotland planner are in
+recall and factory MCP. A headless browser followed on 2026-11-28 (see
+"Browser" below). Code execution and the Scotland planner are in
 deploy values (`discord.serverAgents.homelab.serverTools`, `mcpServers`).
 Web search and fetch are on with the prompt rule only (Joe, 2026-11-28):
 each turn holds the server's recalled memories, so a query may carry
@@ -391,6 +392,50 @@ Turning it on, in order:
 
 The same order moves existing channels onto any prompt change, such as the
 check-current-facts rule.
+
+### Browser
+
+Joe chose a self-hosted, signed-out browser under gVisor on 2026-11-28
+([HOME-931](https://factory-plan.jomcgi.dev/factory/issue/HOME-931#comment-13034)),
+not a hosted browser. Web fetch reads only static pages; the browser reads
+pages that JavaScript builds. It is Microsoft's Playwright MCP server
+(`mcr.microsoft.com/playwright/mcp` v0.0.86, by digest) in `factory-discord`
+(`chart/templates/discord-browser.yaml`), behind `discord.browser.enabled`.
+Each routed server agent gets it as MCP server `playwright`, because
+`browser` is a Hermes toolset name.
+
+```mermaid
+flowchart LR
+  H["Hermes actor"] --> G["egress gateway + egress-scan (HOME-932)"]
+  G --> B["browser-mcp :8080 (gVisor, Chromium)"]
+  B -- "80, 443 only" --> W["public internet"]
+```
+
+- **Tools.** Hermes registers only `discord.browser.tools`: navigate, back,
+  snapshot, find, click, hover, type, fill form, select, press key, handle
+  dialog, wait, screenshot, tabs and close. The chart refuses
+  `browser_evaluate` and `browser_run_code_unsafe` (they run JavaScript) and
+  `browser_file_upload` and `browser_drop` (they read local files).
+- **Signed out.** `--isolated` keeps each profile in memory, and each MCP
+  session gets a new browser context. There is no stored profile, cookie,
+  storage state or secret, and the pod's disks are emptyDirs. Pages cannot
+  add tools (`--no-webmcp`) or keep service workers.
+- **Sandbox.** The image runs Chromium with `--no-sandbox`; gVisor
+  (`runtimeClassName: gvisor`) is the sandbox between page code and the node.
+- **Network.** Only Substrate's egress gateway connects in. Out: the public
+  internet on 80 and 443. The Cilium policy denies `discord.browser.deniedCIDRs`
+  (private, node, link-local and special ranges), and a CIDR rule never
+  selects cluster pods.
+- **DLP.** The browser holds no credential, so its page traffic is not
+  scanned. The gateway scans the agent's calls to it with egress-scan, which
+  denies a call that carries a credential (HOME-932).
+- **Rule.** The prompt tells the agent to use web fetch first, to build a URL
+  only from Joe's message or search results, never to type memories, channel
+  text or secrets into a page, and never to sign in or create an account.
+- **Limits.** One replica, 1.5 GiB memory. A page that needs sign-in, a
+  CAPTCHA or a file upload fails. Turning it on for existing channels follows
+  the same order as the GitHub tools: deploy values first, then a new
+  `sessionEpoch` after kagent shows the new Agent revision.
 
 ### Tool security
 

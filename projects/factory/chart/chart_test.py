@@ -2104,6 +2104,136 @@ def test_discord_github_tools_are_public_read_only() -> None:
     assert "you can also look up public GitHub repositories" in prompt
 
 
+def test_discord_browser_is_a_signed_out_gvisor_playwright() -> None:
+    # HOME-931: Playwright MCP under gVisor, signed out, reached only through
+    # the egress gateway, out only to the public internet on 80 and 443.
+    base = _HOMELAB + [
+        f"kagent.rbac.namespaces={{kagent,factory-r-homelab,factory-discord-agent,{_HOMELAB_NS}}}",
+        "discord.agent.enabled=true",
+        "discord.bridge.enabled=true",
+        "string:discord.bridge.policy.guilds.1501965852042330302.ingest=true",
+        "discord.serverAgents.homelab.route=true",
+    ]
+    off = _render(base)
+    assert not [
+        d for d in off if d["metadata"]["name"] in ("browser-mcp", "playwright")
+    ]
+    agent = _in(off, "Agent", _HOMELAB_NS, "homelab")["spec"]["template"]["inline"]
+    assert "playwright tools" not in agent["systemPrompt"]
+
+    docs = _render(base + ["discord.browser.enabled=true"])
+    tools = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())["discord"][
+        "browser"
+    ]["tools"]
+    # Never a tool that runs JavaScript or reads local files.
+    for risky in (
+        "browser_evaluate",
+        "browser_run_code_unsafe",
+        "browser_file_upload",
+        "browser_drop",
+    ):
+        assert risky not in tools
+    deploy = _in(docs, "Deployment", "factory-discord", "browser-mcp")
+    pod = deploy["spec"]["template"]["spec"]
+    assert pod["runtimeClassName"] == "gvisor"
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    (container,) = pod["containers"]
+    assert container["image"].startswith(
+        "mcr.microsoft.com/playwright/mcp:v0.0.86@sha256:"
+    )
+    assert container["args"] == [
+        "--port=8080",
+        "--host=0.0.0.0",
+        "--allowed-hosts=browser-mcp.factory-discord.svc.cluster.local",
+        "--isolated",
+        "--no-webmcp",
+        "--block-service-workers",
+        "--output-dir=/tmp/playwright",
+    ]
+    # No stored profile, cookies, logins or shared context.
+    for flag in (
+        "--user-data-dir",
+        "--storage-state",
+        "--save-session",
+        "--shared-browser-context",
+        "--allow-unrestricted-file-access",
+        "--secrets",
+    ):
+        assert not [a for a in container["args"] if a.startswith(flag)]
+    assert "env" not in container and "envFrom" not in container
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    service = _in(docs, "Service", "factory-discord", "browser-mcp")["spec"]
+    assert service["ports"][0]["port"] == 8080
+    policy = _in(docs, "CiliumNetworkPolicy", "factory-discord", "browser-mcp")["spec"]
+    assert policy["ingress"] == [
+        {
+            "fromEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "ate-system",
+                        "app": "atenet-egress",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}]}],
+        }
+    ]
+    (egress,) = policy["egress"]
+    assert set(egress) == {"toCIDRSet", "toPorts"}
+    (cidr,) = egress["toCIDRSet"]
+    assert cidr["cidr"] == "0.0.0.0/0"
+    for denied in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "169.254.0.0/16",
+        "127.0.0.0/8",
+    ):
+        assert denied in cidr["except"]
+    assert egress["toPorts"] == [
+        {
+            "ports": [
+                {"port": "80", "protocol": "TCP"},
+                {"port": "443", "protocol": "TCP"},
+            ]
+        }
+    ]
+    server = _in(docs, "RemoteMCPServer", _HOMELAB_NS, "playwright")["spec"]
+    assert (
+        server["url"] == "http://browser-mcp.factory-discord.svc.cluster.local:8080/mcp"
+    )
+    assert "headersFrom" not in server and "actorJwt" not in server
+    agent = _in(docs, "Agent", _HOMELAB_NS, "homelab")["spec"]["template"]["inline"]
+    assert {
+        "mcp": {
+            "server": {"kind": "RemoteMCPServer", "name": "playwright"},
+            "tools": tools,
+        }
+    } in agent["tools"]
+    prompt = " ".join(agent["systemPrompt"].split())
+    assert "Build a URL only from Joe's message or from search results" in prompt
+    assert "Never type memories, channel text or secrets into a page" in prompt
+    assert "never sign in" in prompt
+
+
+def test_discord_browser_refuses_a_javascript_tool() -> None:
+    with pytest.raises(RuntimeError, match="browser_evaluate: it runs JavaScript"):
+        _render(
+            _HOMELAB
+            + [
+                f"kagent.rbac.namespaces={{kagent,factory-r-homelab,factory-discord-agent,{_HOMELAB_NS}}}",
+                "discord.agent.enabled=true",
+                "discord.bridge.enabled=true",
+                "string:discord.bridge.policy.guilds.1501965852042330302.ingest=true",
+                "discord.serverAgents.homelab.route=true",
+                "discord.browser.enabled=true",
+                "discord.browser.tools={browser_navigate,browser_evaluate}",
+            ]
+        )
+
+
 def test_discord_server_agent_web_tools_bring_their_prompt() -> None:
     # Turning web search on renders it in the Harness and appends the web
     # rules: a query comes only from Joe's message, never from memories.
