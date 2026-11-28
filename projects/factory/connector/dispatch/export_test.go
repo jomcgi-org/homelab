@@ -27,3 +27,12 @@ func (e *Engine) WorkerHolds() (waiting, released int) {
 	defer e.workers.mu.Unlock()
 	return len(e.workers.waiting), len(e.workers.released)
 }
+
+// ConsumePlannerResultOffline exercises result processing with both external
+// clients disconnected. The caller runs it between ticks.
+func (e *Engine) ConsumePlannerResultOffline(ctx context.Context) error {
+	its, gh := e.its, e.gh
+	e.its, e.gh = nil, nil
+	defer func() { e.its, e.gh = its, gh }()
+	return e.preparePlannerResult(ctx)
+}

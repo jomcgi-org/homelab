@@ -68,6 +68,7 @@ go_library(
         "20261125130001_reviewer_task_pin.sql",
         "20261125140000_manual_goal_feedback.sql",
         "20261128140000_bosun_requests.sql",
+        "20261128150000_triage.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

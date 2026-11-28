@@ -143,3 +143,15 @@ func TestScheduleNameAndTrackedAndMarker(t *testing.T) {
 		t.Error("oversize prompt accepted")
 	}
 }
+
+func TestObserveRequiresReviewedOpsAndSnapshotTargets(t *testing.T) {
+	good := `{"op":"delegate","args":{},"target":"HOME-1","reason":"ready"}`
+	actions := []string{good, strings.Replace(good, "delegate", "merge", 1), strings.Replace(good, "HOME-1", "HOME-2", 1), strings.Replace(good, "{}", `{"text":"bad"}`, 1), strings.Replace(good, `"args"`, `"extra":true,"args"`, 1)}
+	raw := []byte(`{"actions":[` + strings.Join(actions, ",") + `],"proposals":[{}],"cards":[{"pr":2,"findings":["x"],"recommendation":"review"}]}`)
+	for _, allow := range [][]string{nil, {"delegate"}} {
+		got, dropped := Observe(raw, "homelab:factory", allow, map[string]json.RawMessage{"HOME-1": []byte("{}")}, map[int]bool{1: true})
+		if len(got) != len(allow) || dropped != 7-len(allow) {
+			t.Fatalf("allow %v: accepted %v, dropped %d", allow, got, dropped)
+		}
+	}
+}

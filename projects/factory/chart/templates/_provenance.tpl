@@ -2,6 +2,13 @@
 {{- define "factory.bindingPrompt" -}}
 {{- $r := .binding -}}
 {{- $prompt := (index .root.Values.agents $r.agent).systemPrompt -}}
+{{- if eq $r.agent "planner" -}}
+{{- range .root.Values.connector.plannerSchedules -}}
+{{- if .actions -}}
+{{- $prompt = printf "%s\nFor the reviewed %s task, return its requested triage JSON object instead of the proposal array." $prompt .name -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if eq ($r.toolchain | default "") "homelab" -}}
 {{- $prompt = printf "%s\n%s" $prompt (.root.Files.Get "files/toolchain-prompt.txt") -}}
 {{- end -}}

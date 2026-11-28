@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,11 +19,12 @@ import (
 // precedes the transaction: it removes a proposal whose fingerprint an open
 // issue already covers, and counts it as deduplicated.
 func (e *Engine) preparePlannerResult(ctx context.Context) error {
-	var run, message, namespace string
-	err := e.st.DB.QueryRowContext(ctx, `SELECT r.run_id,r.final_message,s.namespace
+	var run, message, namespace, schedule string
+	var snapshot []byte
+	err := e.st.DB.QueryRowContext(ctx, `SELECT r.run_id,r.final_message,s.namespace,r.schedule,r.triage_snapshot
  FROM planner_run r JOIN planner_schedule s ON s.name=r.schedule
  WHERE r.final_message IS NOT NULL AND NOT processed AND finished_at IS NULL
- AND s.issue_title <> '' AND s.instructions <> '' ORDER BY started_at LIMIT 1`).Scan(&run, &message, &namespace)
+ AND s.issue_title <> '' AND s.instructions <> '' ORDER BY started_at LIMIT 1`).Scan(&run, &message, &namespace, &schedule, &snapshot)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -30,6 +32,9 @@ func (e *Engine) preparePlannerResult(ctx context.Context) error {
 		return err
 	}
 	items, _, _ := planner.Parse([]byte(message), namespace)
+	if snapshot != nil || len(e.scheduleActions(schedule)) > 0 {
+		items = nil
+	}
 	covered, err := e.plannerCovered(ctx, items)
 	if err != nil {
 		return err
@@ -43,6 +48,27 @@ func (e *Engine) preparePlannerResult(ctx context.Context) error {
 			return nil
 		}
 		if err != nil {
+			return err
+		}
+		if snapshot != nil || len(e.scheduleActions(schedule)) > 0 {
+			var data triageSnapshot
+			if snapshot != nil {
+				if err := json.Unmarshal(snapshot, &data); err != nil {
+					return err
+				}
+			}
+			prs := map[int]bool{}
+			for _, pr := range data.PRs {
+				prs[pr.Number] = true
+			}
+			actions, dropped := planner.Observe([]byte(message), namespace, e.scheduleActions(schedule), data.Board, prs)
+			for _, a := range actions {
+				_, err := tx.ExecContext(ctx, `INSERT INTO triage_action(run_id,op,target,args,reason,state_before,result) VALUES ($1,$2,$3,$4,$5,$6,'observed')`, run, a.Op, a.Target, string(a.Args), a.Reason, string(data.Board[a.Target]))
+				if err != nil {
+					return err
+				}
+			}
+			_, err := tx.ExecContext(ctx, `UPDATE planner_run SET final_message=NULL,processed=true,dropped=dropped+$2 WHERE run_id=$1`, run, dropped)
 			return err
 		}
 		items, dropped, parseErr := planner.Parse([]byte(message), namespace)

@@ -43,6 +43,7 @@ type GitHub interface {
 	PullRequestDetail(ctx context.Context, repo string, number int) (*github.PullRequestDetail, error)
 	PullRequestDetailWithReviews(ctx context.Context, repo string, number int, limited []string, before func() error) (*github.PullRequestDetail, error)
 	CheckRuns(ctx context.Context, repo, sha string) ([]github.CheckRun, error)
+	StatusFrom(context.Context, string, string, string, string, func(int) error) (string, error)
 	Statuses(ctx context.Context, repo, sha string) ([]github.Status, error)
 	EnqueuePullRequest(ctx context.Context, repo, nodeID, headSHA string) (string, error)
 	DequeuePullRequest(ctx context.Context, repo, nodeID string) error

@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/planner"
@@ -292,6 +294,41 @@ func plannerTask(r *plannerRun) string {
 
 func (e *Engine) sendPlanner(ctx context.Context, r *plannerRun) error {
 	ref := e.plannerRef()
+	prompt := plannerTask(r)
+	if ops := e.scheduleActions(r.Schedule); len(ops) > 0 && !r.SendStarted.Valid {
+		var raw []byte
+		if err := e.st.DB.QueryRowContext(ctx, "SELECT triage_snapshot FROM planner_run WHERE run_id=$1", r.ID).Scan(&raw); err != nil {
+			return err
+		}
+		if raw == nil {
+			if err := e.guard(ctx); err != nil {
+				return err
+			}
+			data, err := e.triageSnapshot(ctx, r.MessageID)
+			if errors.Is(err, errTriageRefusal) {
+				return e.failPlannerRun(ctx, r, "triage snapshot credential refusal limit")
+			}
+			if err != nil {
+				return err
+			}
+			raw, err = json.Marshal(data)
+			if err != nil {
+				return err
+			}
+			if err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+				_, err := tx.ExecContext(ctx, "UPDATE planner_run SET triage_snapshot=$2 WHERE run_id=$1", r.ID, string(raw))
+				return err
+			}); err != nil {
+				return err
+			}
+		}
+		// Re-encode JSONB on retry so database normalization cannot unescape a delimiter.
+		quoted, err := json.Marshal(json.RawMessage(raw))
+		if err != nil {
+			return err
+		}
+		prompt = r.Prompt + "\n\nAllowed operations: " + strings.Join(ops, ", ") + "\n" + planner.EvidenceOpen + "\n> " + string(quoted) + "\n" + planner.EvidenceClose
+	}
 	if r.ContextID == "" {
 		if err := e.guard(ctx); err != nil {
 			return err
@@ -346,7 +383,7 @@ func (e *Engine) sendPlanner(ctx context.Context, r *plannerRun) error {
 	task, err := e.tasks.Send(ctx, ref, kagent.Message{
 		MessageID: r.MessageID,
 		ContextID: r.ContextID,
-		Parts:     []kagent.Part{{Text: plannerTask(r)}},
+		Parts:     []kagent.Part{{Text: prompt}},
 		Metadata: map[string]any{
 			"factory.jomcgi.dev/planner-run":      r.ID,
 			"factory.jomcgi.dev/planner-schedule": r.Schedule,
@@ -576,4 +613,181 @@ func taskUsage(t *kagent.Task) (in, out int64, ok bool) {
 		out += number(usage, "outputTokens")
 	}
 	return in, out, ok
+}
+
+type triagePR struct {
+	Issue  string
+	Number int
+	Head   string
+	Review string
+	Checks string
+}
+
+type triageSnapshot struct {
+	Columns map[int64]string
+	Labels  map[int64]string
+	Board   map[string]json.RawMessage
+	State   json.RawMessage
+	PRs     []triagePR
+}
+
+func (e *Engine) scheduleActions(name string) []string {
+	for _, s := range e.cfg.PlannerSchedules {
+		if s.Name == name {
+			return s.Actions
+		}
+	}
+	return nil
+}
+
+func (e *Engine) triageSnapshot(ctx context.Context, message string) (triageSnapshot, error) {
+	s := triageSnapshot{Board: map[string]json.RawMessage{}}
+	b := e.binding("homelab")
+	if b == nil || b.ItsaplanProject != "HOME" {
+		return s, errors.New("missing HOME triage binding")
+	}
+	journal := triageRead{engine: e, message: message}
+	project, err := readTriage(ctx, &journal, "project", "HOME", func() (*itsaplan.Project, error) { return e.its.GetProject(ctx, "HOME") })
+	if err != nil {
+		return s, err
+	}
+	s.Columns = map[int64]string{}
+	for _, c := range project.Columns {
+		s.Columns[c.ID] = c.Name
+	}
+	s.Labels = map[int64]string{}
+	for _, l := range project.Labels {
+		s.Labels[l.ID] = l.Name
+	}
+	issues, err := readTriage(ctx, &journal, "board", "HOME", func() ([]itsaplan.Issue, error) { return e.its.ProjectIssues(ctx, "HOME") })
+	if err != nil {
+		return s, err
+	}
+	for _, i := range issues {
+		detail, err := readTriage(ctx, &journal, "issue", fmt.Sprint(i.ID), func() (*itsaplan.Issue, error) { return e.its.GetIssue(ctx, i.ID) })
+		if err != nil {
+			return s, err
+		}
+		raw, err := json.Marshal(map[string]any{"key": i.Identifier, "column": i.ColumnID, "priority": i.Priority, "position": i.Position, "assignee": i.AssigneeUserID, "delegate": i.DelegateUserID, "labels": i.LabelIDs, "links": detail.Links, "title": detail.Title, "description": detail.Description})
+		if err != nil {
+			return s, err
+		}
+		s.Board[i.Identifier] = raw
+	}
+	err = e.st.DB.QueryRowContext(ctx, `WITH work AS (SELECT id,issue_key,state,review_rounds,rebase_rounds,stops,stopped_reason,stopped_by FROM work_item WHERE binding_name='homelab'),
+ runs AS (SELECT r.id,r.work_item_id,r.state,r.origin,r.attempt,r.stopped_reason FROM run r JOIN work w ON w.id=r.work_item_id),
+ attempts AS (SELECT a.id,a.run_id,a.seq,a.state FROM delivery_attempt a JOIN runs r ON r.id=a.run_id),
+ holds AS (SELECT h.id,h.work_item_id,h.state,h.reason FROM recovery_hold h JOIN work w ON w.id=h.work_item_id)
+ SELECT json_build_object('work_items',(SELECT json_agg(work) FROM work),'runs',(SELECT json_agg(runs) FROM runs),'attempts',(SELECT json_agg(attempts) FROM attempts),'holds',(SELECT json_agg(holds) FROM holds))`).Scan(&s.State)
+	if err != nil {
+		return s, err
+	}
+	rows, err := e.st.DB.QueryContext(ctx, `SELECT issue_key,number,head_sha FROM pull_request JOIN work_item ON work_item.id=work_item_id WHERE binding_name='homelab' ORDER BY number`)
+	if err != nil {
+		return s, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pr triagePR
+		if err := rows.Scan(&pr.Issue, &pr.Number, &pr.Head); err != nil {
+			return s, err
+		}
+		s.PRs = append(s.PRs, pr)
+	}
+	if err := rows.Err(); err != nil {
+		return s, err
+	}
+	if len(s.PRs) > 0 && e.gh == nil {
+		return s, errors.New("missing GitHub client for triage checks")
+	}
+	for i := range s.PRs {
+		p := &s.PRs[i]
+		target := fmt.Sprintf("%s#%d@%s", b.repo(), p.Number, p.Head)
+		if check := b.Review.ReviewerCheck; check != nil {
+			checks, err := e.gh.ListCheckRunsWithJournal(ctx, b.repo(), p.Head, github.CheckRunFilter{Name: check.Name, AppID: check.AppID}, journal.pages(ctx, "check", target))
+			if err := journal.finish(ctx, err); err != nil {
+				return s, err
+			}
+			var newest int64
+			for _, c := range checks {
+				if c.Name == check.Name && c.AppID == check.AppID && c.ID > newest {
+					newest = c.ID
+					p.Review = c.Conclusion
+				}
+			}
+		}
+		for _, want := range b.Review.RequiredChecks {
+			if want.Name == "pr-checks" && want.StatusCreator != "" {
+				state, err := e.gh.StatusFrom(ctx, b.repo(), p.Head, want.Name, want.StatusCreator, journal.pages(ctx, "status", target))
+				if err := journal.finish(ctx, err); err != nil {
+					return s, err
+				}
+				p.Checks = state
+				break
+			}
+		}
+	}
+	return s, nil
+}
+
+var errTriageRefusal = errors.New("triage read credential refusal limit")
+
+type triageRead struct {
+	engine                     *Engine
+	message, operation, target string
+	started                    bool
+}
+
+func (j *triageRead) begin(ctx context.Context, op, target string) error {
+	j.operation, j.target, j.started = op, target, false
+	err := j.engine.w.Tx(ctx, func(tx *sql.Tx) error {
+		var refusals int
+		err := tx.QueryRowContext(ctx, `INSERT INTO triage_read(message_id,operation,target,writer_epoch) VALUES ($1,$2,$3,$4)
+ ON CONFLICT(message_id,operation,target) DO UPDATE SET attempts=triage_read.attempts+1,writer_epoch=excluded.writer_epoch RETURNING refusals`, j.message, op, target, j.engine.w.Epoch).Scan(&refusals)
+		if err == nil && refusals >= outboxAuthMaxTries {
+			return errTriageRefusal
+		}
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if err := j.engine.guard(ctx); err != nil {
+		return err
+	}
+	j.started = true
+	return nil
+}
+
+func (j *triageRead) pages(ctx context.Context, op, target string) func(int) error {
+	j.started = false
+	return func(page int) error { return j.begin(ctx, op, fmt.Sprintf("%s/page/%d", target, page)) }
+}
+
+func (j *triageRead) finish(ctx context.Context, result error) error {
+	if !j.started {
+		return result
+	}
+	var gh *github.HTTPError
+	refused := j.engine.countRefusal(roleCoordinator, "triage_"+j.operation, result) || (errors.As(result, &gh) && (gh.Status == 401 || gh.Status == 403))
+	var streak int
+	err := j.engine.w.Tx(ctx, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `UPDATE triage_read SET refusals=CASE WHEN $4 THEN refusals+1 ELSE 0 END WHERE message_id=$1 AND operation=$2 AND target=$3 RETURNING refusals`, j.message, j.operation, j.target, refused).Scan(&streak)
+	})
+	if err != nil {
+		return err
+	}
+	if streak >= outboxAuthMaxTries {
+		return errTriageRefusal
+	}
+	return result
+}
+
+func readTriage[T any](ctx context.Context, j *triageRead, op, target string, read func() (T, error)) (T, error) {
+	if err := j.begin(ctx, op, target); err != nil {
+		var zero T
+		return zero, err
+	}
+	value, err := read()
+	return value, j.finish(ctx, err)
 }
