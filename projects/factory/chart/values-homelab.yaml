@@ -534,6 +534,11 @@ discord:
   # default, 4 h at most.
   unsafe:
     enabled: true
+  # Bosun's headless browser (HOME-931): Playwright MCP under gVisor,
+  # signed out, for every routed server agent (Joe, 2026-11-28, HOME-931
+  # comment 13034). egress-scan checks its calls at the gateway (HOME-932).
+  browser:
+    enabled: true
   # Bosun's artifact tools at artifact.jomcgi.dev (HOME-917).
   artifacts:
     enabled: true
