@@ -10,7 +10,10 @@ exports_files(
         "house/house-2.js",
         "selftest/architecture.html",
     ],
-    visibility = ["//projects/factory/connector/image:__pkg__"],
+    visibility = [
+        "//projects/factory/connector/image:__pkg__",
+        "//projects/factory/discord/artifacts:__pkg__",
+    ],
 )
 
 PAGES = [

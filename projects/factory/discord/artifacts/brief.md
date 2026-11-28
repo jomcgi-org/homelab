@@ -9,16 +9,18 @@ Choose a layout for the content:
 - Something to try (a simulator, a calculator): hero, one div.stage, div.controls under it, a div.readout with the result.
 - Anything else: hero, then one idea per section.
 
-Delete every block the content does not need. Use a card grid only for parallel things, and stat tiles only when a number is the point.
+Delete every block the content does not need. Use stat tiles only when a number is the point. Use cards only for parallel items, at most four; otherwise use a list.
 
 Rules:
 - One idea per section, with a two-to-six-word h2 and a one-line lede.
 - The hero h1 states the point; the lede says why it matters.
 - Show data as a chart, not a paragraph of numbers. Use stat tiles for the 2 to 4 numbers that matter; .stat.accent (the dark readout) marks the headline one.
+- Charts: at most two, unless the page is about the data. Prefer bars to a pie or donut. Never set a colour; the house theme colours each chart. To mark one bar, add to the encoding "opacity": {"condition": {"test": "datum.k == 'Top'", "value": 1}, "value": 0.35}.
 - Draw diagrams with pre.mermaid (ELK layout handles groups); keep each to one story. More than five nodes: use flowchart TD, or use ol.steps instead.
 - Icons are Lucide names: <i data-lucide="database"></i> (lucide.dev/icons). Never use emoji as icons or bullets.
 - Restraint first: hairlines, whitespace, ink text. Blue is the one accent: use it for one thing per screen (the pick, the current step, the key word). Green means good.
 - One bold moment per page, when the content has a single takeaway: p.statement, a large line with the key words in <em> (blue) and an optional <small> explanation.
+- One bottom line: a p.statement or a callout, never both.
 - Short text: card bodies at most two lines, callouts one or two sentences.
 - Tables have a thead with th scope="col". Give each div.table-wrap, pre.code and wide figure tabindex="0". Give the readout aria-live="polite".
 - No external links to assets, fonts or CDNs; they do not load.

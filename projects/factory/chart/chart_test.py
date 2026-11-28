@@ -1802,6 +1802,8 @@ def test_discord_server_agent_prompt_sets_visual_style() -> None:
         "no emoji in Mermaid",
         "call the template tool, follow its design brief",
         "post its link with a one-line summary",
+        "Call the template tool before each new HTML page",
+        "copy its link and script tags and their versions exactly",
         "Discord shows no Markdown tables, headings below ###, or HTML",
         "Never invent motives, quotes or facts about real people",
     ):

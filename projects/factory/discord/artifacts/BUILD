@@ -1,4 +1,5 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
+load("//projects/factory/discord/libs:libs.bzl", "LIBS")
 
 exports_files(
     [
@@ -39,6 +40,12 @@ go_test(
         "share_test.go",
         "sigv4_test.go",
     ],
+    data = ["//projects/factory/discord/libs:selftest/architecture.html"],
     embed = [":artifacts"],
+    env = {
+        # The files the service serves at /_lib/, to find the newest house-N.
+        "LIB_NAMES": " ".join(LIBS.keys()),
+        "SELFTEST_PAGE": "$(rootpath //projects/factory/discord/libs:selftest/architecture.html)",
+    },
     deps = ["//projects/factory/broker/actorjwt"],
 )

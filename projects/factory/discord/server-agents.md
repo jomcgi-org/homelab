@@ -774,7 +774,11 @@ ELK layout: on
 Joe's architecture diagram it kept every edge out of the group and off the
 nodes, where dagre crossed a label and a node. A library file's name carries
 its version, and old versions stay, so a page keeps the look it was
-published with: `house-1` stays served for the pages that link it.
+published with: `house-1` stays served for the pages that link it. The
+`template` tool states the current house version. For an HTML page, `put`
+returns warnings (`artifacts/lint.go`) and still stores the page: no house
+link, an old house version, emoji, or its own colours in CSS, attributes,
+Mermaid style lines or chart specs.
 
 ```mermaid
 flowchart LR
