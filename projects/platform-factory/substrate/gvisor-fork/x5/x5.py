@@ -310,7 +310,9 @@ def child(router: Router, name: str, mode: str, prepared: bool = False) -> dict:
         mode=mode,
         name=name,
         send_to_result_ms=f"{row['send_to_result_ms']:.1f}",
-        **{f"{k}_ms": checks.get(k, {}).get("ms") for k in ("allowed", "denied", "dns")},
+        **{
+            f"{k}_ms": checks.get(k, {}).get("ms") for k in ("allowed", "denied", "dns")
+        },
         allowed=json.dumps(checks.get("allowed"), sort_keys=True).replace(" ", ""),
         denied=json.dumps(checks.get("denied"), sort_keys=True).replace(" ", ""),
         dns=json.dumps(checks.get("dns"), sort_keys=True).replace(" ", ""),
@@ -341,9 +343,15 @@ def record(mode: str, rows: list[dict]) -> bool:
     ok = len(answered) == len(rows) and all(all(r["pass"].values()) for r in answered)
     stats(mode, "send_to_result_ms", [r["send_to_result_ms"] for r in answered])
     for check in ("allowed", "denied", "dns"):
-        stats(mode, f"{check}_ms", [
-            float(r["checks"][check]["ms"]) for r in answered if "ms" in r["checks"].get(check, {})
-        ])
+        stats(
+            mode,
+            f"{check}_ms",
+            [
+                float(r["checks"][check]["ms"])
+                for r in answered
+                if "ms" in r["checks"].get(check, {})
+            ],
+        )
     if mode == "ondemand":
         for key in ("create_ms", "policy_ms", "resume_ms"):
             stats(mode, key, [r[key] for r in rows if key in r])
@@ -401,7 +409,10 @@ def run() -> bool:
     )
 
     router = Router()
-    ok = record("ondemand", [child(router, f"od-{i}", "ondemand") for i in range(1, SAMPLES + 1)])
+    ok = record(
+        "ondemand",
+        [child(router, f"od-{i}", "ondemand") for i in range(1, SAMPLES + 1)],
+    )
     rows: list[dict] = []
     for batch in range(0, SAMPLES, POOL_BATCH):
         names = [
