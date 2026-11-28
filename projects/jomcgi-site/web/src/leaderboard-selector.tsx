@@ -1,3 +1,7 @@
+import { Button } from "@astryxdesign/core/Button";
+import { Collapsible } from "@astryxdesign/core/Collapsible";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { ToggleButton } from "@astryxdesign/core/ToggleButton";
 import { useState } from "react";
 import {
   PRESETS,
@@ -58,25 +62,23 @@ export function Selector({
       <div className="row">
         <div className="seg" role="group" aria-label="Model presets">
           {PRESETS.map((preset) => (
-            <button
+            <ToggleButton
               key={preset.key}
-              type="button"
-              aria-pressed={active === preset.key}
-              onClick={() => onChange(presetIds(models, preset.key))}
-            >
-              {preset.label}
-            </button>
+              label={preset.label}
+              isPressed={active === preset.key}
+              onPressedChange={() => onChange(presetIds(models, preset.key))}
+            />
           ))}
         </div>
-        <input
-          className="search"
+        <TextInput
+          isLabelHidden
           type="search"
           placeholder="Search models"
-          aria-label="Search models"
+          label="Search models"
           value={query}
-          onChange={(event) => {
-            setQuery(event.currentTarget.value);
-            if (event.currentTarget.value.trim()) setOpen(true);
+          onChange={(value) => {
+            setQuery(value);
+            if (value.trim()) setOpen(true);
           }}
           onKeyDown={(event) => {
             if (event.key === "Escape") setQuery("");
@@ -84,25 +86,19 @@ export function Selector({
           }}
         />
         {q && (
-          <button type="button" className="act" onClick={selectMatches}>
-            Add {matches.length} matching
-          </button>
+          <Button
+            label={`Add ${matches.length} matching`}
+            onClick={selectMatches}
+          />
         )}
-        <button
-          type="button"
-          className="act"
-          disabled={!selected.size}
+        <Button
+          label="Clear all"
+          isDisabled={!selected.size}
           onClick={() => onChange(new Set())}
-        >
-          Clear all
-        </button>
+        />
         {!active && selected.size > 0 && <span className="custom">custom</span>}
       </div>
-      <details
-        open={open}
-        onToggle={(event) => setOpen(event.currentTarget.open)}
-      >
-        <summary>Choose models</summary>
+      <Collapsible trigger="Choose models" isOpen={open} onOpenChange={setOpen}>
         {!matches.length && (
           <p className="none">No model matches “{query.trim()}”.</p>
         )}
@@ -114,24 +110,26 @@ export function Selector({
                 {name}
               </legend>
               {list.map((m) => (
-                <label key={m.id}>
-                  <input
-                    type="checkbox"
-                    checked={selected.has(m.id)}
-                    onChange={() => toggle(m.id)}
-                  />
-                  <span>{shortName(m)}</span>
-                  {m.role === "anchor" ? (
-                    <em>ceiling</em>
-                  ) : m.self_hosted ? (
-                    <em>local</em>
-                  ) : null}
-                </label>
+                <ToggleButton
+                  key={m.id}
+                  label={[
+                    shortName(m),
+                    m.role === "anchor"
+                      ? "ceiling"
+                      : m.self_hosted
+                        ? "local"
+                        : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  isPressed={selected.has(m.id)}
+                  onPressedChange={() => toggle(m.id)}
+                />
               ))}
             </fieldset>
           ))}
         </div>
-      </details>
+      </Collapsible>
     </section>
   );
 }

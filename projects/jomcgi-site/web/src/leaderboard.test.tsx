@@ -221,16 +221,29 @@ it("searches, selects, clears and changes chart axes and table order", () => {
   ).toBeTruthy();
   const search = screen.getByRole("searchbox", { name: "Search models" });
   fireEvent.change(search, { target: { value: "qwen" } });
-  expect(screen.getByText("Choose models").closest("details")?.open).toBe(true);
+  expect(
+    screen
+      .getByRole("button", { name: "Choose models" })
+      .getAttribute("aria-expanded"),
+  ).toBe("true");
   fireEvent.keyDown(search, { key: "Enter" });
   expect(modelIds(rankedTable())).toEqual(
     rank(leaderboard.models)
       .filter((m) => `${shortName(m)} ${m.id}`.toLowerCase().includes("qwen"))
       .map((m) => m.id),
   );
-  const first = screen.getAllByRole("checkbox")[0]!;
+  const first = within(
+    screen.getAllByRole("group").find((group) => group.tagName === "FIELDSET")!,
+  ).getAllByRole("button", { pressed: true })[0]!;
   fireEvent.click(first);
-  expect((first as HTMLInputElement).checked).toBe(false);
+  expect(first.getAttribute("aria-pressed")).toBe("false");
+  expect(screen.getByText("custom")).toBeTruthy();
+  expect(
+    within(screen.getByRole("group", { name: "Model presets" })).queryByRole(
+      "button",
+      { pressed: true },
+    ),
+  ).toBeNull();
   fireEvent.keyDown(search, { key: "Escape" });
   expect((search as HTMLInputElement).value).toBe("");
   fireEvent.change(search, { target: { value: "no-such-model" } });

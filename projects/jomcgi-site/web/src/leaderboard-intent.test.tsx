@@ -65,7 +65,9 @@ it("preserves typed search and Enter during the download without trapping Tab", 
   fireEvent.keyDown(search, { key: "Enter" });
   await finish();
   expect((search as HTMLInputElement).value).toBe("qwen");
-  expect(host.querySelector("details")?.open).toBe(true);
+  expect(
+    view.getByRole("button", { name: "Choose models", expanded: true }),
+  ).toBeTruthy();
   const ids = [...host.querySelectorAll(".ranked tbody tr")].map((row) =>
     row.getAttribute("data-model"),
   );
