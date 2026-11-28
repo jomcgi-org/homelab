@@ -1673,7 +1673,9 @@ def _x5_module():
 
 
 def test_x5_template_forks_with_gateway_egress_and_a_pinned_image() -> None:
-    template = yaml.safe_load(_x5_module().template_text("print(1)\n", (_X5 / "template.yaml").read_text()))
+    template = yaml.safe_load(
+        _x5_module().template_text("print(1)\n", (_X5 / "template.yaml").read_text())
+    )
     fork = template["forkConfig"]
     assert fork["egress"] == "FORK_EGRESS_GATEWAY"
     assert fork["singleUse"] is True and fork["mode"] == "FORK_MODE_SEED_AND_FORK"
@@ -1686,13 +1688,21 @@ def test_x5_template_forks_with_gateway_egress_and_a_pinned_image() -> None:
 
 def test_x5_policy_admits_only_mcp_grafana() -> None:
     policy = yaml.safe_load((_X5 / "policy.yaml").read_text())
-    assert policy == {"rules": [{"http": {
-        "hostnames": ["mcp-grafana.grafana.svc.cluster.local"], "ports": {"numbers": [8000]}}}]}
+    assert policy == {
+        "rules": [
+            {
+                "http": {
+                    "hostnames": ["mcp-grafana.grafana.svc.cluster.local"],
+                    "ports": {"numbers": [8000]},
+                }
+            }
+        ]
+    }
 
 
 def test_x5_probe_checkpoints_before_it_binds() -> None:
     source = (_X5 / "probe.py").read_text()
-    main = source[source.index("def main()"):]
+    main = source[source.index("def main()") :]
     assert main.index("checkpoint()") < main.index("HTTPServer(")
     # The denied host must not be one the policy admits.
     assert "hindsight-api.hindsight.svc.cluster.local:8888" in source
@@ -1700,7 +1710,11 @@ def test_x5_probe_checkpoints_before_it_binds() -> None:
 
 def test_x5_verdict() -> None:
     verdict = _x5_module().verdict
-    good = {"allowed": {"status": 401}, "denied": {"status": 403}, "dns": {"error": "gaierror"}}
+    good = {
+        "allowed": {"status": 401},
+        "denied": {"status": 403},
+        "dns": {"error": "gaierror"},
+    }
     assert verdict(good) == {"allowed": True, "denied": True, "dns": True}
     assert verdict({**good, "denied": {"error": "ConnectionResetError"}})["denied"]
     assert not verdict({**good, "allowed": {"status": 403}})["allowed"]
@@ -1717,6 +1731,12 @@ def test_x5_job_runs_once_as_ate_client_with_the_fork_cli() -> None:
     pod = job["spec"]["template"]["spec"]
     assert pod["serviceAccountName"] == "ate-client"
     (cli,) = [v for v in pod["volumes"] if v["name"] == "cli"]
-    assert cli["image"]["reference"] == _conformance_job()["spec"]["template"]["spec"]["volumes"][
-        [v["name"] for v in _conformance_job()["spec"]["template"]["spec"]["volumes"]].index("cli")
-    ]["image"]["reference"]
+    assert (
+        cli["image"]["reference"]
+        == _conformance_job()["spec"]["template"]["spec"]["volumes"][
+            [
+                v["name"]
+                for v in _conformance_job()["spec"]["template"]["spec"]["volumes"]
+            ].index("cli")
+        ]["image"]["reference"]
+    )
