@@ -176,14 +176,21 @@ type ReactionAdd struct {
 	} `json:"emoji"`
 }
 
-// HandleReaction takes Joe's 🥊 on a gloves-off offer (offer.go), and makes
+// HandleReaction takes Joe's 🥊 on a gloves-off offer (offer.go) and his 🔄
+// on a no-credits notice (credits.go), and makes
 // the share link when Joe reacts ✅ on a waiting
 // confirmation. Every other reaction is ignored. A confirmation is used once.
 func (b *Bridge) HandleReaction(ctx context.Context, r ReactionAdd) {
 	uid := b.Config.Operator.UserID
-	if uid != "" && r.UserID == uid && r.UserID != b.bot() && r.Emoji.ID == "" && r.Emoji.Name == glovesEmoji {
-		b.acceptOffer(ctx, r) // offer.go
-		return
+	if uid != "" && r.UserID == uid && r.UserID != b.bot() && r.Emoji.ID == "" {
+		switch r.Emoji.Name {
+		case glovesEmoji:
+			b.acceptOffer(ctx, r) // offer.go
+			return
+		case retryEmoji:
+			b.acceptRetry(ctx, r) // credits.go
+			return
+		}
 	}
 	if b.Share == nil || uid == "" || r.UserID != uid || r.UserID == b.bot() ||
 		r.Emoji.ID != "" || r.Emoji.Name != shareConfirm {
