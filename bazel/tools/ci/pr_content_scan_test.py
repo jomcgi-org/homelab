@@ -4,6 +4,23 @@ import subprocess
 import sys
 
 
+def run_scan():
+    root = Path(os.environ.get("TEST_SRCDIR", "")) / os.environ.get(
+        "TEST_WORKSPACE", ""
+    )
+    if not os.environ.get("TEST_SRCDIR"):
+        root = Path(__file__).resolve().parents[3]
+    return subprocess.run(
+        [sys.executable, root / "bazel/tools/ci/pr_content_scan.py", "HEAD^", "HEAD"],
+        env={
+            **os.environ,
+            "PYTHONPATH": str(root / "projects/jomcgi-site/posts"),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_pr_scope_and_redaction(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
@@ -27,21 +44,8 @@ def test_pr_scope_and_redaction(tmp_path, monkeypatch):
     (tmp_path / "new.conf").write_text(untouched + "\n" + marker, encoding="utf-16")
     git("add", ".")
     git("commit", "-m", marker, "-m", token)
-    root = Path(os.environ.get("TEST_SRCDIR", "")) / os.environ.get(
-        "TEST_WORKSPACE", ""
-    )
-    if not os.environ.get("TEST_SRCDIR"):
-        root = Path(__file__).resolve().parents[3]
-    result = subprocess.run(
-        [sys.executable, root / "bazel/tools/ci/pr_content_scan.py", "HEAD^", "HEAD"],
-        env={
-            **os.environ,
-            "PYTHONPATH": str(root / "projects/jomcgi-site/posts"),
-        },
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    result = run_scan()
+    assert result.returncode == 1
     output = result.stdout + result.stderr
     assert "'example': GitHub token" in output
     assert "'new.conf': .internal hostname" in output
@@ -51,3 +55,14 @@ def test_pr_scope_and_redaction(tmp_path, monkeypatch):
     assert "'new.conf': AWS access key" in output
     assert output.count("AWS access key") == 1
     assert all(value not in output for value in (token, untouched, marker))
+
+    for addition, message, status in (
+        (token, "fixture", 1),
+        ("ordinary text", marker, 1),
+        ("clean addition", "clean commit", 0),
+    ):
+        with file.open("a") as stream:
+            stream.write(addition + "\n")
+        git("add", ".")
+        git("commit", "-m", message)
+        assert run_scan().returncode == status

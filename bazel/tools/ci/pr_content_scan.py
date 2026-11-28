@@ -1,4 +1,4 @@
-"""Warn on secret patterns in PR additions and PR commit messages."""
+"""Fail on secrets and private markers in PR additions and PR commit messages."""
 
 # invariant: ROOT-5
 import codecs
@@ -31,7 +31,8 @@ def report(path, content):
         if any(pattern.search(path) for _, pattern in RULES):
             path = "[redacted path]"
         for label in labels:
-            print(f"warning: {ascii(path)}: {label}")
+            print(f"error: {ascii(path)}: {label}")
+    return bool(labels)
 
 
 def blob_lines(mode, oid):
@@ -56,6 +57,7 @@ def blob_lines(mode, oid):
 
 
 def scan(base, head):
+    found = False
     start = git("merge-base", base, head).decode().strip()
     changes = git(
         "diff",
@@ -79,13 +81,14 @@ def scan(base, head):
         ).get_opcodes():
             if op in ("replace", "insert"):
                 additions.extend(after[first:last])
-        report(os.fsdecode(path), "\n".join(additions))
+        found |= report(os.fsdecode(path), "\n".join(additions))
 
     messages = git("log", "-z", "--format=%H%x00%B", f"{start}..{head}", "--")
     records = iter(messages.decode(errors="replace").split("\0")[:-1])
     for commit, message in zip(records, records):
-        report(f"commit {commit}", message)
+        found |= report(f"commit {commit}", message)
+    return found
 
 
 if __name__ == "__main__":
-    scan(*sys.argv[1:])
+    sys.exit(scan(*sys.argv[1:]))
