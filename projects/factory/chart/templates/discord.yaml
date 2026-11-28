@@ -215,7 +215,7 @@ channel. */}}
 {{- if not (hasKey ($b.policy.guilds | default dict) $a.guild) }}
 {{- fail (printf "discord.serverAgents.%s.route needs server %s in discord.bridge.policy.guilds" $key $a.guild) }}
 {{- end }}
-{{- $ref := printf "discord-%s/%s" $a.guild $a.name }}
+{{- $ref := printf "%s/%s" ($a.namespace | default (printf "discord-%s" $a.guild)) $a.name }}
 {{- $_ := set $agents $ref true }}
 {{- $servers := $a.servers | default "own" }}
 {{- if eq $servers "all" }}
@@ -247,6 +247,14 @@ channel. */}}
   "maxSessions" (int $e.maxSessions)
   "ttl" $e.ttl
   "maxRepoMB" (int $e.maxRepoMB))) (deepCopy $policy) }}
+{{- end }}
+{{- /* Joe's unsafe mode (HOME-938): its tool-free agent, never a routed one. */}}
+{{- $u := $d.unsafe | default dict }}
+{{- $unsafeRef := "" }}
+{{- if $u.enabled }}
+{{- $ua := index $d.serverAgents $u.agent }}
+{{- $unsafeRef = printf "%s/%s" ($ua.namespace | default (printf "discord-%s" $ua.guild)) $ua.name }}
+{{- $policy = merge (dict "unsafe" (dict "agent" $unsafeRef "duration" $u.duration "maxDuration" $u.maxDuration)) (deepCopy $policy) }}
 {{- end }}
 {{- /* Joe's user ID is read for the operator session and for users: operator. */}}
 {{- $operatorUser := or $o.enabled (eq ($b.policy.users | default "all") "operator") }}
@@ -679,7 +687,13 @@ spec:
               - method: POST
                 path: {{ printf "^/agents/%s$" (regexQuoteMeta $ref) | quote }}
               {{- end }}
-              {{- if or $o.enabled $routed $e.enabled }}
+              {{- with $unsafeRef }}
+              # The unsafe mode agent (HOME-938); its sessions use the rule
+              # below.
+              - method: POST
+                path: {{ printf "^/agents/%s$" (regexQuoteMeta .) | quote }}
+              {{- end }}
+              {{- if or $o.enabled $routed $e.enabled $unsafeRef }}
               # The persistent sessions of the operator, server agents and
               # explorer.
               - method: POST

@@ -37,7 +37,7 @@ instead of silently rendering nothing.
 {{- fail (printf "discord.explorer: namespace %s must be the explorer Agent's alone" .namespace) }}
 {{- end }}
 {{- range $server, $a := $.Values.discord.serverAgents }}
-{{- if eq (printf "discord-%s" $a.guild) $.Values.discord.explorer.namespace }}
+{{- if eq ($a.namespace | default (printf "discord-%s" $a.guild)) $.Values.discord.explorer.namespace }}
 {{- fail (printf "discord.explorer: namespace %s must be the explorer Agent's alone" $.Values.discord.explorer.namespace) }}
 {{- end }}
 {{- end }}
@@ -134,7 +134,7 @@ instead of silently rendering nothing.
 {{- if or (not (kindIs "string" $a.guild)) (not (regexMatch "^[0-9]+$" $a.guild)) }}
 {{- fail (printf "discord.serverAgents.%s.guild: quote the server ID; Helm reads a bare number as a float and loses digits" $server) }}
 {{- end }}
-{{- $ns := printf "discord-%s" $a.guild }}
+{{- $ns := $a.namespace | default (printf "discord-%s" $a.guild) }}
 {{- if not (has $ns $watched) }}
 {{- fail (printf "discord.serverAgents.%s: add namespace %s to kagent.rbac.namespaces so the controller watches it" $server $ns) }}
 {{- end }}
@@ -155,6 +155,19 @@ instead of silently rendering nothing.
 {{- if and $a.cacheTTL (or (ne $provider "anthropic") (not (has $a.cacheTTL (list "5m" "1h")))) }}
 {{- fail (printf "discord.serverAgents.%s.cacheTTL: 5m or 1h, for provider anthropic only" $server) }}
 {{- end }}
+{{- end }}
+{{- end }}
+{{- $u := .Values.discord.unsafe | default dict }}
+{{- if $u.enabled }}
+{{- $ua := index .Values.discord.serverAgents ($u.agent | default "") }}
+{{- if not (and $ua $ua.enabled) }}
+{{- fail (printf "discord.unsafe.agent %q must name an enabled discord.serverAgents entry" ($u.agent | default "")) }}
+{{- end }}
+{{- if not .Values.discord.bridge.enabled }}
+{{- fail "discord.unsafe needs discord.bridge: the bridge keeps the mode and runs its turns" }}
+{{- end }}
+{{- if not (or .Values.discord.operator.enabled (eq (.Values.discord.bridge.policy.users | default "all") "operator")) }}
+{{- fail "discord.unsafe needs the operator's user ID: set discord.operator.enabled or discord.bridge.policy.users: operator" }}
 {{- end }}
 {{- end }}
 {{- if and .Values.discord.backfill.enabled (not .Values.discord.bridge.enabled) }}

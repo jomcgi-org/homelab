@@ -131,6 +131,9 @@ func (b *Bridge) catchUpChannel(ctx context.Context, src CatchUpSource, gid stri
 		if SentAt(m).Before(cutoff) || answered[m.ID] || h.Thread != nil || !b.fromOperator(m) || !b.Accept(m) {
 			continue
 		}
+		if b.modeCommand(m).Kind != cmdNone {
+			continue // A restart puts the gloves back on; a missed command stays missed (HOME-938).
+		}
 		if b.answer(ctx, m) {
 			b.Log.InfoContext(ctx, "catch-up turn", "guild", gid, "channel", m.ChannelID, "message", m.ID)
 			queued++

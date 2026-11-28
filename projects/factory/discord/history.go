@@ -477,6 +477,7 @@ func (im *Importer) channel(ctx context.Context, guildID string, c Channel, toda
 		return nil
 	}
 	before := ""
+	unsafe := map[string]bool{}
 	for {
 		if err := im.pace(ctx); err != nil {
 			return retained, skipped, err
@@ -495,7 +496,13 @@ func (im *Importer) channel(ctx context.Context, guildID string, c Channel, toda
 		im.Archive.Page(ctx, guildID, c, before, page)
 		for _, m := range page {
 			before = m.ID
-			if !im.keep(m) {
+			// Unsafe mode turns (HOME-938) are never remembered: the reply
+			// and, on this or a later (older) page, the message it answers.
+			if ref, ok := unsafeReplyRef(m, im.BotID); ok {
+				unsafe[ref] = true
+				continue
+			}
+			if unsafe[m.ID] || !im.keep(m) {
 				continue
 			}
 			d := SentAt(m.Message).UTC().Truncate(24 * time.Hour)

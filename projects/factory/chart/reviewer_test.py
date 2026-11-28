@@ -84,6 +84,10 @@ def _helm(
         "discord.operator.enabled=false",
         "--set",
         "discord.serverAgents.homelab.enabled=false",
+        "--set",
+        "discord.serverAgents.unsafe.enabled=false",
+        "--set",
+        "discord.unsafe.enabled=false",
         # Goal reasons need the connector, which many renders turn off; the
         # tests that cover them opt in with an override.
         "--set",
