@@ -1953,7 +1953,11 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
     servers = {
         d["metadata"]["name"]: d for d in in_ns if d["kind"] == "RemoteMCPServer"
     }
-    assert set(servers) == {"scotland", "artifacts", "history"}
+    assert set(servers) == {"scotland", "artifacts", "history", "notes"}
+    assert servers["notes"]["spec"]["actorJwt"] == {"audiences": ["bosun-artifacts"]}
+    assert servers["notes"]["spec"]["url"] == (
+        "http://bosun-artifacts.factory-discord.svc.cluster.local:8080/notes/mcp"
+    )
     assert servers["history"]["spec"]["actorJwt"] == {"audiences": ["bosun-history"]}
     assert servers["history"]["spec"]["url"] == (
         "http://bosun-history.factory-discord.svc.cluster.local:8080/mcp"
