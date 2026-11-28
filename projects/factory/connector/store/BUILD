@@ -7,6 +7,7 @@ go_library(
     srcs = [
         "activation.go",
         "admission.go",
+        "bosun_requests.go",
         "deferred.go",
         "delivery.go",
         "human_gate.go",

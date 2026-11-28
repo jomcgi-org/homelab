@@ -229,6 +229,7 @@ func start() (*Server, error) {
                 CREATE ROLE factory_storyboard LOGIN NOINHERIT;
 				CREATE ROLE factory_reaper LOGIN NOINHERIT;
                 CREATE ROLE factory_leaderboard LOGIN NOINHERIT;
+				CREATE ROLE factory_bosun_requests LOGIN NOINHERIT;
 				CREATE ROLE factory_discord_archive_reader LOGIN NOINHERIT;
 				CREATE ROLE factory_discord_sql NOLOGIN NOINHERIT;
 				CREATE ROLE factory_discord_sql_1501965852042330302 LOGIN IN ROLE factory_discord_sql;

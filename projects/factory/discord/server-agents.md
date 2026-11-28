@@ -336,9 +336,10 @@ Web search and fetch are on with the prompt rule only (Joe, 2026-11-28):
 each turn holds the server's recalled memories, so a query may carry
 private Discord text off Joe's servers. `serverTools.webSearch` and
 `webFetch` in deploy values turn them on; the chart then adds
-`webToolsPrompt`. Factory MCP
-waits for factory-mcp.jomcgi.dev, which is not built yet (HOME-900; binding
-in HOME-916). Recall as a tool waits for a bank bound to the turn's server
+`webToolsPrompt`. Factory access is the private bosun-requests server
+(see "Factory requests" below), not factory-mcp.jomcgi.dev (Joe, 2026-11-28,
+[HOME-940](https://factory-plan.jomcgi.dev/factory/issue/HOME-940#comment-13098)).
+Recall as a tool waits for a bank bound to the turn's server
 (see "Recall as a tool" below); the bridge still puts the turn's own
 server memories in each prompt. The notes vault tools are built
 (see "Notes vault" below); binding them is a deploy values change.
@@ -512,8 +513,8 @@ cause a write.
   the control; a bridge-issued, per-turn grant for the operation and path
   is the follow-up. Each turn carries the gateway's `server_id` and
   `channel_id`, which `put` and `list` take.
-  The only planned other write is factory-mcp's create ticket (HOME-916),
-  under the same rule.
+  The only other write is bosun-requests' `create_request`, under the same
+  rule, and only on a turn by Joe.
 - **Discord actions.** The bridge turns a fenced poll, react, thread or
   pin block in an answer into a Discord action. A fetched page could hold
   such a block, so the prompt allows one only when the tagging message
@@ -535,6 +536,40 @@ cause a write.
   reach a search engine. Joe accepted this on 2026-11-28.
 - **Untrusted results.** The prompt tells the agent never to follow
   instructions in tool results, pages or memories.
+
+### Factory requests (HOME-940)
+
+Joe tags Bosun with a request; the factory builds it; Bosun replies to the
+same message with the ticket and PR links when the ticket is Done or
+Canceled. bosun-requests (`requests/`, `templates/discord-requests.yaml`)
+is in-cluster only: Cilium admits the egress gateway on `POST /mcp` and the
+bridge on the reply routes.
+
+```mermaid
+sequenceDiagram
+  participant H as Hermes
+  participant R as bosun-requests
+  participant B as bridge
+  participant C as connector
+  H->>R: create_request (actor JWT)
+  R->>B: GET /sessions/<id>: guild, channel, message, author
+  R->>R: author is Joe? INSERT bosun_request
+  C->>C: file HOME issue (Todo, task-agent), follow it
+  B->>R: GET /replies (finished, not answered)
+  B->>B: reply to the origin message
+  B->>R: POST /replies/<id>/sent
+```
+
+| Control | Where |
+| --- | --- |
+| The server, channel, message and author come from the bridge's record of the turn, not from tool arguments | `requests/mcp.go`, `sessions.go` |
+| Only a turn by Joe's Discord user ID files a request; one request per message | `requests/mcp.go`, `bosun_request.message_id` unique |
+| The login `factory_bosun_requests` may insert a request, read `bosun_request_status` and set `replied_at` on a finished request only | connector migration `20261128140000_bosun_requests.sql` |
+| The connector files with a keyed create, so a replay files no second issue | `connector/dispatch/bosun_requests.go` |
+| A reply goes only to an allowlisted server and a channel in that server, with no mentions | `replies.go` |
+
+`request_status` shows only the current server's requests. After HOME-78,
+Done means verified live, so the reply then means live.
 
 ### Recall as a tool
 
@@ -1426,7 +1461,6 @@ Each decision names the rule that needs Joe.
 | --- | --- | --- |
 | Gateway owner | HOME-162 rules 1, 6, 7, 8 | Bridge keeps the gateway; Hermes owns it per server |
 | HOME-162 rule changes | HOME-162 is Joe's contract | Accept the table in section 6; accept it without rule 3 (no agent tools yet); keep Bosun |
-| Homelab agent's factory access | factory-mcp is Joe-only (HOME-900) | Read-only service identity for the agent; no factory tools |
 | Model key per server | HOME-162 rule 2 | One OpenRouter key and limit per server; one shared key with bridge limits only |
 | Recall as a tool | HOME-915, "Recall as a tool" | Bind the bank to the session at the gateway; one Agent per server; bind now with the prompt rule only |
 | Private channels in recall (follow-up) | HOME-904 | Tag non-public channels at ingest and leave them out of server-wide recall; keep server-wide recall as decided |

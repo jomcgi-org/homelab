@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -60,6 +61,9 @@ type File struct {
 	// listener (http://<service>.<namespace>.svc:<port>): review rounds after
 	// a goal finding read the goal check's reasons from it (HOME-251).
 	ReviewerGoalURL string `yaml:"reviewerGoalURL"`
+	// BosunRequests, when set, names the binding that files Bosun's factory
+	// requests from Discord (HOME-941).
+	BosunRequests string `yaml:"bosunRequests"`
 }
 
 // Links are URL templates for PR bodies and Done comments; see dispatch.Links.
@@ -360,6 +364,9 @@ func Parse(b []byte) (*File, error) {
 			(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.User != nil {
 			return nil, fmt.Errorf("config: reviewerGoalURL must be a plain in-cluster http://<service>.<namespace>.svc:<port> URL")
 		}
+	}
+	if f.BosunRequests != "" && !slices.ContainsFunc(f.Bindings, func(b Binding) bool { return b.Name == f.BosunRequests }) {
+		return nil, fmt.Errorf("config: bosunRequests names no binding")
 	}
 	if f.Coordinator.Key == "" || f.Coordinator.APIKeyFile == "" {
 		return nil, fmt.Errorf("config: coordinator key and apiKeyFile are required")

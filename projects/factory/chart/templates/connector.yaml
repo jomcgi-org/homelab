@@ -165,6 +165,11 @@ GitHub tokens the broker mints for that ServiceAccount.
 {{- if include "factory.goalReasons" . }}
 {{- $_ := set $config "reviewerGoalURL" (printf "http://%s.%s.svc:%d" (include "factory.reviewerName" .) .Values.broker.namespace (int .Values.reviewer.goalReasons.port)) }}
 {{- end }}
+{{- $rq := .Values.discord.requests }}
+{{- if and $rq.enabled .Values.discord.bridge.enabled }}
+{{- /* Bosun's factory requests (HOME-941): the binding that files them. */}}
+{{- $_ := set $config "bosunRequests" (required "discord.requests.binding is required" $rq.binding) }}
+{{- end }}
 {{- $configYAML := toYaml $config }}
 {{- if $bb.enabled }}
 # BuildBuddy's read-only API key; only the connector mounts it.

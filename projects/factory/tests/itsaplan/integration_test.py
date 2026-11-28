@@ -183,6 +183,8 @@ def test_upstream_factory_contracts(tmp_path):
                     "CREATE ROLE factory_reaper",
                     "-c",
                     "CREATE ROLE factory_leaderboard",
+                    "-c",
+                    "CREATE ROLE factory_bosun_requests",
                 ],
                 cwd=upstream,
                 env=env,

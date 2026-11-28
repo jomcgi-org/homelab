@@ -8,6 +8,7 @@ go_library(
     visibility = [
         "//projects/factory/connector:__subpackages__",
         "//projects/factory/discord/archive:__pkg__",
+        "//projects/factory/discord/requests:__pkg__",
         "//projects/trips/export:__pkg__",
         "//projects/trips/ingest:__pkg__",
     ],
