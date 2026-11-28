@@ -819,7 +819,7 @@ flowchart LR
    ```
 
    The worker image is the `workerImage` of `kvm-pool.yaml`:
-   `ateworker-gvisor:fork-8cf248b96e08@sha256:779fb7dd…80f8`, from the
+   `ateworker-gvisor:fork-c7f37a993862@sha256:e6d5716a…e4c1`, from the
    re-pins (#8623, then the re-pin of step 8). Check that the pod's `imageID` ends in that digest.
    A pod on the old digest (`65f14b69…`) means the pool did not take the pin.
 
@@ -934,7 +934,7 @@ flowchart LR
    the name. Editing anything under `conformance/` changes the hash in the name
    of the generated ConfigMap, and so the Job's pod template: bump the suffix in
    the same change. `resources_test.py` pins the ConfigMap name
-   (`gvisor-fork-conformance-tgf4tdtbht`) so such an edit fails CI. A Failed Job
+   (`gvisor-fork-conformance-khtmk9cc87`) so such an edit fails CI. A Failed Job
    leaves `substrate` Degraded until it is removed or replaced. Do not merge other
    `substrate` changes while a run is in progress.
 
@@ -1006,7 +1006,7 @@ flowchart LR
 
 #### Gateway egress for fork children (HOME-924)
 
-Fork `7edec5939cba` (branch `fork/egress-gateway`) lets a fork template set
+Fork `c7f37a993862` (on `fork/seed-slice1`) lets a fork template set
 `fork_config.egress: FORK_EGRESS_GATEWAY`. The control plane then sends the
 default egress gateway in atelet's `Fork`, and the worker mints the child's
 actor certificate and activates its egress before the sandbox starts, as for a
@@ -1015,7 +1015,7 @@ without the field is unchanged: no egress, DNS refused.
 [Joe approved the roll](https://factory-plan.jomcgi.dev/factory/issue/HOME-924#comment-13032)
 on 2026-11-28.
 
-The re-pin moves all five fork images to `fork-7edec5939cba`. It rolls the
+The re-pin moves all five fork images to `fork-c7f37a993862`. It rolls the
 same objects as step 7: `ate-api-server` (2, one at a time), `ate-controller`,
 `atelet` (3, one node at a time) and the `gvisor-fork` worker. Other pools keep
 their args. The conformance Job runs again as `gvisor-fork-conformance-7`, so
@@ -1026,7 +1026,7 @@ Verify, read-only:
 
 ```sh
 kubectl get workerpools -A                     # every pool Ready
-kubectl -n ate-system get pods -l 'app in (ate-api-server,ate-controller,atelet)' -o jsonpath='{range .items[*]}{.metadata.name} {.status.containerStatuses[0].imageID}{"\n"}{end}'   # fork-7edec5939cba digests
+kubectl -n ate-system get pods -l 'app in (ate-api-server,ate-controller,atelet)' -o jsonpath='{range .items[*]}{.metadata.name} {.status.containerStatuses[0].imageID}{"\n"}{end}'   # fork-c7f37a993862 digests
 kubectl -n ate-system logs job/gvisor-fork-conformance-7 | grep '^CONFORMANCE '   # C1 to C8 pass
 ```
 

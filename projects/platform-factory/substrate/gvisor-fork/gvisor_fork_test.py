@@ -734,7 +734,7 @@ def _fork_template_errors(tmpl: dict) -> list[str]:
     )
     need(
         fork.get("egress", "FORK_EGRESS_UNSPECIFIED")
-        in ("FORK_EGRESS_UNSPECIFIED", "FORK_EGRESS_NONE"),
+        in ("FORK_EGRESS_UNSPECIFIED", "FORK_EGRESS_NONE", "FORK_EGRESS_GATEWAY"),
         "fork_config.egress",
     )
 
@@ -826,7 +826,6 @@ def test_each_conformance_variant_breaks_exactly_its_own_rule() -> None:
     expected = {
         "secret_env": "containers[0].env[0].name",
         "single_use_false": "fork_config.single_use",
-        "egress_gateway": "fork_config.egress",
     }
     variants = module.variants(_TEMPLATE.read_text())
     assert set(variants) == set(expected)
@@ -1144,11 +1143,11 @@ def test_staged_images_name_the_published_fork_digests() -> None:
         + "engine-oss:1.186.0-946d07e5597c@sha256:"
         + "dbffb4d73f072b2a71a05356a657a595bd147357bc85a538139f2634be47b238",
         "cli": _FORK_IMAGES
-        + "kubectl-ate:fork-7edec5939cba@sha256:"
-        + "c244cc2184fe7e34ef1c1934bb8738d9ef48fca64cce6402bd385d2bc3f00f6c",
+        + "kubectl-ate:fork-c7f37a993862@sha256:"
+        + "7e9c7b9d285a5c3bfd897da797acf88521c526ed478af618d5d8958c3241e7a6",
         "worker": _FORK_IMAGES
-        + "ateworker-gvisor:fork-7edec5939cba@sha256:"
-        + "dc814cc9549ae1677027caa8257e5c78483ad1cfb9c936bda823f3fd9c659a8f",
+        + "ateworker-gvisor:fork-c7f37a993862@sha256:"
+        + "e6d5716a890a7ce202aef1a4d18656a85e853bfa6eedfdf93a4847040b59e4c1",
     }
 
 

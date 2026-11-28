@@ -7,8 +7,8 @@ Run it only after the enable steps (projects/factory-cluster/README.md,
 worker, through the API only:
 
   C1  a fork template is accepted                              (I7)
-  C2  a template with a secret-named env, single_use false or
-      egress GATEWAY is refused                                (I3, I4, I5)
+  C2  a template with a secret-named env or single_use false
+      is refused                                               (I3, I4)
   C3  the worker holds a ready seed of the template            (seed path)
   C4  N actors fork from the seed and reach RUNNING as FORK    (X10, X6)
   C5  an actor of another atespace cannot use the template     (I2, X9)
@@ -235,7 +235,6 @@ def variants(text: str) -> dict[str, str]:
             "    env:\n      - name: API_TOKEN\n        value: x\n    wakeupProbe:",
         ),
         "single_use_false": ("singleUse: true", "singleUse: false"),
-        "egress_gateway": ("egress: FORK_EGRESS_NONE", "egress: FORK_EGRESS_GATEWAY"),
     }
     out = {}
     for name, (old, new) in edits.items():
@@ -256,7 +255,6 @@ def variants(text: str) -> dict[str, str]:
 VARIANT_REASON = {
     "secret_env": r"env|forked actor",
     "single_use_false": r"single_use",
-    "egress_gateway": r"egress",
 }
 
 
