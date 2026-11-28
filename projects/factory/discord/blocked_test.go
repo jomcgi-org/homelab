@@ -139,11 +139,28 @@ func TestKagentOperatorDropsASessionTheFilterRefused(t *testing.T) {
 	if _, err := k.Turn(ctx, opThread, "m2", "p"); !ContentBlocked(err) {
 		t.Fatalf("blocked turn = %v", err)
 	}
-	if len(sessions.deleted) != 1 || sessions.deleted[0] != first {
-		t.Fatalf("deleted %v, want %s", sessions.deleted, first)
-	}
+	// The next turn opens generation 1 at once, before kagent deletes
+	// generation 0.
 	s, err := k.Session(ctx, opThread)
 	if err != nil || !s.Fresh || s.ContextID != "sess-"+OperatorRequestID(opThread, 1) {
 		t.Errorf("next session = %+v, %v; want a fresh generation 1", s, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		sessions.mu.Lock()
+		deleted := append([]string(nil), sessions.deleted...)
+		sessions.mu.Unlock()
+		if len(deleted) == 1 && deleted[0] == first {
+			break
+		}
+		if len(deleted) > 1 || time.Now().After(deadline) {
+			t.Fatalf("deleted %v, want %s", deleted, first)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// A restarted bridge skips the deleted generation too.
+	r, err := newKagentOperator(t, srv.URL, sessions.fakeSessions).Session(ctx, opThread)
+	if err != nil || r.ContextID != s.ContextID {
+		t.Errorf("restarted session = %+v, %v; want %s", r, err, s.ContextID)
 	}
 }
