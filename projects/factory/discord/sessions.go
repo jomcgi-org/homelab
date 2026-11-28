@@ -20,18 +20,23 @@ type SessionPlaces struct {
 	places map[string]SessionPlace
 }
 
-// SessionPlace is one session's server and channel.
+// SessionPlace is one session's server and channel, and the message and
+// author of its current turn. bosun-requests reads the turn's message and
+// author, so the request it files cites the message Joe wrote (HOME-941).
 type SessionPlace struct {
 	Server  string `json:"server_id"`
 	Channel string `json:"channel_id"`
+	Message string `json:"message_id,omitempty"`
+	Author  string `json:"author_id,omitempty"`
 }
 
 // maxSessionPlaces bounds the record. Sessions are one per channel, so the
 // bound is far above the channels Bosun answers in.
 const maxSessionPlaces = 4096
 
-// Record notes that session serves the channel of server.
-func (s *SessionPlaces) Record(session, server, channel string) {
+// Record notes that session serves the place's channel, and the place's
+// message and author for the turn about to start.
+func (s *SessionPlaces) Record(session string, place SessionPlace) {
 	if s == nil || session == "" {
 		return
 	}
@@ -47,7 +52,7 @@ func (s *SessionPlaces) Record(session, server, channel string) {
 			break
 		}
 	}
-	s.places[key] = SessionPlace{Server: server, Channel: channel}
+	s.places[key] = place
 }
 
 // Lookup returns a session's server and channel.
@@ -62,7 +67,8 @@ func (s *SessionPlaces) Lookup(session string) (SessionPlace, bool) {
 }
 
 // ServeHTTP answers GET /sessions/{id} with the session's server and
-// channel, or 404. Only bosun-artifacts' notes tools reach it (Cilium).
+// channel, or 404. Only bosun-artifacts' notes tools and bosun-requests
+// reach it (Cilium).
 func (s *SessionPlaces) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	p, ok := s.Lookup(r.PathValue("id"))

@@ -441,6 +441,11 @@ spec:
             - name: DISCORD_OPERATOR_USER_FILE
               value: /var/run/secrets/discord-operator/user-id
             {{- end }}
+            {{- if $d.requests.enabled }}
+            # Replies to Joe's finished factory requests (HOME-943).
+            - name: DISCORD_REQUESTS_URL
+              value: {{ printf "http://bosun-requests.%s.svc.cluster.local:8080" $ns | quote }}
+            {{- end }}
             {{- if $d.artifacts.enabled }}
             # Artifact share links (HOME-917, discord/share.go): signed with
             # the read-only bosun-artifacts-share-s3 key after Joe confirms.
@@ -582,7 +587,7 @@ spec:
     matchLabels:
       app.kubernetes.io/name: factory-discord-bridge
   {{- $notesIn := and ($d.notes | default dict).enabled $d.artifacts.enabled }}
-  {{- if or .Values.connector.notify.enabled $notesIn }}
+  {{- if or .Values.connector.notify.enabled $notesIn $d.requests.enabled }}
   ingress:
     {{- if .Values.connector.notify.enabled }}
     - fromEndpoints:
@@ -599,6 +604,20 @@ spec:
     - fromEndpoints:
         - matchLabels:
             app.kubernetes.io/name: bosun-artifacts
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - method: GET
+                path: "^/sessions/[0-9a-z-]+$"
+    {{- end }}
+    {{- if $d.requests.enabled }}
+    # bosun-requests reads which turn a session answers (HOME-941).
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: bosun-requests
       toPorts:
         - ports:
             - port: "8080"
@@ -641,6 +660,22 @@ spec:
         - ports:
             - port: "8888"
               protocol: TCP
+    {{- if $d.requests.enabled }}
+    # Finished factory requests to answer, and their acknowledgements (HOME-943).
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: bosun-requests
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - method: GET
+                path: "^/replies$"
+              - method: POST
+                path: "^/replies/[0-9]+/sent$"
+    {{- end }}
     {{- if $d.archive.enabled }}
     # The message archive in factory-db (HOME-909).
     - toEndpoints:

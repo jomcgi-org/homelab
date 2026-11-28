@@ -2977,6 +2977,83 @@ def test_discord_archive_reads_with_its_own_login_through_the_gateway() -> None:
     assert deploy["discord"]["archive"]["enabled"] is True
 
 
+def test_bosun_requests_is_private_and_files_through_the_connector() -> None:
+    # HOME-940: bosun-requests admits only the gateway on /mcp and the bridge
+    # on the reply routes, writes with its own login, mounts only Joe's user
+    # ID from the bot item, and turns on the connector's filing phase.
+    base = _HOMELAB + [
+        f"kagent.rbac.namespaces={{kagent,factory-r-homelab,factory-discord-agent,{_HOMELAB_NS}}}",
+        "discord.agent.enabled=true",
+        "discord.bridge.enabled=true",
+        "discord.serverAgents.homelab.route=true",
+    ]
+    off = _render(base)
+    assert not [d for d in off if d["metadata"]["name"] == "bosun-requests"]
+    assert "DISCORD_REQUESTS_URL" not in str(off)
+    assert "bosunRequests" not in str(off)
+
+    docs = _render(base + ["discord.requests.enabled=true"])
+    deployment = _in(docs, "Deployment", "factory-discord", "bosun-requests")
+    pod = deployment["spec"]["template"]["spec"]
+    (container,) = pod["containers"]
+    env = {e["name"]: e for e in container["env"]}
+    assert container["command"] == ["/usr/local/bin/bosun-requests"]
+    assert env["ACTOR_JWT_AUDIENCE"]["value"] == "bosun-requests"
+    assert env["ACTOR_JWT_ATESPACES"]["value"] == _HOMELAB_NS
+    assert env["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {
+        "name": "bosun-requests-db",
+        "key": "DATABASE_URL",
+    }
+    assert pod["automountServiceAccountToken"] is False
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert volumes["operator"]["secret"]["items"] == [
+        {"key": "operator-user-id", "path": "user-id"}
+    ]
+    policy = _in(docs, "CiliumNetworkPolicy", "factory-discord", "bosun-requests")
+    ingress = {
+        tuple(sorted(r["fromEndpoints"][0]["matchLabels"].items())): [
+            (h["method"], h["path"]) for h in r["toPorts"][0]["rules"]["http"]
+        ]
+        for r in policy["spec"]["ingress"]
+    }
+    assert ingress == {
+        (("app", "atenet-egress"), ("k8s:io.kubernetes.pod.namespace", "ate-system")): [
+            ("POST", "^/mcp$")
+        ],
+        (("app.kubernetes.io/name", "factory-discord-bridge"),): [
+            ("GET", "^/replies$"),
+            ("POST", "^/replies/[0-9]+/sent$"),
+        ],
+    }
+    # The bridge polls it and lets it read the session record.
+    bridge = _in(docs, "Deployment", "factory-discord", "discord-bridge")
+    benv = {
+        e["name"]: e for e in bridge["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert (
+        benv["DISCORD_REQUESTS_URL"]["value"]
+        == "http://bosun-requests.factory-discord.svc.cluster.local:8080"
+    )
+    bpolicy = _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")
+    assert any(
+        e["matchLabels"] == {"app.kubernetes.io/name": "bosun-requests"}
+        for r in bpolicy["spec"]["ingress"]
+        for e in r["fromEndpoints"]
+    )
+    # Only bosun-requests names its login.
+    for d in docs:
+        if d["kind"] == "Deployment" and d["metadata"]["name"] != "bosun-requests":
+            assert "bosun-requests-db" not in str(d)
+    config = [
+        d
+        for d in docs
+        if d["kind"] == "ConfigMap" and "bosunRequests" in str(d.get("data", {}))
+    ]
+    assert len(config) == 1
+    assert "bosunRequests: homelab" in str(config[0]["data"])
+
+
 _EXPLORER_NS = "discord-explorer"
 _EXPLORER = [
     "discord.explorer.enabled=true",

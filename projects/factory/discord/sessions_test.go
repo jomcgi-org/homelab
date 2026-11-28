@@ -60,11 +60,15 @@ func TestTheBridgeRecordsEachSessionsServerBeforeItsTurn(t *testing.T) {
 			t.Errorf("place of %s = %+v, %v", c, p, ok)
 		}
 	}
+	// The turn's message and author come from Discord, for bosun-requests.
+	if p, _ := places.Lookup("0193ab-301"); p.Message != "2" || p.Author != tagged("2", "here").Author.ID || p.Author == "" {
+		t.Errorf("turn of 301 = %+v", p)
+	}
 }
 
 func TestSessionPlacesServesKnownSessionsOnly(t *testing.T) {
 	places := &SessionPlaces{}
-	places.Record("abc-1", guild, channel)
+	places.Record("abc-1", SessionPlace{Server: guild, Channel: channel})
 	mux := http.NewServeMux()
 	mux.Handle("GET /sessions/{id}", places)
 	srv := httptest.NewServer(mux)
@@ -101,7 +105,7 @@ func TestSessionPlacesServesKnownSessionsOnly(t *testing.T) {
 func TestSessionPlacesStaysBounded(t *testing.T) {
 	places := &SessionPlaces{}
 	for i := range maxSessionPlaces + 10 {
-		places.Record(string(rune('a'+i%26))+string(rune(i)), guild, channel)
+		places.Record(string(rune('a'+i%26))+string(rune(i)), SessionPlace{Server: guild, Channel: channel})
 	}
 	places.mu.Lock()
 	n := len(places.places)

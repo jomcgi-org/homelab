@@ -21,6 +21,7 @@ go_library(
         "deferred.go",
         "human_gate.go",
         "renovate.go",
+        "requests.go",
         "review.go",
         "status.go",
     ],

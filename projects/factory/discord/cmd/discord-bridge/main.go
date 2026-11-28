@@ -240,6 +240,15 @@ func run(log *slog.Logger) error {
 	}()
 	// Explorer sessions past the TTL or the cap are deleted each hour.
 	go bridge.RunExploreSweep(ctx, time.Hour)
+	if u := os.Getenv("DISCORD_REQUESTS_URL"); u != "" {
+		// Replies to Joe's finished factory requests (HOME-943).
+		replies := &discord.RequestReplies{
+			URL: u, REST: rest, Log: log,
+			Allowed: func(g string) bool { _, ok := policy.Guilds[g]; return ok },
+		}
+		go replies.Run(ctx)
+		log.Info("request replies on", "url", u)
+	}
 	backfillDone := make(chan struct{})
 	if backfill != nil {
 		go func() {

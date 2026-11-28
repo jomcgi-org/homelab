@@ -459,7 +459,7 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	if a, ok := b.Servers[m.GuildID]; ok {
 		if f, ok := a.(SessionFinder); ok {
 			if s, serr := f.Session(ctx, m.ChannelID); serr == nil {
-				b.SessionPlaces.Record(s.ContextID, m.GuildID, m.ChannelID)
+				b.SessionPlaces.Record(s.ContextID, SessionPlace{Server: m.GuildID, Channel: m.ChannelID, Message: m.ID, Author: m.Author.ID})
 				fresh = s.Fresh
 			}
 		}

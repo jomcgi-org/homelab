@@ -67,13 +67,16 @@ func (f *fakeQuota) count() int {
 // events and terminal results.
 type fakeItsaplan struct {
 	reviewReceipts map[string]bool
-	mu             sync.Mutex
-	now            func() time.Time
-	lease          time.Duration
-	maxTries       int
-	runs           []*fakeRun
-	comments       []fakeComment
-	calls          int
+	// requestKeys maps FileRequest keys to issues; requestErr fails them.
+	requestKeys map[string]int64
+	requestErr  error
+	mu          sync.Mutex
+	now         func() time.Time
+	lease       time.Duration
+	maxTries    int
+	runs        []*fakeRun
+	comments    []fakeComment
+	calls       int
 	// commentErr fails every comment while set.
 	commentErr  error
 	loseComment bool

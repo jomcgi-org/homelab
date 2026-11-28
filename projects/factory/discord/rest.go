@@ -202,6 +202,17 @@ func (r *REST) Pin(ctx context.Context, channelID, messageID string) error {
 
 // Typing shows the bot as typing in a channel for 10 seconds or until it
 // posts.
+// ChannelGuild returns the server a channel or thread belongs to.
+func (r *REST) ChannelGuild(ctx context.Context, channelID string) (string, error) {
+	var c struct {
+		GuildID string `json:"guild_id"`
+	}
+	if err := r.do(ctx, http.MethodGet, "/channels/"+channelID, nil, &c); err != nil {
+		return "", err
+	}
+	return c.GuildID, nil
+}
+
 func (r *REST) Typing(ctx context.Context, channelID string) error {
 	return r.do(ctx, http.MethodPost, "/channels/"+channelID+"/typing", nil, nil)
 }

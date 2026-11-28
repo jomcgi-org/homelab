@@ -51,6 +51,7 @@ type Itsaplan interface {
 	GetProject(ctx context.Context, key string) (*itsaplan.Project, error)
 	SearchIssues(ctx context.Context, project, query string) ([]itsaplan.Issue, error)
 	CreateReviewFollowup(context.Context, string, string, itsaplan.NewIssue) error
+	FileRequest(ctx context.Context, project, key string, issue itsaplan.NewIssue) (int64, error)
 	CreateIssue(ctx context.Context, project string, issue itsaplan.NewIssue) (*itsaplan.Issue, error)
 	UpdateIssue(ctx context.Context, id int64, patch itsaplan.IssueUpdate) error
 	IssueRuns(ctx context.Context, issueID, before int64) (*itsaplan.IssueRunPage, error)
@@ -106,6 +107,10 @@ type Config struct {
 	// ArtifactTranscripts admits artifact text into journals. Existing
 	// artifact journals always resume, even when admission is off.
 	ArtifactTranscripts bool
+
+	// BosunRequests names the binding that files Bosun's factory requests
+	// (HOME-941). Empty turns the phase off.
+	BosunRequests string
 
 	Caller    Caller
 	Holder    string
@@ -466,6 +471,7 @@ func (e *Engine) Tick(ctx context.Context) (result error) {
 		{"human_gates", e.stepHumanGates},
 		{"planner_runs", e.stepPlannerRuns},
 		{"planner", e.stepPlanner},
+		{"bosun_requests", e.stepBosunRequests},
 		{"outbox", e.flushOutbox},
 		{"sessions", e.sweepSessions},
 		{"admission_metrics", e.admissionMetrics},

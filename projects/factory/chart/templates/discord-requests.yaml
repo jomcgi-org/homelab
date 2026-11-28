@@ -1,0 +1,221 @@
+{{- /*
+Bosun's factory requests (HOME-940, projects/factory/discord/requests): a
+private MCP server with create_request and request_status.
+
+Callers are the routed server agents' actors only. Substrate's egress gateway
+injects an actor JWT with audience bosun-requests; the service verifies it
+and admits only the atespaces of routed discord.serverAgents. The bridge's
+record of the session's turn (GET /sessions/<id>) names the server, channel,
+message and author; only a turn by Joe (the bot item's operator user ID) may
+file a request. It writes with factory_bosun_requests (bosun-requests-db,
+filled by factory-db-setup), a login that may only insert a request, read the
+status view and mark a reply sent. The connector files and follows each
+request (connector.bosunRequests); the bridge polls GET /replies and answers
+each finished request's message.
+*/}}
+{{- $d := .Values.discord }}
+{{- $req := $d.requests }}
+{{- if and $req.enabled $d.bridge.enabled }}
+{{- $ns := $d.bridge.namespace }}
+{{- $name := "bosun-requests" }}
+{{- $o := $d.bridge.operator | default dict }}
+{{- $atespaces := list }}
+{{- range $key := keys $d.serverAgents | sortAlpha }}
+{{- $a := index $d.serverAgents $key }}
+{{- if and $a.enabled $a.route }}
+{{- $atespaces = append $atespaces (printf "discord-%s" $a.guild) }}
+{{- end }}
+{{- end }}
+{{- $servers := keys ($d.bridge.policy.guilds | default dict) | sortAlpha }}
+{{- if $atespaces }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          image: {{ include "factory.connectorImage" . | quote }}
+          imagePullPolicy: {{ .Values.connector.image.pullPolicy }}
+          command: [/usr/local/bin/bosun-requests]
+          env:
+            - name: ADDR
+              value: ":8080"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: bosun-requests-db
+                  key: DATABASE_URL
+            - name: REQUESTS_BRIDGE_URL
+              value: {{ printf "http://discord-bridge.%s.svc.cluster.local:8080" $ns | quote }}
+            - name: REQUESTS_SERVERS
+              value: {{ join "," $servers | quote }}
+            - name: REQUESTS_OPERATOR_FILE
+              value: /var/run/secrets/discord-operator/user-id
+            - name: ACTOR_JWT_ISSUER
+              value: {{ .Values.kagent.config.substrate.actorJwtIssuer | quote }}
+            - name: ACTOR_JWT_AUDIENCE
+              value: {{ $name }}
+            - name: ACTOR_JWT_CA_FILE
+              value: /run/substrate-servicedns/trust-bundle.pem
+            - name: ACTOR_JWT_ATESPACES
+              value: {{ join "," $atespaces | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml $req.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: substrate-servicedns
+              mountPath: /run/substrate-servicedns
+              readOnly: true
+            - name: operator
+              mountPath: /var/run/secrets/discord-operator
+              readOnly: true
+      volumes:
+        # Substrate's service-DNS trust bundle, to verify the actor JWT
+        # issuer (idp.<substrate>.svc), as the broker does.
+        - name: substrate-servicedns
+          projected:
+            sources:
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+        # Joe's Discord user ID only, not the bot token. Without it every
+        # create_request is refused.
+        - name: operator
+          secret:
+            secretName: discord-bot
+            optional: true
+            items:
+              - key: {{ $o.userIdKey | default "operator-user-id" }}
+                path: user-id
+{{- if .Values.networkPolicy.cilium }}
+---
+# In: the egress gateway to /mcp, and the bridge to the reply routes. Out:
+# factory-db, the actor JWT issuer and the bridge's session record. DNS is
+# the cluster baseline's.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - method: POST
+                path: "^/mcp$"
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: factory-discord-bridge
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - method: GET
+                path: "^/replies$"
+              - method: POST
+                path: "^/replies/[0-9]+/sent$"
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-db
+            cnpg.io/cluster: factory-db
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: ate-idp-server
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: factory-discord-bridge
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - method: GET
+                path: "^/sessions/[0-9a-z-]+$"
+{{- end }}
+{{- end }}
+{{- end }}
