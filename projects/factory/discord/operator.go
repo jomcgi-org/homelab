@@ -73,7 +73,7 @@ type OperatorSession struct {
 // OperatorAgent runs operator turns: one persistent session per thread.
 type OperatorAgent interface {
 	Session(ctx context.Context, threadID string) (OperatorSession, error)
-	Turn(ctx context.Context, threadID, messageID, prompt string) (string, error)
+	Turn(ctx context.Context, threadID, messageID, prompt string, images ...TurnImage) (string, error)
 }
 
 // operatorScope reports whether m is in the operator's channels, and then
@@ -225,6 +225,7 @@ func (b *Bridge) operatorTurn(ctx context.Context, m Message) {
 	if s.Fresh {
 		earlier = b.restore(ctx, m)
 	}
+	// The operator Agent runs on the Codex harness, which takes no images.
 	answer, err := b.Operator.Turn(ctx, m.ChannelID, m.ID, OperatorPrompt(m, b.Places.Resolve(m.GuildID, b.stripMention(m.Content), m.Mentions), earlier))
 	if err != nil {
 		l.WarnContext(ctx, "operator turn failed", "error", err)
@@ -438,12 +439,12 @@ func (k *KagentOperator) Forget(key string) {
 // Discord message ID makes the A2A message ID, so a resend after an
 // ambiguous outcome is the same message. A failed turn makes the next turn
 // look the session up again.
-func (k *KagentOperator) Turn(ctx context.Context, threadID, messageID, prompt string) (string, error) {
+func (k *KagentOperator) Turn(ctx context.Context, threadID, messageID, prompt string, images ...TurnImage) (string, error) {
 	s, err := k.Session(ctx, threadID)
 	if err != nil {
 		return "", err
 	}
-	answer, err := k.turn(ctx, s.ContextID, messageID, prompt)
+	answer, err := k.turn(ctx, s.ContextID, messageID, prompt, images)
 	if err != nil {
 		k.mu.Lock()
 		delete(k.known, threadID)
@@ -479,7 +480,7 @@ func (k *KagentOperator) dropBlocked(key, contextID string) {
 	}()
 }
 
-func (k *KagentOperator) turn(ctx context.Context, contextID, messageID, prompt string) (string, error) {
+func (k *KagentOperator) turn(ctx context.Context, contextID, messageID, prompt string, images []TurnImage) (string, error) {
 	timeout := k.Timeout
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
@@ -490,7 +491,12 @@ func (k *KagentOperator) turn(ctx context.Context, contextID, messageID, prompt 
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	msg := kagent.Message{MessageID: "discord-" + messageID, ContextID: contextID, Parts: []kagent.Part{{Text: prompt}}}
+	parts := []kagent.Part{{Text: prompt}}
+	for _, img := range images {
+		// The harness runtime reads raw image parts after the text (HOME-939).
+		parts = append(parts, kagent.Part{Raw: img.Data, MediaType: img.MediaType, Filename: img.Filename})
+	}
+	msg := kagent.Message{MessageID: "discord-" + messageID, ContextID: contextID, Parts: parts}
 	task, err := k.A2A.Send(ctx, k.Agent, msg)
 	if errors.Is(err, kagent.ErrAmbiguous) {
 		task, err = k.A2A.Send(ctx, k.Agent, msg)

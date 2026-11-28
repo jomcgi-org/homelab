@@ -80,11 +80,15 @@ type AgentRef struct {
 	Name      string
 }
 
-// Part is one content part. Only text and data parts are produced.
+// Part is one content part: text, data, or raw bytes such as an image,
+// which JSON carries as base64.
 type Part struct {
-	Text     string         `json:"text,omitempty"`
-	Data     any            `json:"data,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	Text      string         `json:"text,omitempty"`
+	Data      any            `json:"data,omitempty"`
+	Raw       []byte         `json:"raw,omitempty"`
+	MediaType string         `json:"mediaType,omitempty"`
+	Filename  string         `json:"filename,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 // Message is an A2A message.

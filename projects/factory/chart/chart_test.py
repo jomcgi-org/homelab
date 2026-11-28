@@ -1508,7 +1508,12 @@ def test_discord_bridge_reaches_only_its_expected_peers() -> None:
         [[{"matchLabels": {"app.kubernetes.io/name": "bosun-artifacts"}}]],
     )
     fqdns = [f for rule in egress["egress"] for f in rule.get("toFQDNs", [])]
-    assert fqdns == [{"matchName": "discord.com"}, {"matchPattern": "*.discord.gg"}]
+    assert fqdns == [
+        {"matchName": "discord.com"},
+        {"matchPattern": "*.discord.gg"},
+        {"matchName": "cdn.discordapp.com"},
+        {"matchName": "media.discordapp.net"},
+    ]
     peers = [
         e["matchLabels"]["k8s:io.kubernetes.pod.namespace"]
         for rule in egress["egress"]

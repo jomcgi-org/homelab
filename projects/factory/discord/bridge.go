@@ -139,6 +139,10 @@ type Bridge struct {
 	// Servers runs the turns of each server in Config.ServerAgents on its
 	// agent, in one persistent session per channel, keyed by channel ID.
 	Servers map[string]SessionAgent
+	// Images downloads the images a server agent turn sends with its
+	// prompt (HOME-939); nil sends none. Only server agents get them: they
+	// run on the Hermes harness, and the operator's Codex harness takes none.
+	Images *ImageFetcher
 	// Explorer runs explore blocks on the explorer Agent and Repos checks
 	// that their repositories are public. When Repos is a RepoSearcher, it
 	// also resolves an explore block's repo_search. Both unused while
@@ -182,7 +186,7 @@ type Bridge struct {
 
 // SessionAgent runs turns in one persistent session per key.
 type SessionAgent interface {
-	Turn(ctx context.Context, key, messageID, prompt string) (string, error)
+	Turn(ctx context.Context, key, messageID, prompt string, images ...TurnImage) (string, error)
 }
 
 // notice is a fixed reply sent off the gateway's reader.
@@ -439,6 +443,20 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	if r := m.Referenced; r != nil && b.blockedID(r.ID) {
 		m.Referenced = nil // A reply to a blocked message quotes none of it.
 	}
+	// A server agent sees the message's images and the replied-to
+	// message's, in that order (HOME-939). Bosun's agent gets text only.
+	var images []TurnImage
+	var missed []string
+	if _, ok := b.Servers[m.GuildID]; ok && b.Images != nil {
+		as := m.Attachments
+		if r := m.Referenced; m.Type == 19 && r != nil {
+			as = append(append([]Attachment(nil), as...), r.Attachments...)
+		}
+		images, missed = b.Images.Fetch(ctx, as)
+		if len(missed) > 0 {
+			l.WarnContext(ctx, "images not attached", "count", len(missed))
+		}
+	}
 	if r := m.Referenced; r != nil {
 		// A Components V2 message, such as Bosun's own reply, has its
 		// text in its components; Content carries the text from here on.
@@ -461,6 +479,7 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	note := b.remember(ctx, l, m, text)
 	research := b.takeResults(m.ChannelID)
 	prompt := Prompt(m, b.Places.Lookup(m.GuildID, m.ChannelID), text, memories, since, b.bot(), research...)
+	prompt = withImages(prompt, images, missed)
 	if note != "" {
 		// Trusted: the bridge wrote it, so it stays outside the JSON.
 		prompt = note + "\n\n" + prompt
@@ -475,7 +494,7 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 				b.SessionPlaces.Record(s.ContextID, m.GuildID, m.ChannelID)
 			}
 		}
-		answer, err = a.Turn(ctx, m.ChannelID, m.ID, prompt)
+		answer, err = a.Turn(ctx, m.ChannelID, m.ID, prompt, images...)
 	} else {
 		answer, err = b.Agent.Turn(ctx, m.ID, prompt)
 	}
@@ -802,6 +821,9 @@ func Prompt(m Message, place Place, text string, memories []string, since []Chan
 		"sent_at":    m.Timestamp.UTC().Format(time.RFC3339),
 		"message":    text,
 		"memories":   memories,
+	}
+	if a := attachmentNames(m.Attachments, nil); a != "" {
+		fields["message"] = strings.TrimSpace(text + " " + a)
 	}
 	if len(since) > 0 {
 		fields["channel_messages_since_your_last_turn"] = since

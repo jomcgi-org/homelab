@@ -38,11 +38,17 @@ var threadParentTypes = map[int]bool{0: true, 5: true, 15: true, 16: true}
 // other system messages are left out.
 var conversationTypes = map[int]bool{0: true, 19: true}
 
-// Attachment is a message attachment; the bridge keeps only its file name
-// and whether it is an image.
+// Attachment is a message attachment. History and the archive keep only
+// its file name and whether it is an image; a turn also reads where to
+// download it and its pixel size, to send its image to the model.
 type Attachment struct {
 	Filename    string `json:"filename"`
 	ContentType string `json:"content_type,omitempty"`
+	URL         string `json:"url,omitempty"`
+	ProxyURL    string `json:"proxy_url,omitempty"`
+	Size        int64  `json:"size,omitempty"`
+	Width       int    `json:"width,omitempty"`
+	Height      int    `json:"height,omitempty"`
 }
 
 // Components V2 types that hold text or media: a section holds text
