@@ -77,8 +77,13 @@ func withUnsafeFooter(text string, end time.Time) string {
 	return text + "\n\n" + footer
 }
 
-// IsUnsafeReply reports whether text is an unsafe mode reply.
-func IsUnsafeReply(text string) bool { return strings.Contains(text, unsafeMarker) }
+// IsUnsafeReply reports whether text is an unsafe mode reply: its last
+// line is the footer. The marker quoted inside a message does not count.
+func IsUnsafeReply(text string) bool {
+	text = strings.TrimRight(text, " \n")
+	last := text[strings.LastIndex(text, "\n")+1:]
+	return strings.HasPrefix(last, unsafeMarker)
+}
 
 // unsafeReplyRef returns the message that h, an unsafe mode reply by bot,
 // answers: "" for its ID when it answers none. ok is false when h is not an

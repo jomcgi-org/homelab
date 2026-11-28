@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -159,3 +160,28 @@ func TestCatchUpLeavesGlovesOffTagsUnanswered(t *testing.T) {
 }
 
 var unsafeRef = kagent.AgentRef{Namespace: "discord-unsafe", Name: "unsafe"}
+
+// When the page before the window cannot be read, the channel gets no
+// catch-up turn: a tag could be a gloves-off one (HOME-938).
+func TestCatchUpFailsClosedWithoutTheEarlierPage(t *testing.T) {
+	agent := &fakeAgent{answer: "ok"}
+	b, _, _ := newBridge(agent)
+	b.Config.Operator.UserID = "u1"
+	b.Config.UserLimit = Limit{}
+	b.Config.Unsafe = UnsafeConfig{Agent: unsafeRef, Duration: 30 * time.Minute, MaxDuration: 4 * time.Hour}
+	b.History = &channelHistory{err: errors.New("discord down")}
+	now := b.now()
+	tag := HistoryMessage{Message: Message{ID: at(now.Add(-3*time.Minute), 3), ChannelID: channel,
+		Author: User{ID: "u1", Username: "joe"}, Content: "<@" + bot + "> hi", Mentions: []User{{ID: bot}}}}
+	src := &catchUpSource{
+		channels: []Channel{{ID: channel, Type: 0, LastMessageID: tag.ID}},
+		messages: map[string][]HistoryMessage{channel: {tag}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if n := b.CatchUp(ctx, src, 15*time.Minute); n != 0 {
+		t.Errorf("catch-up turns = %d, want 0", n)
+	}
+	cancel()
+	b.Wait()
+}

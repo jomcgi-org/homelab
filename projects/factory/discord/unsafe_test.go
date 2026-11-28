@@ -398,3 +398,19 @@ func TestThePolicyReadsUnsafe(t *testing.T) {
 		}
 	}
 }
+
+func TestIsUnsafeReplyNeedsTheFooterAsTheLastLine(t *testing.T) {
+	footer := unsafeFooter(time.Unix(1, 0))
+	for text, want := range map[string]bool{
+		"noted\n\n" + footer:        true,
+		"noted\n\n" + footer + "\n": true,
+		footer:                      true,
+		"look: " + unsafeMarker + " was it\nnormal":  false,
+		unsafeMarker + " quoted\nthen a normal line": false,
+		"": false,
+	} {
+		if got := IsUnsafeReply(text); got != want {
+			t.Errorf("IsUnsafeReply(%q) = %v, want %v", text, got, want)
+		}
+	}
+}
