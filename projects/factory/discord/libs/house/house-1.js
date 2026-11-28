@@ -1,5 +1,6 @@
 // Bosun house design system, version 1 (projects/factory/discord/libs).
-// Served at /_lib/house-1.js, after the pinned libraries. It draws icons
+// Served at /_lib/house-1.js, after the pinned libraries. Published pages
+// load it with an integrity hash, so never edit it: copy it to house-2.js. It draws icons
 // (<i data-lucide="name">), Mermaid diagrams (pre.mermaid, ELK layout) and
 // Vega-Lite charts (script.vega-lite JSON), themed from house-1.css, then
 // sets data-ready on <html>.
@@ -15,10 +16,15 @@
     el.after(p);
   };
   try {
-    if (window.lucide) {
-      lucide.createIcons({
-        attrs: { "stroke-width": 1.75, "aria-hidden": "true" },
-      });
+    try {
+      if (window.lucide) {
+        lucide.createIcons({
+          attrs: { "stroke-width": 1.75, "aria-hidden": "true" },
+        });
+      }
+    } catch (err) {
+      // Icons are decoration: diagrams and charts still render.
+      console.error(err);
     }
     const diagrams = document.querySelectorAll("pre.mermaid");
     if (!window.mermaid) {
