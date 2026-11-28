@@ -2,7 +2,7 @@ apiVersion: v2
 name: stars-forecast
 description: Stars forecast writer and public mirror
 type: application
-version: 0.41.10
+version: 0.42.11
 dependencies:
   - name: factory-library
     version: "0.1.0"
