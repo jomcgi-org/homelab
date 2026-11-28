@@ -82,6 +82,9 @@ GRANTS = [
     # Bosun's notes vault (projects/factory/discord/notes): only the
     # bosun-artifacts MCP service holds this key, beside its artifact key.
     ("bosun-notes", "factory-discord", "bosun-notes-s3"),
+    # The members' notes viewer (projects/factory/discord/notesview) only
+    # reads the vault.
+    ("bosun-notes", "factory-discord", "bosun-notes-viewer-s3", "read"),
     # Nightly Home Assistant and Zigbee2MQTT volume archives.
     ("home-assistant-backups", "home-assistant", "home-assistant-backups-s3"),
 ]

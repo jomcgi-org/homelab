@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 chart=../../chart
 [[ $(kubectl config current-context) == kind-edge-oidc ]]
 projects=../../../..
-namespaces=(edge kagent t3 factory-landing argocd factory grafana garage)
+namespaces=(edge kagent t3 factory-landing argocd factory grafana garage factory-discord)
 for ns in "${namespaces[@]}"; do kubectl create namespace "$ns"; done
 
 # Use the CRDs and controller shipped with the edge chart.
@@ -62,6 +62,24 @@ garage key import --yes -n rw "$SHARE_RW_ID" "$SHARE_RW_SECRET"
 garage key import --yes -n share "$SHARE_RO_ID" "$SHARE_RO_SECRET"
 garage bucket allow --read --write bosun-artifacts --key rw
 garage bucket allow --read bosun-artifacts --key share
+# The notes viewer for notes.jomcgi.dev, with the grant the factory chart
+# renders (templates/discord-notes-view.yaml).
+kubectl -n factory-discord expose deployment fixture --name bosun-notes-view --port 8080
+kubectl -n factory-discord apply -f - <<'YAML'
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: edge-bosun-notes-view
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: edge
+  to:
+    - group: ""
+      kind: Service
+      name: bosun-notes-view
+YAML
 
 # Use the production HTTPRoutes with fixture services at their backend ports.
 kubectl -n factory-landing expose deployment fixture --name factory-landing --port 8080
@@ -78,7 +96,7 @@ kubectl apply -f "$projects/platform-factory/grafana/resources/route.yaml"
 kubectl apply -f "$projects/platform-factory/grafana/resources/runbooks-route.yaml"
 
 templates=()
-for template in gateway security-policy kagent-route t3-route artifact-route oidc-client-secret oidc-sentinel; do
+for template in gateway security-policy kagent-route t3-route artifact-route notes-route oidc-client-secret oidc-sentinel; do
 	templates+=(-s "templates/$template.yaml")
 done
 # Install the test CA in the initial proxy revision. A later patch can roll

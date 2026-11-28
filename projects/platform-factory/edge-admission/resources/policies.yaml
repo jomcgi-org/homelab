@@ -272,6 +272,12 @@ spec:
         !has(object.spec.hostnames) ||
         !object.spec.hostnames.exists(h, h == 'artifact.jomcgi.dev')
       message: Only the edge namespace may route artifact.jomcgi.dev.
+    # Its route carries the notes viewer's per-server authorization.
+    - expression: >-
+        request.namespace == 'edge' ||
+        !has(object.spec.hostnames) ||
+        !object.spec.hostnames.exists(h, h == 'notes.jomcgi.dev')
+      message: Only the edge namespace may route notes.jomcgi.dev.
     - expression: >-
         request.namespace in ['edge', 'factory-landing'] ||
         !has(object.spec.hostnames) ||

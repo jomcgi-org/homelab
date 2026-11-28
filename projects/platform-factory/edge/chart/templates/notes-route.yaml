@@ -1,0 +1,103 @@
+{{- /*
+The members' read-only notes viewer at notes.jomcgi.dev (HOME-920,
+projects/factory/discord/notesview, chart template discord-notes-view.yaml
+in projects/factory). Notes are untrusted text that Bosun wrote from other
+people's Discord messages. The viewer renders them with raw HTML off and
+sets the same headers; the edge sets them again, so a viewer bug cannot
+loosen them: scripts and styles from this host only, no connections, no
+frames, no cookies.
+
+Who may read (HOME-920, the artifacts rule of HOME-917):
+
+  /<server-id>/...  members of Authentik group discord-<server-id>, and
+                    authentik Admins (one route rule and policy per server)
+  everything else   authentik Admins only (rule "admins")
+
+The servers are artifacts.servers. Each policy targets one route rule and
+merges (JSONMerge) into the gateway-wide edge-authentik-oidc policy, so every
+rule shares that policy's sign-in; a merged policy replaces only the
+authorization rules.
+*/}}
+{{- define "edge.notesFilters" -}}
+- type: RequestHeaderModifier
+  requestHeaderModifier:
+    remove: [Cookie, Authorization]
+- type: ResponseHeaderModifier
+  responseHeaderModifier:
+    set:
+      - name: Content-Security-Policy
+        value: {{ .Values.notes.contentSecurityPolicy | quote }}
+      - name: X-Content-Type-Options
+        value: nosniff
+      - name: Referrer-Policy
+        value: no-referrer
+      - name: Cross-Origin-Resource-Policy
+        value: same-origin
+      - name: X-Frame-Options
+        value: DENY
+    remove: [Set-Cookie, Access-Control-Allow-Origin]
+{{- end -}}
+{{- define "edge.notesBackend" -}}
+- group: ""
+  kind: Service
+  name: {{ .Values.notes.service }}
+  namespace: {{ .Values.notes.namespace }}
+  port: 8080
+  weight: 1
+{{- end -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: notes
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+      sectionName: http
+  hostnames: [{{ .Values.notes.hostname }}]
+  rules:
+    {{- range .Values.artifacts.servers }}
+    - name: server-{{ . }}
+      matches:
+        - path:
+            type: PathPrefix
+            value: /{{ . }}/
+      filters:
+        {{- include "edge.notesFilters" $ | nindent 8 }}
+      backendRefs:
+        {{- include "edge.notesBackend" $ | nindent 8 }}
+    {{- end }}
+    - name: admins
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        {{- include "edge.notesFilters" . | nindent 8 }}
+      backendRefs:
+        {{- include "edge.notesBackend" . | nindent 8 }}
+{{- range $rule := concat (list "admins") .Values.artifacts.servers }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ ternary "notes-admins" (printf "notes-server-%s" $rule) (eq $rule "admins") }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: notes
+      sectionName: {{ ternary "admins" (printf "server-%s" $rule) (eq $rule "admins") }}
+  # Keep the gateway policy's OIDC sign-in and replace its authorization.
+  mergeType: JSONMerge
+  {{- if eq $rule "admins" }}
+  {{- include "edge.operatorAuthorization" (dict "Values" $.Values "adminOnly" true) | nindent 2 }}
+  {{- else }}
+  {{- include "edge.operatorAuthorization" (dict "Values" $.Values "adminOnly" true "extraGroups" (list (printf "discord-%s" $rule))) | nindent 2 }}
+  {{- end }}
+{{- end }}

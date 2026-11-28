@@ -2522,6 +2522,87 @@ def test_discord_notes_take_the_server_from_the_bridge_and_their_own_key() -> No
     assert from_notes["toPorts"][0]["rules"]["http"] == [sessions_rule]
 
 
+def test_notes_viewer_reads_with_its_own_key_behind_the_edge_only() -> None:
+    # HOME-920: the members' viewer holds a read-only key of its own, serves
+    # the bridge's allowlisted servers, and only the edge proxy reaches it.
+    on = [
+        "kagent.rbac.namespaces={kagent,factory-r-homelab,factory-discord-agent}",
+        "discord.agent.enabled=true",
+        "discord.bridge.enabled=true",
+    ]
+    docs = _render(on)
+    deployment = _in(docs, "Deployment", "factory-discord", "bosun-notes-view")
+    pod = deployment["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsUser"] == 65532
+    (container,) = pod["containers"]
+    assert container["command"] == ["/usr/local/bin/bosun-notes-view"]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert "envFrom" not in container
+    env = {e["name"]: e for e in container["env"]}
+    deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    guilds = sorted(deploy["discord"]["bridge"]["policy"]["guilds"])
+    assert env["NOTES_SERVERS"]["value"] == ",".join(guilds)
+    for key in (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_ENDPOINT_URL",
+        "AWS_REGION",
+        "BUCKET",
+    ):
+        ref = env[key]["valueFrom"]["secretKeyRef"]
+        assert ref == {"name": "bosun-notes-viewer-s3", "key": key}  # not optional
+    # Only the viewer names the read-only key, and it never names the
+    # writers' notes key.
+    assert "bosun-notes-s3" not in str(deployment)
+    for d in docs:
+        if d["kind"] in ("Deployment", "Job", "StatefulSet", "CronJob") and (
+            d["metadata"]["name"] != "bosun-notes-view"
+        ):
+            assert "bosun-notes-viewer-s3" not in str(d)
+    policy = _in(docs, "CiliumNetworkPolicy", "factory-discord", "bosun-notes-view")
+    assert policy["spec"]["ingress"] == [
+        {
+            "fromEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "edge",
+                        "gateway.envoyproxy.io/owning-gateway-name": "edge",
+                        "gateway.envoyproxy.io/owning-gateway-namespace": "edge",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}]}],
+        }
+    ]
+    assert policy["spec"]["egress"] == [
+        {
+            "toEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "garage",
+                        "app.kubernetes.io/name": "garage",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "3900", "protocol": "TCP"}]}],
+        }
+    ]
+    grant = _in(docs, "ReferenceGrant", "factory-discord", "edge-bosun-notes-view")
+    assert grant["spec"] == {
+        "from": [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "namespace": "edge",
+            }
+        ],
+        "to": [{"group": "", "kind": "Service", "name": "bosun-notes-view"}],
+    }
+    off = _render(on + ["discord.notes.viewer.enabled=false"])
+    assert not [d for d in off if d["metadata"]["name"] == "bosun-notes-view"]
+
+
 def test_a_notes_binding_adds_the_notes_write_rule_to_the_prompt() -> None:
     # HOME-918: the write rule is in the prompt only when notes is bound.
     base = _HOMELAB + [

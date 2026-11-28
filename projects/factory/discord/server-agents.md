@@ -549,10 +549,6 @@ sequenceDiagram
 - **Key.** Secret `bosun-notes-s3` (garage-init `GRANTS`) is only in the
   bosun-artifacts pod, as `NOTES_*` variables beside the artifact key. A new
   pod waits for garage-init to fill it; the old pod keeps serving.
-- **Viewer.** Members will read their server's vault at
-  `notes.jomcgi.dev/<server-id>/`, read-only
-  ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-920#comment-12935)).
-  Its own PR adds it.
 
 **Wiring.** A deploy values entry binds it to the homelab agent
 (`discord.serverAgents.homelab.mcpServers`): name `notes`, URL
@@ -561,6 +557,63 @@ sequenceDiagram
 `notes_search`, `notes_write`, `notes_append` and `notes_delete`. Then a new
 `sessionEpoch`, in a later change, moves existing channels onto it (see
 "New sessions").
+
+#### Notes viewer (HOME-920)
+
+Members read their server's vault at `https://notes.jomcgi.dev/<server-id>/`,
+read-only, like an Obsidian vault
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-920#comment-12935)).
+Only Bosun writes notes. The viewer is `bosun-notes-view`
+(`notesview/`, chart `discord-notes-view.yaml`), in the connector image.
+
+```mermaid
+sequenceDiagram
+  participant F as Member's browser
+  participant E as Edge (Envoy)
+  participant A as Authentik
+  participant V as bosun-notes-view
+  participant S3 as Garage bosun-notes
+  F->>E: GET /<server-id>/n/Plans.md
+  E->>A: no session: sign in (factory-edge)
+  A-->>E: ID token, groups claim
+  E->>E: rule server-<id>: group discord-<id> or Admins
+  E->>V: GET, no Cookie or Authorization
+  V->>S3: list and get <server-id>/ (read-only key)
+  V-->>E: page, CSP self only
+  E-->>F: page, CSP, nosniff, no Set-Cookie
+```
+
+- **Pages.** A file tree; the note as HTML; "Linked from" (backlinks);
+  search over names and text (`/search?q=`); a graph of links
+  (`/graph`). A root note `index`, `README` or `Home` is the front page.
+  `_hermes/` shows (Joe's choice). `.trash/`, `.history/` and every other
+  name that starts with `.` never show, never resolve a link and answer
+  404.
+- **Wikilinks.** `[[Name]]`, `[[Name|label]]` and `[[Name#heading]]`
+  resolve like Obsidian: by file name, case-insensitive, `.md` optional;
+  a target with `/` is a path from the vault root. With two notes of one
+  name, the shorter path wins. A link to no note shows as plain text.
+- **Server.** Only the URL's first path segment names the server. It must
+  be a `bridge.policy.guilds` key (`NOTES_SERVERS`); every other path
+  answers 404. The pod reads only that `<server-id>/` prefix.
+- **Index.** The pod lists and reads a server's notes at most once per
+  30 s (`discord.notes.viewer.indexTTL`) and keeps them in memory: at most
+  2,000 notes and 32 MiB per server. Listing skips the hidden keys.
+- **Untrusted text.** goldmark renders Markdown with raw HTML off. A link
+  or image URL must be relative, `http`, `https` or `mailto`; any other is
+  removed. The graph script builds its elements with `textContent` from a
+  JSON block. `notesview_test.go` holds an XSS corpus.
+
+| Control | Where |
+| --- | --- |
+| One route rule and SecurityPolicy per server folder (`artifacts.servers`); each allows only `discord-<server-id>` and `authentik Admins`; default deny | edge `notes-route.yaml` |
+| CSP `default-src 'none'`, scripts, styles and images from `'self'`, `connect-src 'none'`, `frame-ancestors 'none'`; `nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`; `Set-Cookie` removed; `Cookie` and `Authorization` not sent to the pod. The app sets the same | edge `notes-route.yaml`, `values.yaml`; `notesview/server.go` |
+| Read-only key `bosun-notes-viewer-s3` on `bosun-notes`, in this pod only | `garage_init.py` `GRANTS` |
+| In: only the edge proxy. Out: only Garage S3 (3900). Non-root, read-only root, no service account token | chart `discord-notes-view.yaml` |
+| DNS and tunnel: the hostname in the tunnel route; only `edge` may route it | `edge-tunnel/resources/route.yaml`, `edge-admission` |
+
+Members get access as for artifacts ("Who can open a file" and
+"Membership changes" below).
 
 ### Artifacts (HOME-909)
 

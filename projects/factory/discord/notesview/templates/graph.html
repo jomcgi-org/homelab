@@ -1,0 +1,7 @@
+{{template "head" .}}
+<h1>Graph</h1>
+<p class="muted">Each dot is a note; a line is a [[link]]. Select a dot to open its note. Scroll to zoom, drag to move.</p>
+<div id="graph" class="graph" role="img" aria-label="Graph of links between notes"></div>
+<script id="graph-data" type="application/json">{{.Graph}}</script>
+<script src="/{{.Server}}/_static/graph.js"></script>
+{{template "foot" .}}

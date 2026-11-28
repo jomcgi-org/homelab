@@ -115,6 +115,15 @@ for path in [f"/{other}/page.html", f"/{homelab}/page.html", "/"]:
     print("artifact.jomcgi.dev", path, "operator", status)
 for role in ["factory-operator", "applicant"]:
     session("artifact.jomcgi.dev", role, expected=403, path=f"/{homelab}/page.html")
+# notes.jomcgi.dev: the same per-server folders (HOME-920).
+notes = session("notes.jomcgi.dev", "member", path=f"/{homelab}/")
+for path in [f"/{other}/", "/", f"/{homelab}/../{other}/", f"/{homelab}x/"]:
+    status, _, _ = notes(path)
+    assert status == 403, (path, status)
+    print("notes.jomcgi.dev", path, "member", status)
+for role in ["factory-operator", "applicant"]:
+    session("notes.jomcgi.dev", role, expected=403, path=f"/{homelab}/")
+session("notes.jomcgi.dev", "operator", path=f"/{other}/")
 # The member's groups admit them on no other host.
 session("factory.jomcgi.dev", "member", expected=403)
 

@@ -1,0 +1,14 @@
+{{template "head" .}}
+<h1>Search</h1>
+{{- if not .Query}}
+<p class="muted">Type words to find in note names and text.</p>
+{{- else if .Hits}}
+<ol class="hits">
+{{- range .Hits}}
+  <li><a href="{{noteURL $.Server .Note.Path}}">{{.Note.Name}}</a>{{with folder .Note.Path}} <span class="muted">{{.}}</span>{{end}}<p>{{.Snippet}}</p></li>
+{{- end}}
+</ol>
+{{- else}}
+<p>No note holds “{{.Query}}”.</p>
+{{- end}}
+{{template "foot" .}}

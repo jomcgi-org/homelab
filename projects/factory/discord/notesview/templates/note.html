@@ -1,0 +1,8 @@
+{{template "head" .}}
+<article class="note">
+  {{with folder .Note.Path}}<p class="crumbs muted">{{.}}</p>{{end}}
+  <h1 class="note-title">{{.Note.Name}}</h1>
+  <div class="markdown">{{.HTML}}</div>
+</article>
+{{template "backlinks" .}}
+{{template "foot" .}}

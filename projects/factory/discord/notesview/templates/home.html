@@ -1,0 +1,16 @@
+{{template "head" .}}
+{{- if .Note}}
+<article class="note">
+  <h1 class="note-title">{{.Note.Name}}</h1>
+  <div class="markdown">{{.HTML}}</div>
+</article>
+{{template "backlinks" .}}
+{{- else if eq .Title "Not found"}}
+<h1>No such note</h1>
+<p>It may have moved or been deleted. Pick a note from the list, or search.</p>
+{{- else}}
+<h1>Notes</h1>
+<p>Bosun keeps these notes for this server. They are read-only here.</p>
+<p>Pick a note from the list, search, or open the <a href="/{{.Server}}/graph">graph</a>. A note named <code>index</code> shows on this page.</p>
+{{- end}}
+{{template "foot" .}}
