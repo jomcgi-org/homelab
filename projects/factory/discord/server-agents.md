@@ -1305,7 +1305,8 @@ stateDiagram-v2
   answers.
 - **Restart.** A restart ends gloves off with no message. The catch-up
   after it leaves unanswered a tag of Joe's that Bosun's notices place in
-  gloves off; it reads one page before its window to find the notice.
+  gloves off; it reads one page before its window to find the notice, and
+  gives a channel no catch-up turn when it cannot read that page.
 - **Kept where.** "No memory" means no Hindsight, archive or ingest. The
   agent's own sessions stay in kagent's session store and in its
   snapshots (`s3://ate-snapshots/discord-unsafe/`), apart from Bosun's.
