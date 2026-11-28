@@ -22,10 +22,10 @@ Rules:
 - One bold moment per page, when the content has a single takeaway: p.statement, a large line with the key words in <em> (blue) and an optional <small> explanation.
 - One bottom line: a p.statement or a callout, never both.
 - Short text: card bodies at most two lines, callouts one or two sentences.
-- Tables have a thead with th scope="col". Give each div.table-wrap, pre.code and wide figure tabindex="0". Give the readout aria-live="polite".
+- Tables have a thead with th scope="col". Give each div.table-wrap, pre.code and figure.figure tabindex="0". Give the readout aria-live="polite".
 - No external links to assets, fonts or CDNs; they do not load.
 
-Page CSS uses only the house tokens; never define colours, fonts or radii. Tokens: --bg, --surface, --muted-bg, --text, --muted, --border, --edge, --line, --accent, --accent-strong, --on-accent, --good, --green, --warn, --bad, --glass, --glass-text, --glass-dim, --s1 to --s8 (chart series), --font, --display, --mono, --radius, --radius-sm, --lift.
+Page CSS uses only the house tokens; never define colours, fonts or radii. Tokens: --bg, --surface, --muted-bg, --housing, --panel-muted, --text, --muted, --border, --border-strong, --edge, --line, --accent, --accent-strong, --on-accent, --good, --green, --warn, --bad, --glass, --glass-text, --glass-dim, --glass-edge, --node, --node-border, --diagram-line, --group, --s1 to --s8 (chart series), --font, --display, --mono, --radius, --radius-sm, --lift.
 
 Not this:
 - No uppercase or letter-spaced labels.

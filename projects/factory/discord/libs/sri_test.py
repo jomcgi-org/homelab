@@ -65,3 +65,9 @@ def test_the_stylesheets_load_fonts_from_lib_only():
 def test_house_files_are_frozen():
     for name, integrity in FROZEN.items():
         assert sri(name) == integrity, f"{name} changed: add a new version instead"
+
+
+def test_scrollable_figures_are_keyboard_focusable():
+    for page in PAGES:
+        for figure in re.findall(r"<figure\b[^>]*>", Path(page).read_text()):
+            assert 'tabindex="0"' in figure, (page, figure)
