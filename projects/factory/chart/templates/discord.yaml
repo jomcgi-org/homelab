@@ -304,6 +304,9 @@ metadata:
   namespace: {{ $ns }}
 spec:
   itemPath: {{ .Values.connector.notify.itemPath | quote }}
+{{- end }}
+{{- /* The connector's /notify and the notes tools' session record (HOME-918). */}}
+{{- if or .Values.connector.notify.enabled (and ($d.notes | default dict).enabled $d.artifacts.enabled) }}
 ---
 apiVersion: v1
 kind: Service

@@ -543,7 +543,9 @@ sequenceDiagram
   merge into. They are for the Hermes runner (HOME-921), not for the model:
   the binding's `tools` list leaves them out.
 - **One replica.** bosun-artifacts runs one pod, and a lock for each key
-  makes append, delete and the version check atomic.
+  makes append, delete and the version check atomic. During a rollout an
+  old and a new pod serve for a moment, so two writes to one key can race
+  then; `.history/` keeps the version a write replaced.
 - **Key.** Secret `bosun-notes-s3` (garage-init `GRANTS`) is only in the
   bosun-artifacts pod, as `NOTES_*` variables beside the artifact key. A new
   pod waits for garage-init to fill it; the old pod keeps serving.

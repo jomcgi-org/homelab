@@ -38,9 +38,12 @@ const (
 	MaxAppendBytes = 64 << 10
 	MaxMemoryBytes = 64 << 10
 	maxList        = 500
-	maxScan        = 1000
-	maxHits        = 20
-	snippetRunes   = 200
+	pageSize       = 1000
+	// maxPages bounds one listing: .trash/ and .history/ sort before most
+	// note names, so a listing pages past them.
+	maxPages     = 20
+	maxHits      = 20
+	snippetRunes = 200
 )
 
 // Reserved top-level folders.
@@ -73,7 +76,7 @@ type Bucket interface {
 	Get(ctx context.Context, key string) ([]byte, error)
 	Put(ctx context.Context, key string, body []byte, contentType string) error
 	Delete(ctx context.Context, key string) error
-	List(ctx context.Context, prefix string, limit int) ([]artifacts.Object, bool, error)
+	ListPage(ctx context.Context, prefix, from string, limit int) ([]artifacts.Object, string, error)
 }
 
 // Store holds the notes of the allowed servers. It runs as one replica: the
@@ -213,26 +216,36 @@ func (s *Store) List(ctx context.Context, server, folder string, includeTrash bo
 		}
 		folder += "/"
 	}
-	objects, truncated, err := s.Bucket.List(ctx, prefix+folder, maxScan)
-	if err != nil {
-		return ListResult{}, err
-	}
-	out := ListResult{Notes: []Note{}, Truncated: truncated}
-	for _, o := range objects {
-		rel, ok := strings.CutPrefix(o.Key, prefix)
-		if !ok {
-			return ListResult{}, errors.New("s3 listed a key outside the prefix")
-		}
-		if hidden(rel) && !includeTrash {
-			continue
-		}
-		if len(out.Notes) == maxList {
+	out := ListResult{Notes: []Note{}}
+	from := ""
+	for page := 0; ; page++ {
+		if page == maxPages {
 			out.Truncated = true
-			break
+			return out, nil
 		}
-		out.Notes = append(out.Notes, Note{Path: rel, Bytes: o.Size})
+		objects, next, err := s.Bucket.ListPage(ctx, prefix+folder, from, pageSize)
+		if err != nil {
+			return ListResult{}, err
+		}
+		for _, o := range objects {
+			rel, ok := strings.CutPrefix(o.Key, prefix)
+			if !ok {
+				return ListResult{}, errors.New("s3 listed a key outside the prefix")
+			}
+			if hidden(rel) && !includeTrash {
+				continue
+			}
+			if len(out.Notes) == maxList {
+				out.Truncated = true
+				return out, nil
+			}
+			out.Notes = append(out.Notes, Note{Path: rel, Bytes: o.Size})
+		}
+		if next == "" {
+			return out, nil
+		}
+		from = next
 	}
-	return out, nil
 }
 
 // ReadResult is what notes_read returns.
