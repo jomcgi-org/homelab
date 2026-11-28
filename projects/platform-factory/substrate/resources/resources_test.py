@@ -913,7 +913,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
         if v["name"] == "config"
     ]
     assert config_volume["configMap"]["name"] == conformance_map
-    assert conformance_map == "gvisor-fork-conformance-tgf4tdtbht"
+    assert conformance_map == "gvisor-fork-conformance-khtmk9cc87"
     assert not [
         d for d in docs if d["metadata"]["name"].startswith("gvisor-fork-latency")
     ]
@@ -1076,13 +1076,13 @@ def test_fork_seed_gate_is_on() -> None:
 
 # 8cf248b96e08 contains the earlier KVM-only ForkSeed patch (1e7a877d0ca3), so
 # both builds give the gate to KVM pools' workers only.
-_KVM_ONLY_GATE_BUILDS = {"fork-1e7a877d0ca3", "fork-8cf248b96e08", "fork-7edec5939cba"}
+_KVM_ONLY_GATE_BUILDS = {"fork-1e7a877d0ca3", "fork-8cf248b96e08", "fork-c7f37a993862"}
 _FORK_IMAGES = "ghcr.io/jomcgi-org/homelab/substrate-fork/"
-_FORK_TAG = "fork-7edec5939cba"
+_FORK_TAG = "fork-c7f37a993862"
 _FORK_DIGESTS = {
-    "ateapi": "6798bf9af31eb1f3134eb5f1eef6f07edc8120b9784de3bb1488aec98216a931",
-    "atecontroller": "a6cb2d6b48f26e832b414d8f46ba2974cd0503ecb1c015f4ce089359b1d146c9",
-    "atelet": "25e89f5ac3a6f42fc6cedd4adbfb90ebd3be2cea54c9c75c847d3d0ef06cfc2e",
+    "ateapi": "c8389dcf2f0d5229db59125a9a5a0d26cc284783b9a6dad772901471d8018a5b",
+    "atecontroller": "3750e645a59ba980bb3b4c502940f267060cb37157b980bca0eb69ca809992d1",
+    "atelet": "da40d52d3d83164d706c9278fb6cda8b9b3ef3bdb652946b3451a0541b39a736",
 }
 
 

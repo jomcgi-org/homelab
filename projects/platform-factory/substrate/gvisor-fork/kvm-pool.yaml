@@ -109,8 +109,8 @@ spec:
   # stays fixed, and it must never scale to zero while the engine tier is on.
   replicas: 1
   # The fork build of ateworker-gvisor, published by
-  # .github/workflows/substrate-fork-images.yml at fork commit 7edec5939cba.
-  workerImage: ghcr.io/jomcgi-org/homelab/substrate-fork/ateworker-gvisor:fork-7edec5939cba@sha256:dc814cc9549ae1677027caa8257e5c78483ad1cfb9c936bda823f3fd9c659a8f
+  # .github/workflows/substrate-fork-images.yml at fork commit c7f37a993862.
+  workerImage: ghcr.io/jomcgi-org/homelab/substrate-fork/ateworker-gvisor:fork-c7f37a993862@sha256:e6d5716a890a7ce202aef1a4d18656a85e853bfa6eedfdf93a4847040b59e4c1
   sandboxClasses:
     - name: gvisor
       platform: kvm
