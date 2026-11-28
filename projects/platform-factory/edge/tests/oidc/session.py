@@ -186,7 +186,10 @@ assert lower["x-robots-tag"] == "noindex, nofollow"
 assert lower["cache-control"] == "private, no-store"
 assert "set-cookie" not in lower
 print("artifact.jomcgi.dev share link 200")
-assert anonymous(link, "HEAD")[0] == 200
+# The link is signed for GET only: SigV4 signs the method, so a HEAD of the
+# same link does not match and must not be served.
+head = anonymous(link, "HEAD")[0]
+assert 400 <= head < 500, head
 tampered = link[:-1] + ("0" if link[-1] != "0" else "1")
 past = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
 for name, path in {
