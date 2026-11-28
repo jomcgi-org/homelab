@@ -1713,6 +1713,49 @@ def test_x5_probe_checkpoints_before_it_binds() -> None:
     assert "hindsight-api.hindsight.svc.cluster.local:8888" in source
 
 
+def test_x5_child_posts_to_resolved_addresses_with_service_hosts(monkeypatch) -> None:
+    spec = importlib.util.spec_from_file_location("probe", _X5 / "probe.py")
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    received = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append(
+                (self.server.server_address, self.path, self.headers["Host"])
+            )
+            self.send_response(401)
+            self.end_headers()
+
+    addresses = ["127.0.0.1", "127.0.0.2"]
+    monkeypatch.setattr(sys, "argv", ["probe", *addresses])
+    monkeypatch.setattr(probe, "resolve", lambda name: {})
+    with (
+        http.server.HTTPServer((addresses[0], 0), Handler) as allowed,
+        http.server.HTTPServer((addresses[1], 0), Handler) as denied,
+    ):
+        allowed_host = f"mcp.invalid:{allowed.server_port}"
+        denied_host = f"other.invalid:{denied.server_port}"
+        monkeypatch.setattr(probe, "ALLOWED_URL", f"http://{allowed_host}/mcp")
+        monkeypatch.setattr(probe, "DENIED_URL", f"http://{denied_host}/")
+        threads = []
+        for server in (allowed, denied):
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            threads.append(thread)
+        try:
+            probe.run_checks()
+        finally:
+            for server in (allowed, denied):
+                server.shutdown()
+            for thread in threads:
+                thread.join()
+        assert received == [
+            (allowed.server_address, "/mcp", allowed_host),
+            (denied.server_address, "/", denied_host),
+        ]
+
+
 def test_x5_verdict() -> None:
     verdict = _x5_module().verdict
     good = {
