@@ -127,8 +127,10 @@ func (f *gatedBlocker) count() int {
 func TestArchiverForgetClearsARowForGood(t *testing.T) {
 	store := &fakeArchive{}
 	a := newTestArchiver(store)
-	plain := HistoryMessage{Message: Message{ID: "21", ChannelID: arcChannel, GuildID: arcGuild,
-		Author: User{ID: "u1", Username: "ann"}, Content: "the spicy joke"}}
+	plain := HistoryMessage{Message: Message{
+		ID: "21", ChannelID: arcChannel, GuildID: arcGuild,
+		Author: User{ID: "u1", Username: "ann"}, Content: "the spicy joke",
+	}}
 	a.Event("MESSAGE_CREATE", archiveEvent(t, plain))
 	drain(a)
 	a.Forget(arcGuild, arcChannel, "21")
