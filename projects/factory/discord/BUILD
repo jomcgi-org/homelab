@@ -50,6 +50,7 @@ go_test(
         "actions_test.go",
         "archive_test.go",
         "backfill_test.go",
+        "blocked_test.go",
         "bridge_test.go",
         "catchup_test.go",
         "channel_test.go",
