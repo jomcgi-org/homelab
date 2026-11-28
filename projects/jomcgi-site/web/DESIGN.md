@@ -44,7 +44,7 @@ No text is smaller than 12px, including chart labels and home key legends.
 
 ## Rules
 
-- Use Astryx components and the tokens above (`AGENTS.md`). Do not
-  hard-code a colour or a size outside `palette.css`.
+- Use Astryx components and the tokens above (`AGENTS.md`). Use the
+  theme tokens for colour and spacing.
 - `a11y.test.tsx`, `contrast.test.tsx` and the browser tests check both
   schemes.
