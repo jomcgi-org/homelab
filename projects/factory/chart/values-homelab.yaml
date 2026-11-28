@@ -497,13 +497,13 @@ discord:
             audiences: [bosun-artifacts]
           tools: [put, template, list]
         # Bosun's message archive (discord.archive, templates/discord-history.yaml):
-        # read-only, one allowlisted server per call. No Secret: the gateway
-        # injects an actor JWT.
+        # read-only, one allowlisted server per call; history_sql reads with
+        # that server's own login. No Secret: the gateway injects an actor JWT.
         - name: history
           url: http://bosun-history.factory-discord.svc.cluster.local:8080/mcp
           actorJwt:
             audiences: [bosun-history]
-          tools: [history_search, history_around, history_day]
+          tools: [history_search, history_around, history_day, history_sql]
         # Bosun's notes vault (HOME-918, discord/notes, served by
         # bosun-artifacts at /notes/mcp): the server comes from the bridge's
         # record of the session, not from the model. No hard delete:

@@ -1884,7 +1884,12 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
         {
             "mcp": {
                 "server": {"kind": "RemoteMCPServer", "name": "history"},
-                "tools": ["history_search", "history_around", "history_day"],
+                "tools": [
+                    "history_search",
+                    "history_around",
+                    "history_day",
+                    "history_sql",
+                ],
             }
         },
         # The notes vault (HOME-918): no memory_read or memory_write.
@@ -1927,6 +1932,8 @@ def test_discord_server_agent_runs_hermes_with_only_its_listed_tools() -> None:
         "Publish a page or file",
         # The tools, once live (HOME-915).
         "Run Python in a sandbox without network",
+        # Counts come from history_sql, never estimates (HOME-909).
+        "query history_sql and use its numbers; never estimate or invent them",
     ):
         assert line in prompt, line
     assert "You have no tools" not in prompt
@@ -2794,6 +2801,7 @@ def test_discord_archive_reads_with_its_own_login_through_the_gateway() -> None:
         "items": [{"key": "DATABASE_URL", "path": "database-url"}],
     }
     assert benv["ARCHIVE_READER_ROLE"]["value"] == "factory_discord_archive_reader"
+    assert benv["ARCHIVE_SQL_ROLE"]["value"] == "factory_discord_sql"
     assert benv["ARCHIVE_PURGE"]["value"] == "999999999999999999"
     bpolicy = _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")
     assert any(
@@ -2807,6 +2815,7 @@ def test_discord_archive_reads_with_its_own_login_through_the_gateway() -> None:
             continue
         if d["metadata"]["name"] != "bosun-history":
             assert "discord-archive-reader-db" not in str(d)
+            assert "discord-sql-" not in str(d)
         if d["metadata"]["name"] != "discord-bridge":
             assert "'discord-archive-db'" not in str(d)
     deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())

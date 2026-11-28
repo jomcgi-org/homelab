@@ -68,7 +68,8 @@ func (l *lazyStore) Reconcile(ctx context.Context, guildID, channelID, oldest, n
 // when ARCHIVE_DATABASE_URL_FILE is not set. The file is a mounted Secret
 // key that factory-db-setup fills; runArchive waits for it.
 // ARCHIVE_READER_ROLE is the login bosun-history reads with; the schema
-// grants it SELECT. ARCHIVE_PURGE lists servers whose rows are deleted once
+// grants it SELECT. ARCHIVE_SQL_ROLE is the group of the per-server
+// history_sql logins; row security shows each its own server. ARCHIVE_PURGE lists servers whose rows are deleted once
 // connected: a server removed from the allowlist.
 func newArchive(log *slog.Logger, policy discord.Config, places *discord.Places, reg prometheus.Registerer) (*discord.Archiver, *lazyStore) {
 	if os.Getenv("ARCHIVE_DATABASE_URL_FILE") == "" {
@@ -107,7 +108,7 @@ func connectArchive(ctx context.Context) (*sql.DB, error) {
 	db.SetConnMaxIdleTime(5 * time.Minute)
 	mctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	if err := archive.Migrate(mctx, db, os.Getenv("ARCHIVE_READER_ROLE")); err != nil {
+	if err := archive.Migrate(mctx, db, os.Getenv("ARCHIVE_READER_ROLE"), os.Getenv("ARCHIVE_SQL_ROLE")); err != nil {
 		db.Close()
 		return nil, err
 	}

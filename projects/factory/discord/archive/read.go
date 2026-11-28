@@ -32,9 +32,12 @@ func (e *ParamError) Error() string { return e.Param + ": " + e.Message }
 var ErrNotFound = errors.New("archive: message not found in this server")
 
 // Reader answers the history tools from the archive. Servers is the
-// allowlist: a call names its server, and only these servers are read.
+// allowlist: a call names its server, and only these servers are read. DB
+// is the reader login, for the fixed tools; SQLDB holds each server's own
+// history_sql login (Migrate).
 type Reader struct {
 	DB      *sql.DB
+	SQLDB   map[string]*sql.DB
 	Servers map[string]bool
 }
 

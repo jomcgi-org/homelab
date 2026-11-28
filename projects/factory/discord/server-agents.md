@@ -892,7 +892,7 @@ HOME-909 sets one visual style for Bosun. These parts hold it:
 Hindsight returns extracted memories by similarity. It cannot find an exact
 message or read the messages around one. So the bridge also keeps a
 verbatim archive of every conversation message in the allowlisted servers,
-and `bosun-history` gives Bosun three read tools on it.
+and `bosun-history` gives Bosun four read tools on it.
 
 ```mermaid
 flowchart LR
@@ -901,7 +901,8 @@ flowchart LR
   B -- "owner login: upsert, edit, delete, reconcile" --> P[("factory-db: factory_discord_archive")]
   A["Hermes actor"] -- "MCP history_*" --> G["egress gateway"]
   G -- "actor JWT, aud bosun-history" --> M["bosun-history (factory-discord)"]
-  M -- "SELECT-only login" --> P
+  M -- "SELECT-only login (history_*)" --> P
+  M -- "per-server login, row security (history_sql)" --> P
 ```
 
 **What is stored.** One row per message (`archive/store.go`,
@@ -940,9 +941,19 @@ messages, and servers off `bridge.policy.guilds`.
 | `history_search` | `server`, `query` (web search syntax), `author`, `channel` (ID includes its threads), `from`, `to`, `limit` (20, at most 50) | best match first with a query, else newest |
 | `history_around` | `server`, `message_id`, `before`, `after` (10, at most 25 each) | the channel's messages around one, oldest first |
 | `history_day` | `server`, `channel`, `date` (UTC), `after`, `limit` (100, at most 200) | one channel's day, oldest first; `next_after` continues it |
+| `history_sql` | `server`, `query` (one PostgreSQL `SELECT`) | `columns`, `rows` (at most 2,000 and 60 kB), `truncated` |
 
 Each message has its ID, channel, author, time, text and jump link. Text is
-cut at 2,000 bytes per message and 30,000 per answer. Every answer carries
+cut at 2,000 bytes per message and 30,000 per answer. `history_sql` is for
+counts, top posters, activity over time, word frequencies (`ts_stat`) and
+first mentions (Joe, 2026-11-28: SQL tool, not a sandbox with a database
+URL). Its description lists the `discord_message` columns and example
+queries; the prompt says to use its numbers and never estimate, and to draw
+a word cloud as an artifact with Vega's `wordcloud` transform from `/_lib/`.
+The query runs in a `READ ONLY` transaction with a 10 s statement timeout,
+and is prepared, so PostgreSQL refuses a second statement. The first word
+must be `SELECT`, `WITH`, `VALUES` or `TABLE`. A text cell is cut at 2,000
+bytes. PostgreSQL's error message goes back to the model. Every answer carries
 a note that the text is untrusted data. The log names the tool, server and
 count, never the query or the text.
 
@@ -951,6 +962,7 @@ count, never the query or the text.
 | Only routed server agents' actors call the tools: actor JWT with audience `bosun-history`, atespace in `ACTOR_JWT_ATESPACES` | `archive/mcp.go`, broker's `actorjwt` |
 | A call reads one server, which must be in `bridge.policy.guilds` (`HISTORY_SERVERS`) | `archive/read.go` |
 | The reader login `factory_discord_archive_reader` may only `SELECT` the table; the bridge's login owns it | factory-db `cluster.yaml`, `archive.Migrate` |
+| `history_sql` runs on the server's own login `factory_discord_sql_<guild>`, a member of `factory_discord_sql` only. Row security on `discord_message` shows the group the rows whose guild is the one in `current_user`. A `SELECT` cannot change `current_user`: `set_config`, `SET ROLE` to another login and session settings do not help, and the group role itself sees nothing. `ts_stat` and `query_to_xml` run as the caller, and `pg_stats` hides the table. Tests: `archive/sql_test.go` | `archive.Migrate`, factory-db `cluster.yaml`, `bosun-history` `HISTORY_SQL_URL_<guild>` |
 | Only the egress gateway reaches the service; only the bridge and the service reach factory-db from `factory-discord` | Cilium policies |
 
 The trust limit is the one artifacts have: the actor JWT names the homelab
@@ -973,8 +985,18 @@ the rows stay until the database is dropped.
 (`discord.serverAgents.homelab.mcpServers`, HOME-915): RemoteMCPServer
 `history` at `http://bosun-history.factory-discord.svc.cluster.local:8080/mcp`,
 `actorJwt.audiences: [bosun-history]`, tools `history_search`,
-`history_around` and `history_day`. The tools prompt says when to use
-history and when memories, and the Capabilities paragraph lists it.
+`history_around`, `history_day` and `history_sql`. The tools prompt says
+when to use history and when memories, and the Capabilities paragraph lists
+it.
+
+**Per-server logins.** A server added to `bridge.policy.guilds` needs its
+history_sql login in four places: a managed role in factory-db
+`cluster.yaml`, its login Secret and Role name in `resources/setup.yaml`,
+`LOGINS` and `DATABASES` in `secret_init.py` (and its test), and the
+`discord-sql-<guild>-db` placeholder and Role name in
+`factory-db/discord/secrets.yaml`. `provisioning_test.py` checks that the
+logins match the deploy values' servers. The bridge grants the group
+`SELECT` and sets the policies at start.
 
 ### Research (HOME-909)
 

@@ -6,6 +6,7 @@ py_test(
     data = [
         "discord/secrets.yaml",
         "factory/secrets.yaml",
+        "//projects/factory/deploy:deploy_values",
         "//projects/platform-factory/factory-db/resources:provisioning_resources",
         "//projects/platform-factory/hindsight-discord/resources:secrets.yaml",
         "//projects/platform-factory/hindsight/resources:secrets.yaml",

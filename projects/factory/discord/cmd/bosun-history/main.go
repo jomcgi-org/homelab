@@ -1,7 +1,8 @@
 // Command bosun-history serves Bosun's history tools over MCP: search and
 // read the verbatim archive of the allowlisted Discord servers
 // (projects/factory/discord/archive). It reads with a login that may only
-// SELECT the archive table.
+// SELECT the archive table, and runs history_sql with one login per server
+// that row security limits to that server's rows.
 package main
 
 import (
@@ -81,9 +82,28 @@ func run(log *slog.Logger) error {
 	}
 	go verifier.Run(ctx)
 
+	// Each server's history_sql login (HISTORY_SQL_URL_<guild>). A server
+	// without one has no history_sql.
+	sqlDB := map[string]*sql.DB{}
+	for s := range servers {
+		url := os.Getenv("HISTORY_SQL_URL_" + s)
+		if url == "" {
+			continue
+		}
+		sdb, err := sql.Open("postgres", url)
+		if err != nil {
+			return err
+		}
+		defer sdb.Close()
+		sdb.SetMaxOpenConns(2)
+		sdb.SetMaxIdleConns(1)
+		sdb.SetConnMaxIdleTime(5 * time.Minute)
+		sqlDB[s] = sdb
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", &archive.Handler{
-		Reader:   &archive.Reader{DB: db, Servers: servers},
+		Reader:   &archive.Reader{DB: db, SQLDB: sqlDB, Servers: servers},
 		Verifier: verifier,
 		Log:      log,
 	})
@@ -108,7 +128,7 @@ func run(log *slog.Logger) error {
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
 	}()
-	log.Info("listening", "addr", addr, "servers", len(servers), "atespaces", atespaces)
+	log.Info("listening", "addr", addr, "servers", len(servers), "sql_servers", len(sqlDB), "atespaces", atespaces)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		return err
 	}

@@ -23,13 +23,14 @@ import (
 func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
 
 const (
-	guild   = "1501965852042330302"
-	other   = "1290668195249917964"
-	general = "1501965852042331000"
-	thread  = "1501965852042331001"
-	random  = "1501965852042331002"
-	joe     = "1501965852042339999"
-	reader  = "factory_discord_archive_reader"
+	guild    = "1501965852042330302"
+	other    = "1290668195249917964"
+	general  = "1501965852042331000"
+	thread   = "1501965852042331001"
+	random   = "1501965852042331002"
+	joe      = "1501965852042339999"
+	reader   = "factory_discord_archive_reader"
+	sqlGroup = "factory_discord_sql"
 )
 
 var day = time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
@@ -56,15 +57,19 @@ func setup(t *testing.T) (*Store, *Reader, *sql.DB) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	if err := Migrate(context.Background(), db, reader); err != nil {
+	if err := Migrate(context.Background(), db, reader, sqlGroup); err != nil {
 		t.Fatal(err)
 	}
 	// Again: the schema is safe to apply twice.
-	if err := Migrate(context.Background(), db, reader); err != nil {
+	if err := Migrate(context.Background(), db, reader, sqlGroup); err != nil {
 		t.Fatal(err)
 	}
 	ro := pgtest.AsRole(t, db, reader)
-	return &Store{DB: db}, &Reader{DB: ro, Servers: map[string]bool{guild: true, other: true}}, ro
+	sqlDB := map[string]*sql.DB{
+		guild: pgtest.AsRole(t, db, sqlGroup+"_"+guild),
+		other: pgtest.AsRole(t, db, sqlGroup+"_"+other),
+	}
+	return &Store{DB: db}, &Reader{DB: ro, SQLDB: sqlDB, Servers: map[string]bool{guild: true, other: true}}, ro
 }
 
 func seed(t *testing.T, s *Store) {
@@ -409,7 +414,7 @@ func TestMCPAuth(t *testing.T) {
 		t.Fatalf("tools/list: %d", code)
 	}
 	tools := out["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 3 {
+	if len(tools) != 4 {
 		t.Fatalf("tools: %v", tools)
 	}
 	for _, tool := range tools {

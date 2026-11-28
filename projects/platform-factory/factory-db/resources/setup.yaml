@@ -152,6 +152,54 @@ type: kubernetes.io/basic-auth
 stringData:
   username: factory_discord_archive_reader
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-db-discord-sql-185442367703220224-login
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: factory_discord_sql_185442367703220224
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-db-discord-sql-1290668195249917964-login
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: factory_discord_sql_1290668195249917964
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-db-discord-sql-1501965852042330302-login
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: factory_discord_sql_1501965852042330302
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-db-discord-sql-1512814732392927463-login
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: factory_discord_sql_1512814732392927463
+---
 # factory-db's Garage key, filled by garage-init
 # (projects/platform-factory/garage). factory-db-init holds the Cluster back
 # until it is filled: an instance that starts without it never picks it up,
@@ -226,6 +274,10 @@ rules:
       - factory-db-leaderboard-login
       - factory-db-discord-archive-login
       - factory-db-discord-archive-reader-login
+      - factory-db-discord-sql-185442367703220224-login
+      - factory-db-discord-sql-1290668195249917964-login
+      - factory-db-discord-sql-1501965852042330302-login
+      - factory-db-discord-sql-1512814732392927463-login
     verbs: [get, update]
   - apiGroups: [""]
     resources: [secrets]

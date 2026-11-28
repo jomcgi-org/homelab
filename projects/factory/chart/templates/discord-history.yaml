@@ -8,7 +8,9 @@ injects an actor JWT with audience bosun-history; the service verifies it
 against the issuer's keys and admits only the atespaces of routed
 discord.serverAgents. It reads with factory_discord_archive_reader, a login
 that may only SELECT the archive table (discord-archive-reader-db, filled by
-factory-db-setup). Each call names one server of bridge.policy.guilds.
+factory-db-setup). history_sql runs on the server's own login
+(discord-sql-<guild>-db), which row security limits to that server's rows.
+Each call names one server of bridge.policy.guilds.
 */}}
 {{- $d := .Values.discord }}
 {{- $arc := $d.archive }}
@@ -86,6 +88,13 @@ spec:
                   key: DATABASE_URL
             - name: HISTORY_SERVERS
               value: {{ join "," $servers | quote }}
+            {{- range $servers }}
+            - name: HISTORY_SQL_URL_{{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: discord-sql-{{ . }}-db
+                  key: DATABASE_URL
+            {{- end }}
             - name: ACTOR_JWT_ISSUER
               value: {{ .Values.kagent.config.substrate.actorJwtIssuer | quote }}
             - name: ACTOR_JWT_AUDIENCE

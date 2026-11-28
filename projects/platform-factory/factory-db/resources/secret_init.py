@@ -88,6 +88,31 @@ LOGINS = [
         "factory-discord",
         "discord-archive-reader-db",
     ),
+    # history_sql (HOME-909): one login per Discord server.
+    (
+        "factory-db-discord-sql-185442367703220224-login",
+        "factory_discord_sql_185442367703220224",
+        "factory-discord",
+        "discord-sql-185442367703220224-db",
+    ),
+    (
+        "factory-db-discord-sql-1290668195249917964-login",
+        "factory_discord_sql_1290668195249917964",
+        "factory-discord",
+        "discord-sql-1290668195249917964-db",
+    ),
+    (
+        "factory-db-discord-sql-1501965852042330302-login",
+        "factory_discord_sql_1501965852042330302",
+        "factory-discord",
+        "discord-sql-1501965852042330302-db",
+    ),
+    (
+        "factory-db-discord-sql-1512814732392927463-login",
+        "factory_discord_sql_1512814732392927463",
+        "factory-discord",
+        "discord-sql-1512814732392927463-db",
+    ),
 ]
 # These logins share another login's database and own none.
 DATABASES = {
@@ -96,6 +121,10 @@ DATABASES = {
     "factory_reaper": "factory_connector",
     "factory_leaderboard": "factory_connector",
     "factory_discord_archive_reader": "factory_discord_archive",
+    "factory_discord_sql_185442367703220224": "factory_discord_archive",
+    "factory_discord_sql_1290668195249917964": "factory_discord_archive",
+    "factory_discord_sql_1501965852042330302": "factory_discord_archive",
+    "factory_discord_sql_1512814732392927463": "factory_discord_archive",
 }
 
 

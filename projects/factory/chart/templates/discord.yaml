@@ -417,6 +417,9 @@ spec:
               value: /var/run/secrets/discord-archive/database-url
             - name: ARCHIVE_READER_ROLE
               value: factory_discord_archive_reader
+            # history_sql's per-server logins are members of this group.
+            - name: ARCHIVE_SQL_ROLE
+              value: factory_discord_sql
             {{- with $d.archive.purge }}
             - name: ARCHIVE_PURGE
               value: {{ join "," . | quote }}
