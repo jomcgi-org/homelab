@@ -14,6 +14,7 @@ go_library(
     name = "artifacts",
     srcs = [
         "artifacts.go",
+        "lint.go",
         "mcp.go",
         "s3.go",
         "share.go",
@@ -34,6 +35,7 @@ go_test(
     name = "artifacts_test",
     srcs = [
         "artifacts_test.go",
+        "lint_test.go",
         "share_test.go",
         "sigv4_test.go",
     ],

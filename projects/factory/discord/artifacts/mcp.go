@@ -309,7 +309,7 @@ var Tools = []Tool{
 	{
 		Name: "put",
 		Description: fmt.Sprintf("Publish one file and return its URL for Joe. Replaces a file at the same path. At most %d bytes. "+
-			"HTML runs sandboxed with no network: inline every style, script and image; scripts, styles and fonts may load only from /_lib/, as the template tool's pages do; no CDN or remote URL loads. Start an HTML page from the template tool and follow its brief. PNG content is base64 with encoding base64; other types are UTF-8 text.", MaxBytes),
+			"HTML runs sandboxed with no network: inline every style, script and image; scripts, styles and fonts may load only from /_lib/, as the template tool's pages do; no CDN or remote URL loads. Start an HTML page from the template tool and follow its brief. For an HTML page the result can list warnings: no /_lib/house-N.css link, emoji, or a :root rule with its own colour variables. The file is stored anyway; fix each warning and put the page again. PNG content is base64 with encoding base64; other types are UTF-8 text.", MaxBytes),
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + placeSchema + `,` + pathSchema + `,` +
 			`"content":{"type":"string","description":"File content."},` +
 			`"encoding":{"type":"string","enum":["utf-8","base64"],"default":"utf-8"}},` +

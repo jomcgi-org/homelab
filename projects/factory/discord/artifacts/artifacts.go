@@ -111,6 +111,9 @@ type PutResult struct {
 	Path        string `json:"path"`
 	Bytes       int    `json:"bytes"`
 	ContentType string `json:"contentType"`
+	// Warnings name house design problems in an HTML page. The file is
+	// stored all the same; fix the page and put it again.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func (s *Store) Put(ctx context.Context, a PutArgs) (PutResult, error) {
@@ -147,7 +150,11 @@ func (s *Store) Put(ctx context.Context, a PutArgs) (PutResult, error) {
 	if err := s.S3.Put(ctx, key, body, ct); err != nil {
 		return PutResult{}, err
 	}
-	return PutResult{URL: s.BaseURL + "/" + key, Path: a.Path, Bytes: len(body), ContentType: ct}, nil
+	res := PutResult{URL: s.BaseURL + "/" + key, Path: a.Path, Bytes: len(body), ContentType: ct}
+	if strings.HasPrefix(ct, "text/html") {
+		res.Warnings = lintHTML(string(body))
+	}
+	return res, nil
 }
 
 // Listed is one artifact in a list answer.
