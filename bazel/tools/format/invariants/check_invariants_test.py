@@ -259,6 +259,26 @@ def test_marker_goes_with_its_mechanism_path(tmp_path, monkeypatch):
     check_markers({Path("INVARIANTS.yaml"): {"invariants": [ROW]}}, "HEAD^")
 
 
+def test_narrowing_directory_keeps_sibling_marker(tmp_path, monkeypatch):
+    from check_invariants import check_markers
+
+    monkeypatch.chdir(tmp_path)
+    git("init", "-q")
+    row = ROW | {"mechanism": ["foo"]}
+    Path("INVARIANTS.yaml").write_text(yaml.safe_dump({"invariants": [row]}))
+    for name in ("foo/bar", "foo/sibling"):
+        Path(name).parent.mkdir(parents=True, exist_ok=True)
+        Path(name).write_text("# invariant: " + ROW["id"])
+    git("add", ".")
+    git("commit", "-qm", "base")
+    Path("foo/sibling").write_text("")
+    Path("INVARIANTS.yaml").write_text(yaml.safe_dump({"invariants": [ROW]}))
+    git("add", "-A")
+    git("commit", "-qm", "narrow mechanism")
+    with pytest.raises(ValueError, match="foo/sibling: dropped invariant marker"):
+        check_markers({Path("INVARIANTS.yaml"): {"invariants": [ROW]}}, "HEAD^")
+
+
 def test_marker_on_an_unlisted_path_still_cannot_go(tmp_path, monkeypatch):
     from check_invariants import check_markers
 

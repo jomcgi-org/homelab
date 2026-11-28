@@ -180,16 +180,15 @@ def check_markers(documents, base):
     }
     # A retired invariant's markers go with the code it guarded. The row and
     # its ID stay, so the ID is never reused.
-    # A marker may also go when this change removes its path from the
-    # invariant's mechanism. That edits INVARIANTS.yaml, which the human
-    # gate reviews (REVIEW.md "Joe decides"), so the loss is not silent.
+    # Only an exact base mechanism entry can release a marker. Narrowing a
+    # directory entry leaves markers on its other files protected.
     before = mechanisms_at(base)
     for path, ident in sorted(markers_at(base)):
         if ident in rows and rows[ident]["state"] == "retired":
             continue
         if (
             ident in rows
-            and covers(before.get(ident, []), path)
+            and path in map(Path, before.get(ident, []))
             and not covers(rows[ident]["mechanism"], path)
         ):
             continue
