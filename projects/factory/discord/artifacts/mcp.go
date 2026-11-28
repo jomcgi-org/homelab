@@ -3,7 +3,7 @@ package artifacts
 import (
 	"bytes"
 	"context"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -182,9 +182,11 @@ func (h *Handler) call(ctx context.Context, id actorjwt.Identity, raw json.RawMe
 			out, err = h.Store.Put(ctx, a)
 		}
 	case "template":
-		var a struct{}
+		var a struct {
+			Example string `json:"example"`
+		}
 		if err = strictDecode(p.Arguments, &a); err == nil {
-			out = map[string]string{"html": pageTemplate}
+			out, err = templateResult(a.Example)
 		}
 	case "list":
 		var a Place
@@ -261,19 +263,50 @@ const placeSchema = `"server":{"type":"string","pattern":"^([0-9]{15,21}|private
 
 const pathSchema = `"path":{"type":"string","maxLength":200,"description":"File path under the channel, e.g. report.html or charts/q3.png. Letters, digits, '.', '_', '-'; up to 5 segments; extension .html .md .txt .csv .json .svg or .png."}`
 
-// pageTemplate is the house HTML page Bosun starts an artifact from: design
-// tokens, light and dark themes, a system font stack, and Mermaid and
-// Vega-Lite blocks that the pinned libraries at /_lib/ render.
+// pageTemplate is the house HTML page Bosun starts an artifact from. It
+// loads the house design system (house-1.css and house-1.js) and the pinned
+// libraries from /_lib/ (projects/factory/discord/libs).
 //
 //go:embed template.html
 var pageTemplate string
+
+// designBrief tells the model how to use the design system.
+//
+//go:embed brief.md
+var designBrief string
+
+// examplePages are whole pages the model can adapt, by name.
+//
+//go:embed examples/*.html
+var examplePages embed.FS
+
+// exampleNames lists the example pages in the order the brief names them.
+var exampleNames = []string{"explainer", "report", "comparison"}
+
+// templateResult returns the brief, the base page and the example names, or
+// one example page.
+func templateResult(example string) (any, error) {
+	if example == "" {
+		return map[string]any{"brief": designBrief, "html": pageTemplate, "examples": exampleNames}, nil
+	}
+	for _, name := range exampleNames {
+		if name == example {
+			page, err := examplePages.ReadFile("examples/" + name + ".html")
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"example": name, "html": string(page)}, nil
+		}
+	}
+	return nil, &ParamError{"example", "must be one of " + strings.Join(exampleNames, ", ")}
+}
 
 // Tools is the fixed tool list.
 var Tools = []Tool{
 	{
 		Name: "put",
 		Description: fmt.Sprintf("Publish one file and return its URL for Joe. Replaces a file at the same path. At most %d bytes. "+
-			"HTML runs sandboxed with no network: inline every style, script and image; scripts may load only from /_lib/ (Mermaid and Vega-Lite, as the template tool's page does); no CDN or remote URL loads. Start an HTML page from the template tool. PNG content is base64 with encoding base64; other types are UTF-8 text.", MaxBytes),
+			"HTML runs sandboxed with no network: inline every style, script and image; scripts, styles and fonts may load only from /_lib/, as the template tool's pages do; no CDN or remote URL loads. Start an HTML page from the template tool and follow its brief. PNG content is base64 with encoding base64; other types are UTF-8 text.", MaxBytes),
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + placeSchema + `,` + pathSchema + `,` +
 			`"content":{"type":"string","description":"File content."},` +
 			`"encoding":{"type":"string","enum":["utf-8","base64"],"default":"utf-8"}},` +
@@ -282,8 +315,8 @@ var Tools = []Tool{
 	},
 	{
 		Name:        "template",
-		Description: "Return the house HTML template for an artifact page: colour tokens, light and dark themes, cards, stats and a table, and Mermaid diagrams (pre class=mermaid, ELK layout) and Vega-Lite charts (script type=application/json class=vega-lite) that render in the browser from the pinned libraries at /_lib/. Fill it in and publish it with put.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Description: "Return the house design system for an artifact page: a design brief (read it first), the base page, and the names of example pages. Pass example to get one example page (an explainer, a report or a comparison) to adapt. Pages load the design system and Mermaid, Vega-Lite and Lucide icons from /_lib/. Fill a page in and publish it with put.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"example":{"type":"string","enum":["explainer","report","comparison"],"description":"An example page to return instead of the brief and the base page."}},"additionalProperties":false}`),
 		Annotations: map[string]any{"title": "Get the page template", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	},
 	{

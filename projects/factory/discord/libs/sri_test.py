@@ -1,4 +1,4 @@
-"""Each page loads every pinned library from /_lib/ with its sha384."""
+"""Each page loads the house design system from /_lib/ with matching hashes."""
 
 import base64
 import hashlib
@@ -6,30 +6,46 @@ import os
 import re
 from pathlib import Path
 
-# (path of the shipped file, its name under /_lib/)
-LIBS = list(
-    zip(os.environ["LIB_FILES"].split(), os.environ["LIB_NAMES"].split(), strict=True)
+LIBS = dict(
+    zip(os.environ["LIB_NAMES"].split(), os.environ["LIB_FILES"].split(), strict=True)
 )
 PAGES = os.environ["PAGES"].split()
-SCRIPT = re.compile(r'<script\s+src="/_lib/([^"]+)"\s+integrity="([^"]+)"')
+REF = re.compile(r'(?:src|href)="/_lib/([^"]+)"\s+integrity="([^"]+)"')
+# What every page loads: the stylesheet, then the six scripts in order.
+HOUSE = [
+    "house-1.css",
+    "lucide-1.72.0.min.js",
+    "mermaid-12.3.0.min.js",
+    "vega-6.4.0.min.js",
+    "vega-lite-6.5.0.min.js",
+    "vega-embed-7.3.0.min.js",
+    "house-1.js",
+]
 
 
-def sri(path):
-    digest = hashlib.sha384(Path(path).read_bytes()).digest()
+def sri(name):
+    digest = hashlib.sha384(Path(LIBS[name]).read_bytes()).digest()
     return "sha384-" + base64.b64encode(digest).decode()
 
 
-def test_pages_load_the_pinned_libraries():
-    want = {name: sri(path) for path, name in LIBS}
-    assert len(want) == 4
+def test_pages_load_the_house_files_with_their_hashes():
     for page in PAGES:
-        got = dict(SCRIPT.findall(Path(page).read_text()))
-        assert got == want, page
+        refs = REF.findall(Path(page).read_text())
+        assert [name for name, _ in refs] == HOUSE, page
+        for name, integrity in refs:
+            assert integrity == sri(name), (page, name)
 
 
 def test_pages_load_nothing_else():
     for page in PAGES:
         html = Path(page).read_text()
-        assert len(re.findall(r"<script\s+src=", html)) == 4, page
-        for external in ("http:", "https:", "<link", "<img", "@import", "url("):
-            assert external not in html, (page, external)
+        for value in re.findall(r'(?:src|href)\s*=\s*"([^"]*)"', html):
+            assert value.startswith(("/_lib/", "#")), (page, value)
+        assert "@import" not in html and "url(" not in html, page
+
+
+def test_the_stylesheet_loads_fonts_from_lib_only():
+    css = Path(LIBS["house-1.css"]).read_text()
+    for url in re.findall(r"url\(\"?([^\")]+)", css):
+        assert url.startswith("/_lib/"), url
+        assert url.removeprefix("/_lib/") in LIBS, url

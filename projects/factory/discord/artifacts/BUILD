@@ -1,7 +1,12 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 exports_files(
-    ["template.html"],
+    [
+        "examples/comparison.html",
+        "examples/explainer.html",
+        "examples/report.html",
+        "template.html",
+    ],
     visibility = ["//projects/factory/discord/libs:__pkg__"],
 )
 
@@ -12,7 +17,13 @@ go_library(
         "mcp.go",
         "s3.go",
     ],
-    embedsrcs = ["template.html"],
+    embedsrcs = [
+        "brief.md",
+        "examples/comparison.html",
+        "examples/explainer.html",
+        "examples/report.html",
+        "template.html",
+    ],
     importpath = "github.com/jomcgi/homelab/projects/factory/discord/artifacts",
     visibility = ["//visibility:public"],
     deps = ["//projects/factory/broker/actorjwt"],

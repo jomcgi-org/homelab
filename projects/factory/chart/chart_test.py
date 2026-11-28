@@ -1775,7 +1775,7 @@ def test_discord_server_agent_prompt_sets_visual_style() -> None:
         "never set a theme or init",
         "one story of about 10 nodes at most",
         "no emoji in Mermaid",
-        "start from the template tool's HTML",
+        "call the template tool, follow its design brief",
         "post its link with a one-line summary",
         "Discord shows no Markdown tables, headings below ###, or HTML",
         "Never invent motives, quotes or facts about real people",

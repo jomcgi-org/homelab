@@ -169,6 +169,32 @@ http_archive(
     urls = ["https://registry.npmjs.org/vega-embed/-/vega-embed-7.3.0.tgz"],
 )
 
+# Icons and fonts for the artifact house design system
+# (projects/factory/discord/libs/house), served from /_lib/ like the above.
+http_archive(
+    name = "discord_lib_lucide",
+    build_file_content = 'exports_files(["dist/umd/lucide.min.js", "LICENSE"])',
+    sha256 = "6fe747aa52264b8c990d0b354561424cc4622602db72bb3ed02e682c43fa2a01",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/lucide/-/lucide-1.72.0.tgz"],
+)
+
+http_archive(
+    name = "discord_lib_inter",
+    build_file_content = 'exports_files(["files/inter-latin-wght-normal.woff2", "LICENSE"])',
+    sha256 = "d26710dd38e7217484a1d47ee76c024977ec550548876f26d06ed1844af09a14",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/@fontsource-variable/inter/-/inter-5.3.0.tgz"],
+)
+
+http_archive(
+    name = "discord_lib_space_grotesk",
+    build_file_content = 'exports_files(["files/space-grotesk-latin-wght-normal.woff2", "LICENSE"])',
+    sha256 = "47d1b51d64ed541b7e74f38e9e682a8ff1bbfd1b68bfd7fff74ac9175058e73c",
+    strip_prefix = "package",
+    urls = ["https://registry.npmjs.org/@fontsource-variable/space-grotesk/-/space-grotesk-5.3.0.tgz"],
+)
+
 # Private API server for the factory credential admission test. Match the
 # factory cluster's Kubernetes minor; CI executors are Linux amd64. Checksums
 # come from controller-tools/envtest-releases.yaml and the ESO chart index.
