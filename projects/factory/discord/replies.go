@@ -106,7 +106,12 @@ func (q *RequestReplies) Poll(ctx context.Context) error {
 		// A reply sent before a lost acknowledgement is not sent again.
 		posted, err := postedToday(ctx, q.REST, r.Channel, bot, ref, time.Now().UTC().Add(-48*time.Hour))
 		if err != nil {
-			return err
+			var he *HTTPError
+			if !errors.As(err, &he) || he.Status != 403 {
+				return err
+			}
+			// No Read Message History: the nonce is the only dedupe.
+			l.WarnContext(ctx, "request reply history unreadable", "error", err)
 		}
 		if !posted {
 			reply := NewReply(RequestReplyText(r), r.Message)
@@ -116,6 +121,10 @@ func (q *RequestReplies) Poll(ctx context.Context) error {
 			// refusal for this channel must not hold the later replies.
 			if err := q.REST.Send(ctx, r.Channel, reply); permanent(err) {
 				l.WarnContext(ctx, "request reply refused", "error", err)
+				if err := q.ack(ctx, r.ID); err != nil {
+					return err
+				}
+				continue
 			} else if err != nil {
 				return err
 			}
@@ -150,11 +159,13 @@ func RequestReplyText(r RequestReply) string {
 	return b.String()
 }
 
-// permanent reports a Discord refusal that a retry does not change: a 4xx
-// other than 429.
+// permanent reports a refusal for this request that a retry does not
+// change: 400, or 404 for a deleted channel or thread. 401 and 403 can be
+// fixed (a token or a permission), so they block and retry instead of
+// dropping replies.
 func permanent(err error) bool {
 	var he *HTTPError
-	return errors.As(err, &he) && he.Status >= 400 && he.Status < 500 && he.Status != 429
+	return errors.As(err, &he) && (he.Status == 400 || he.Status == 404)
 }
 
 func (q *RequestReplies) ack(ctx context.Context, id int64) error {
