@@ -469,6 +469,8 @@ type a2aServer struct {
 	mu    sync.Mutex
 	tasks map[string]int // context ID -> tasks
 	sends []kagent.Message
+	// fail, when set, fails each task with this status message.
+	fail string
 }
 
 func (s *a2aServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -496,8 +498,12 @@ func (s *a2aServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(req.Params, &p)
 		s.sends = append(s.sends, p.Message)
 		s.tasks[p.Message.ContextID]++
+		state, text := kagent.StateCompleted, "ok"
+		if s.fail != "" {
+			state, text = kagent.StateFailed, s.fail
+		}
 		result = map[string]any{"task": map[string]any{"id": p.Message.MessageID, "contextId": p.Message.ContextID, "status": map[string]any{
-			"state": kagent.StateCompleted, "message": map[string]any{"messageId": "a", "role": "ROLE_AGENT", "parts": []any{map[string]any{"text": "ok"}}},
+			"state": state, "message": map[string]any{"messageId": "a", "role": "ROLE_AGENT", "parts": []any{map[string]any{"text": text}}},
 		}}}
 	case "ListTasks":
 		var p struct {

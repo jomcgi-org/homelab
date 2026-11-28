@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -96,6 +97,8 @@ const (
 	ReplyBusy    = "I'm busy in this channel; try again in a minute."
 	ReplyLimited = "I've reached my limit for now; try again later."
 	ReplyFailed  = "I couldn't answer that right now."
+	// ReplyBlocked answers a turn that the provider's safety filter refused.
+	ReplyBlocked = "Anthropic's safety filter blocked that message, so I can't answer it."
 	// ReplyPollFailed answers a poll-only answer that Discord refused.
 	ReplyPollFailed = "I couldn't post that poll."
 	// ReplyActionFailed answers an answer of only actions that all failed.
@@ -171,6 +174,10 @@ type Bridge struct {
 	exploreSlots chan struct{}
 	// shares holds share confirmations by message ID until Joe's ✅.
 	shares map[string]pendingShare
+	// blocked holds the IDs of messages that the provider's safety filter
+	// refused, for the dedupe window. A later turn's context leaves them
+	// out, so one refused message does not refuse the next turn.
+	blocked map[string]time.Time
 }
 
 // SessionAgent runs turns in one persistent session per key.
@@ -249,7 +256,7 @@ func (b *Bridge) answer(ctx context.Context, m Message) bool {
 	}
 	operator := b.fromOperator(m) // Before b.mu: fromOperator takes it.
 	b.mu.Lock()
-	allowed := b.take(b.now(), m, operator)
+	allowed, retry := b.take(b.now(), m, operator)
 	key := m.ChannelID
 	q, exists := b.queues[key]
 	if !exists && allowed {
@@ -260,7 +267,7 @@ func (b *Bridge) answer(ctx context.Context, m Message) bool {
 	}
 	b.mu.Unlock()
 	if !allowed {
-		b.queueNotice(ctx, notices, m, ReplyLimited)
+		b.queueNotice(ctx, notices, m, LimitedReply(retry))
 		return false
 	}
 	return b.enqueue(ctx, notices, q, m)
@@ -429,6 +436,9 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 			}
 		}
 	}
+	if r := m.Referenced; r != nil && b.blockedID(r.ID) {
+		m.Referenced = nil // A reply to a blocked message quotes none of it.
+	}
 	if r := m.Referenced; r != nil {
 		// A Components V2 message, such as Bosun's own reply, has its
 		// text in its components; Content carries the text from here on.
@@ -472,6 +482,13 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 	if err != nil {
 		l.WarnContext(ctx, "turn failed", "error", err)
 		b.restoreResults(m.ChannelID, research) // The next turn gets them.
+		if ContentBlocked(err) {
+			// Later turns leave the message out of their context, so it
+			// cannot trip the filter again.
+			b.block(m.ID)
+			b.reply(ctx, m, ReplyBlocked)
+			return
+		}
 		b.reply(ctx, m, ReplyFailed)
 		return
 	}
@@ -672,9 +689,9 @@ func actionFailed(ctx context.Context, l *slog.Logger, action string, err error)
 }
 
 // take counts a turn against the user, server and global limits, or
-// reports that one is reached (contract rule 7). The operator counts
-// against the global limit only. b.mu is held.
-func (b *Bridge) take(now time.Time, m Message, operator bool) bool {
+// reports that one is reached and when a turn is next allowed (contract
+// rule 7). The operator counts against the global limit only. b.mu is held.
+func (b *Bridge) take(now time.Time, m Message, operator bool) (bool, time.Time) {
 	type key struct {
 		key   string
 		limit Limit
@@ -685,19 +702,64 @@ func (b *Bridge) take(now time.Time, m Message, operator bool) bool {
 		// stays as the spend backstop.
 		keys = append(keys, key{"user:" + m.Author.ID, b.Config.UserLimit}, key{"guild:" + m.GuildID, b.Config.GuildLimit})
 	}
+	var retry time.Time
 	for _, k := range keys {
 		if k.limit.Count <= 0 {
 			continue
 		}
 		recent := within(b.turns[k.key], now, k.limit.Window)
 		if len(recent) >= k.limit.Count {
-			return false
+			// A turn is allowed again when enough of the oldest turns
+			// leave the window.
+			if at := recent[len(recent)-k.limit.Count].Add(k.limit.Window); at.After(retry) {
+				retry = at
+			}
 		}
+	}
+	if !retry.IsZero() {
+		return false, retry
 	}
 	for _, k := range keys {
 		b.turns[k.key] = append(within(b.turns[k.key], now, k.limit.Window), now)
 	}
-	return true
+	return true, time.Time{}
+}
+
+// LimitedReply is the reply at a limit: ReplyLimited, with the time a turn
+// is next allowed as a Discord relative timestamp when it is known.
+func LimitedReply(retry time.Time) string {
+	if retry.IsZero() {
+		return ReplyLimited
+	}
+	return fmt.Sprintf("I've reached my limit for now; try again <t:%d:R>.", retry.Unix())
+}
+
+// block records a message that the provider's safety filter refused.
+func (b *Bridge) block(id string) {
+	now := b.now()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.blocked == nil {
+		b.blocked = map[string]time.Time{}
+	}
+	for old, at := range b.blocked {
+		if now.Sub(at) > dedupeWindow {
+			delete(b.blocked, old)
+		}
+	}
+	b.blocked[id] = now
+}
+
+// blockedID reports whether the provider's safety filter refused the
+// message with this ID.
+func (b *Bridge) blockedID(id string) bool {
+	if id == "" {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.blocked[id]
+	return ok
 }
 
 // prune drops message IDs past the window. b.mu is held.

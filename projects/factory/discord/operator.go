@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"sync"
@@ -227,6 +228,11 @@ func (b *Bridge) operatorTurn(ctx context.Context, m Message) {
 	answer, err := b.Operator.Turn(ctx, m.ChannelID, m.ID, OperatorPrompt(m, b.Places.Resolve(m.GuildID, b.stripMention(m.Content), m.Mentions), earlier))
 	if err != nil {
 		l.WarnContext(ctx, "operator turn failed", "error", err)
+		if ContentBlocked(err) {
+			b.block(m.ID) // A restored session leaves it out.
+			b.reply(ctx, m, ReplyBlocked)
+			return
+		}
 		b.reply(ctx, m, ReplyFailed)
 		return
 	}
@@ -254,7 +260,7 @@ func (b *Bridge) restore(ctx context.Context, m Message) []OperatorLine {
 	var out []OperatorLine
 	chars := 0
 	for _, h := range msgs { // Newest first.
-		if (h.ChannelID != "" && h.ChannelID != m.ChannelID) || !b.fromOperator(h.Message) {
+		if (h.ChannelID != "" && h.ChannelID != m.ChannelID) || !b.fromOperator(h.Message) || b.blockedID(h.ID) {
 			continue
 		}
 		text := b.Places.Resolve(m.GuildID, b.stripMention(h.Content), h.Mentions)
@@ -357,6 +363,9 @@ type KagentOperator struct {
 	// (OperatorRequestID). A server agent uses ServerRequestID, so its
 	// sessions never meet a thread's.
 	RequestID func(key string, generation int) string
+	// Log reports a blocked session that could not be deleted; nil logs
+	// nothing.
+	Log *slog.Logger
 
 	mu    sync.Mutex
 	known map[string]string // thread -> context ID
@@ -429,7 +438,25 @@ func (k *KagentOperator) Turn(ctx context.Context, threadID, messageID, prompt s
 		delete(k.known, threadID)
 		k.mu.Unlock()
 	}
+	if ContentBlocked(err) {
+		k.dropBlocked(threadID, s.ContextID)
+	}
 	return answer, err
+}
+
+// dropBlocked deletes a session whose turn the provider's safety filter
+// refused. The provider judges the whole conversation, and Hermes keeps
+// the refused message in it, so every later turn in that session is
+// refused too. The deleted session moves the key to its next generation:
+// the next turn starts a clean session (HOME-909).
+func (k *KagentOperator) dropBlocked(key, contextID string) {
+	d, ok := k.Sessions.(SessionDeleter)
+	if !ok {
+		return
+	}
+	if err := deleteSession(d, contextID); err != nil && k.Log != nil {
+		k.Log.Warn("blocked session not deleted", "key", key, "session", contextID, "error", err)
+	}
 }
 
 func (k *KagentOperator) turn(ctx context.Context, contextID, messageID, prompt string) (string, error) {

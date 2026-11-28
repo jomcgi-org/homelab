@@ -421,7 +421,7 @@ discord:
         "1290668195249917964": {history: true, ingest: true, ingestSince: "2026-11-27"} # The gang...
         "1501965852042330302": {history: true, ingest: true, ingestSince: "2026-11-27"} # homelab
         "1512814732392927463": {history: true, ingest: true, ingestSince: "2026-11-27"} # Loom
-      userLimit: {count: 10, window: 1h}
+      userLimit: {count: 60, window: 1h}
       guildLimit: {count: 60, window: 1h}
       globalLimit: {count: 300, window: 24h}
       queueDepth: 3
