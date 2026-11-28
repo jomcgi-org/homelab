@@ -908,7 +908,9 @@ discord:
         such as an architecture with groups, several diagrams or charts,
         or a long comparison: call the template tool, follow its design
         brief, start from its page or an example, publish the page, and
-        post its link with a one-line summary.
+        post its link with a one-line summary. Call the template tool before
+        each new HTML page, even when you remember it: the house version
+        changes, so copy its link and script tags and their versions exactly.
         Discord shows no Markdown tables, headings below ###, or HTML.
         Prefer short lists; use a table only to compare several items
         across several columns, and the bridge draws it as an image.

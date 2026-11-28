@@ -286,11 +286,16 @@ var examplePages embed.FS
 // exampleNames lists the example pages in the order the brief names them.
 var exampleNames = []string{"explainer", "report", "comparison"}
 
+// houseNote states the current house version and that its tags are fixed.
+func houseNote() string {
+	return fmt.Sprintf("The current house version is house-%d. Use the link and script tags in html exactly, with their versions and integrity hashes; a page written from memory can link an old version.", newestHouse)
+}
+
 // templateResult returns the brief, the base page and the example names, or
 // one example page.
 func templateResult(example string) (any, error) {
 	if example == "" {
-		return map[string]any{"brief": designBrief, "html": pageTemplate, "examples": exampleNames}, nil
+		return map[string]any{"house": houseNote(), "brief": designBrief, "html": pageTemplate, "examples": exampleNames}, nil
 	}
 	for _, name := range exampleNames {
 		if name == example {
@@ -298,7 +303,7 @@ func templateResult(example string) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"example": name, "html": string(page)}, nil
+			return map[string]any{"house": houseNote(), "example": name, "html": string(page)}, nil
 		}
 	}
 	return nil, &ParamError{"example", "must be one of " + strings.Join(exampleNames, ", ")}
@@ -309,7 +314,7 @@ var Tools = []Tool{
 	{
 		Name: "put",
 		Description: fmt.Sprintf("Publish one file and return its URL for Joe. Replaces a file at the same path. At most %d bytes. "+
-			"HTML runs sandboxed with no network: inline every style, script and image; scripts, styles and fonts may load only from /_lib/, as the template tool's pages do; no CDN or remote URL loads. Start an HTML page from the template tool and follow its brief. For an HTML page the result can list warnings: no /_lib/house-N.css link, emoji, or a :root rule with its own colour variables. The file is stored anyway; fix each warning and put the page again. PNG content is base64 with encoding base64; other types are UTF-8 text.", MaxBytes),
+			"HTML runs sandboxed with no network: inline every style, script and image; scripts, styles and fonts may load only from /_lib/, as the template tool's pages do; no CDN or remote URL loads. Start each new HTML page from the template tool and follow its brief. For an HTML page the result can list warnings: no /_lib/house-N.css link, an old house version, emoji, a :root rule with its own colour variables, or colour literals (hex or rgb()) in styles or chart specs. The file is stored anyway; fix each warning and put the page again. PNG content is base64 with encoding base64; other types are UTF-8 text.", MaxBytes),
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + placeSchema + `,` + pathSchema + `,` +
 			`"content":{"type":"string","description":"File content."},` +
 			`"encoding":{"type":"string","enum":["utf-8","base64"],"default":"utf-8"}},` +
@@ -318,7 +323,7 @@ var Tools = []Tool{
 	},
 	{
 		Name:        "template",
-		Description: "Return the house design system for an artifact page: a design brief (read it first), the base page, and the names of example pages. Pass example to get one example page (an explainer, a report or a comparison) to adapt. Pages load the design system and Mermaid, Vega-Lite and Lucide icons from /_lib/. Fill a page in and publish it with put.",
+		Description: "Return the house design system for an artifact page: the current house version, a design brief (read it first), the base page, and the names of example pages. Call it before each new HTML page; the house version changes. Pass example to get one example page (an explainer, a report or a comparison) to adapt. Pages load the design system and Mermaid, Vega-Lite and Lucide icons from /_lib/. Fill a page in and publish it with put.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"example":{"type":"string","enum":["explainer","report","comparison"],"description":"An example page to return instead of the brief and the base page."}},"additionalProperties":false}`),
 		Annotations: map[string]any{"title": "Get the page template", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	},

@@ -178,6 +178,10 @@ func TestTemplatePagesLoadOnlyFromLib(t *testing.T) {
 	if !strings.Contains(got["brief"].(string), "Never use emoji as icons") {
 		t.Fatalf("brief %.80q", got["brief"])
 	}
+	house := fmt.Sprintf("The current house version is house-%d. Use the link and script tags in html exactly", newestHouse)
+	if !strings.Contains(got["house"].(string), house) {
+		t.Errorf("house %q", got["house"])
+	}
 	pages := map[string]string{"template": got["html"].(string)}
 	for _, name := range got["examples"].([]any) {
 		res := call(t, srv.URL, "template", map[string]any{"example": name})
