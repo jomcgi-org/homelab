@@ -44,6 +44,9 @@ func TestLintWarnsWithoutTheHouseStylesheet(t *testing.T) {
 	for _, page := range []string{
 		`<html><head><style>body{margin:0}</style></head><body>x</body></html>`,
 		`<link rel="stylesheet" href="https://cdn.example.com/house-1.css">`,
+		`<link rel="icon" href="/_lib/house-2.css">`,
+		`<!-- <link rel="stylesheet" href="/_lib/house-2.css"> -->`,
+		`<link rel="stylesheet" data-href="/_lib/house-2.css">`,
 		`<link rel="stylesheet" href="/_lib/house-x.css">`,
 	} {
 		w := lintHTML(page)

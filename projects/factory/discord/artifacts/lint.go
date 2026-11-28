@@ -7,15 +7,49 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/html"
 )
 
 // The lint warns about an HTML page that leaves the house design system, so
 // the model can fix the page and put it again. It never blocks a put. It
-// uses string and regular expression checks only, so it can miss a case or
+// uses lightweight markup and pattern checks, so it can miss a case or
 // warn on one that is acceptable.
 
-// houseLink matches a <link> to any house-N stylesheet under /_lib/.
-var houseLink = regexp.MustCompile(`(?is)<link\b[^>]*\bhref\s*=\s*["']?/_lib/house-[0-9]+\.css(?:["'\s>?#]|/>)`)
+var houseStylesheet = regexp.MustCompile(`^/_lib/house-[0-9]+\.css(?:[?#].*)?$`)
+
+func linksHouseStylesheet(page string) bool {
+	tokens := html.NewTokenizer(strings.NewReader(page))
+	for {
+		switch tokens.Next() {
+		case html.ErrorToken:
+			return false
+		case html.StartTagToken, html.SelfClosingTagToken:
+			tag, attrs := tokens.TagName()
+			if string(tag) != "link" {
+				continue
+			}
+			var stylesheet, house bool
+			for attrs {
+				key, value, more := tokens.TagAttr()
+				attrs = more
+				switch string(key) {
+				case "href":
+					house = houseStylesheet.MatchString(strings.TrimSpace(string(value)))
+				case "rel":
+					for _, rel := range strings.Fields(string(value)) {
+						if strings.EqualFold(rel, "stylesheet") {
+							stylesheet = true
+						}
+					}
+				}
+			}
+			if stylesheet && house {
+				return true
+			}
+		}
+	}
+}
 
 // houseRef matches a /_lib/house-N.css or house-N.js reference and captures N.
 var houseRef = regexp.MustCompile(`/_lib/house-([0-9]+)\.(?:css|js)\b`)
@@ -57,7 +91,7 @@ const maxNamed = 5
 // lintHTML returns the warnings for one HTML page.
 func lintHTML(page string) []string {
 	var warnings []string
-	if !houseLink.MatchString(page) {
+	if !linksHouseStylesheet(page) {
 		warnings = append(warnings, `The page does not link the house stylesheet. Keep the <link rel="stylesheet" href="/_lib/house-N.css"> tag from the template tool's page.`)
 	}
 	if old := staleHouse(page); len(old) > 0 {

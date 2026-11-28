@@ -29,7 +29,10 @@ go_library(
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/discord/artifacts",
     visibility = ["//visibility:public"],
-    deps = ["//projects/factory/broker/actorjwt"],
+    deps = [
+        "//projects/factory/broker/actorjwt",
+        "@org_golang_x_net//html",
+    ],
 )
 
 go_test(
