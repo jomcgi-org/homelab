@@ -57,6 +57,10 @@ def test_pr_scope_and_redaction(tmp_path, monkeypatch):
     assert all(value not in output for value in (token, untouched, marker))
 
     for addition, message, status in (
+        ("export GH_" + 'TOKEN="${GHCR_' + 'TOKEN:-}"', "runtime reference", 0),
+        ("GH_" + "TOKEN=$GHCR_TOKEN", "unquoted reference", 0),
+        ("GH_" + 'TOKEN="${GHCR_' + 'TOKEN:-fixture}"', "literal default", 1),
+        ("GH_" + "TOKEN=$GHCR_TOKEN OTHER_" + "SECRET=fixture", "mixed", 1),
         (token, "fixture", 1),
         ("ordinary text", marker, 1),
         ("clean addition", "clean commit", 0),

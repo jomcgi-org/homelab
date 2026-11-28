@@ -21,12 +21,32 @@ RULES = (
 )
 
 
+# Accept a complete shell variable expansion, optionally double quoted.
+# Literal prefixes, suffixes and nonempty fallback values still need review.
+VARIABLE = r"[a-zA-Z_][a-zA-Z_0-9]*"
+EXPANSION = rf"\$(?:{VARIABLE}|\{{{VARIABLE}(?::-)?\}})"
+RUNTIME_VALUE = re.compile(rf'(?:{EXPANSION}|"{EXPANSION}")(?=\s|$)')
+
+
+def matches(label, pattern, content):
+    if label != "secret env var assignment":
+        return pattern.search(content)
+    # The shared assignment regex consumes the first character of the value.
+    position = 0
+    while match := pattern.search(content, position):
+        reference = RUNTIME_VALUE.match(content, match.end() - 1)
+        if reference is None:
+            return True
+        position = reference.end()
+    return False
+
+
 def git(*args):
     return subprocess.check_output(["git", *args])
 
 
 def report(path, content):
-    labels = [label for label, pattern in RULES if pattern.search(content)]
+    labels = [label for label, pattern in RULES if matches(label, pattern, content)]
     if labels:
         if any(pattern.search(path) for _, pattern in RULES):
             path = "[redacted path]"
