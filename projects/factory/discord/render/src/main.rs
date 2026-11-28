@@ -23,9 +23,14 @@ const MAX_SIDE: f64 = 4096.0;
 const MERMAID_THEME: &str = include_str!("../theme/mermaid.json");
 const VEGA_LITE_THEME: &str = include_str!("../theme/vega-lite.json");
 
-// A drawing up to half of MAX_SIDE rasterizes at twice its size, for sharp
-// images on high-density phone screens.
+// Discord fits an image into a box about 550 CSS pixels wide on desktop
+// and about 390 points wide on a phone with 3 device pixels to a point. A
+// PNG about 2048 pixels wide stays sharp in both and in the full-size view.
+// A drawing rasterizes at TARGET_WIDTH / width, at least SCALE and at most
+// MAX_SCALE, within MAX_SIDE.
+const TARGET_WIDTH: f64 = 2048.0;
 const SCALE: f64 = 2.0;
+const MAX_SCALE: f64 = 8.0;
 
 fn inline_chart(value: &Value) -> bool {
     match value {
@@ -112,29 +117,54 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
 // hostile input (a comment or pattern tile gets past it), which needs a
 // memory limit per worker. A side is a plain or px number, a percentage of
 // the viewBox's side, or em/ex at 16 px each; it must be no larger than
-// MAX_SIDE. A missing side takes the viewBox's, which must also fit;
-// without a viewBox resvg draws 100 px.
+// MAX_SIDE. A missing side takes the viewBox's, which must also fit.
+// Without a viewBox the check counts 100 px, but resvg sizes such an image
+// to its content; the PNG check after the raster bounds it.
 fn svg_size_allowed(lower: &str) -> bool {
-    svg_side(lower).is_some()
+    svg_size(lower).is_some()
 }
 
-// svg_side returns the longer side of the drawing, or None when a side does
-// not fit.
-fn svg_side(lower: &str) -> Option<f64> {
+// The drawing's size in pixels, as resvg sizes it. `exact` is false when
+// the root has no viewBox and not both sides: resvg then sizes the image
+// to its content, which this check cannot see.
+#[derive(Debug, PartialEq)]
+struct Drawing {
+    width: f64,
+    height: f64,
+    exact: bool,
+}
+
+// svg_size returns the drawing's size, or None when a side does not fit.
+fn svg_size(lower: &str) -> Option<Drawing> {
     let start = lower.find("<svg")?;
     let root = &lower[start..];
     let root = &root[..root.find('>').unwrap_or(root.len())];
     let fits = |n: f64| n > 0.0 && n <= MAX_SIDE;
-    let mut from_view_box = false;
-    let mut side: f64 = 0.0;
-    // A percentage side scales the viewBox's; the largest one counts.
-    let mut percent: f64 = 1.0;
-    for name in ["width", "height"] {
-        match attribute(root, name) {
+    // The viewBox counts only when a side takes its size from it.
+    let view_box = attribute(root, "viewbox").map(|v| {
+        let numbers: Vec<f64> = v
+            .split(|c: char| c.is_ascii_whitespace() || c == ',')
+            .filter(|part| !part.is_empty())
+            .filter_map(|part| part.parse().ok())
+            .collect();
+        (numbers.len() == 4 && fits(numbers[2]) && fits(numbers[3]))
+            .then(|| (numbers[2], numbers[3]))
+    });
+    // Sides given in px or em: two of them size the drawing without a viewBox.
+    let mut absolute = 0;
+    let mut sides = [0.0; 2];
+    for (index, name) in ["width", "height"].into_iter().enumerate() {
+        // resvg takes a missing or percentage side from the viewBox's side
+        // on the same axis, or 100 px without a viewBox.
+        let view_side = || match view_box {
+            None => Some(100.0),
+            Some(Some((w, h))) => Some(if index == 0 { w } else { h }),
+            Some(None) => None,
+        };
+        sides[index] = match attribute(root, name) {
             Some(v) if v.ends_with('%') => {
                 let n = v[..v.len() - 1].trim().parse::<f64>().ok()?;
-                percent = percent.max(n / 100.0);
-                from_view_box = true
+                view_side()? * n / 100.0
             }
             // An em or ex side is that many font sizes; count 16 px each.
             // A root font-size would change that size, so it is refused.
@@ -142,39 +172,39 @@ fn svg_side(lower: &str) -> Option<f64> {
                 if root.contains("font-size") {
                     return None;
                 }
-                let n = v[..v.len() - 2].trim().parse::<f64>().ok()?;
-                side = side.max(n * 16.0);
-                if !fits(side) {
-                    return None;
-                }
+                absolute += 1;
+                v[..v.len() - 2].trim().parse::<f64>().ok()? * 16.0
             }
             Some(v) => {
+                absolute += 1;
                 let number = v.strip_suffix("px").unwrap_or(&v).trim();
-                let number = number.parse::<f64>().ok().filter(|n| fits(*n))?;
-                side = side.max(number);
+                number.parse::<f64>().ok()?
             }
-            None => from_view_box = true,
+            None => view_side()?,
+        };
+        if !fits(sides[index]) {
+            return None;
         }
     }
-    if !from_view_box {
-        return Some(side);
-    }
-    let view_side = match attribute(root, "viewbox") {
-        None => 100.0,
-        Some(v) => {
-            let numbers: Vec<f64> = v
-                .split(|c: char| c.is_ascii_whitespace() || c == ',')
-                .filter(|part| !part.is_empty())
-                .filter_map(|part| part.parse().ok())
-                .collect();
-            if numbers.len() != 4 || !fits(numbers[2]) || !fits(numbers[3]) {
-                return None;
-            }
-            numbers[2].max(numbers[3])
-        }
+    Some(Drawing {
+        width: sides[0],
+        height: sides[1],
+        exact: matches!(view_box, Some(Some(_))) || absolute == 2,
+    })
+}
+
+// raster_scale picks the PNG's scale: TARGET_WIDTH pixels wide, at least
+// SCALE and at most MAX_SCALE, with neither side over MAX_SIDE. A drawing
+// whose size is not exact keeps SCALE, the old rule.
+fn raster_scale(drawing: &Drawing) -> f64 {
+    let wanted = if drawing.exact {
+        (TARGET_WIDTH / drawing.width).clamp(SCALE, MAX_SCALE)
+    } else {
+        SCALE
     };
-    let side = side.max(view_side * percent);
-    fits(side).then_some(side)
+    let fit = MAX_SIDE / drawing.width.max(drawing.height);
+    // Round down so that a side times the scale stays within MAX_SIDE.
+    (wanted.min(fit).max(1.0) * 1000.0).floor() / 1000.0
 }
 
 // merge_theme writes each house value over the chart's config, so a chart
@@ -316,12 +346,12 @@ fn render(req: &mut Request, dir: &Path) -> Result<File, Failure> {
     File::open(&drawing)
         .and_then(|file| file.take(LIMIT as u64).read_to_end(&mut head))
         .map_err(|_| INTERNAL)?;
-    let side = svg_side(&String::from_utf8_lossy(&head).to_ascii_lowercase())
+    let drawing_size = svg_size(&String::from_utf8_lossy(&head).to_ascii_lowercase())
         .ok_or((422, "PNG exceeds output bounds"))?;
-    let scale = if side * SCALE <= MAX_SIDE { "2" } else { "1" };
+    let scale = format!("{:.3}", raster_scale(&drawing_size));
     let mut raster = deadline(raster_seconds);
     raster
-        .args(["vl-convert", "svg2png", "--scale", scale, "-i"])
+        .args(["vl-convert", "svg2png", "--scale", &scale, "-i"])
         .arg(&drawing)
         .arg("-o")
         .arg(&output);
@@ -464,32 +494,85 @@ mod tests {
         assert_eq!(mermaid["theme"], "modern");
     }
 
+    fn size(width: f64, height: f64, exact: bool) -> Option<Drawing> {
+        Some(Drawing {
+            width,
+            height,
+            exact,
+        })
+    }
+
     #[test]
-    fn drawing_side_sets_the_raster_scale() {
+    fn drawing_size_follows_resvg() {
         assert_eq!(
-            svg_side(r#"<svg width="300" height="1500.5">"#),
-            Some(1500.5)
+            svg_size(r#"<svg width="300" height="1500.5">"#),
+            size(300.0, 1500.5, true)
         );
         assert_eq!(
-            svg_side(r#"<svg viewbox="0 0 24 24" width="1em">"#),
-            Some(24.0)
+            svg_size(r#"<svg viewbox="0 0 24 24" width="1em">"#),
+            size(16.0, 24.0, true)
         );
-        assert_eq!(svg_side("<svg>"), Some(100.0));
-        assert_eq!(svg_side(r#"<svg width="5000" height="10">"#), None);
+        assert_eq!(svg_size("<svg>"), size(100.0, 100.0, false));
+        assert_eq!(svg_size(r#"<svg width="300">"#), size(300.0, 100.0, false));
+        assert_eq!(svg_size(r#"<svg width="5000" height="10">"#), None);
         assert_eq!(
-            svg_side(r#"<svg width="200%" height="200%" viewbox="0 0 2048 2048">"#),
-            Some(4096.0)
+            svg_size(r#"<svg width="200%" height="200%" viewbox="0 0 2048 2048">"#),
+            size(4096.0, 4096.0, true)
+        );
+        assert_eq!(svg_size(r#"<svg width="300%" viewbox="0 0 2048 10">"#), None);
+        // vl-convert 1.9.0 draws these at 100x40 and 200x200 pixels.
+        assert_eq!(
+            svg_size(r#"<svg width="100" viewbox="0 0 1 40">"#),
+            size(100.0, 40.0, true)
         );
         assert_eq!(
-            svg_side(r#"<svg width="300%" viewbox="0 0 2048 10">"#),
-            None
+            svg_size(r#"<svg width="50%" viewbox="0 0 400 200">"#),
+            size(200.0, 200.0, true)
+        );
+        // Two absolute sides ignore the viewBox, as before.
+        assert_eq!(
+            svg_size(r#"<svg width="400" height="300" viewbox="0 0 20000 10">"#),
+            size(400.0, 300.0, true)
         );
         assert_eq!(
-            svg_side(r#"<svg width="200em" viewbox="0 0 24 24">"#),
-            Some(3200.0)
+            svg_size(r#"<svg width="200em" viewbox="0 0 24 24">"#),
+            size(3200.0, 24.0, true)
         );
-        assert_eq!(svg_side(r#"<svg width="300em">"#), None);
-        assert_eq!(svg_side(r#"<svg font-size="4096" width="4em">"#), None);
+        assert_eq!(svg_size(r#"<svg width="300em">"#), None);
+        assert_eq!(svg_size(r#"<svg font-size="4096" width="4em">"#), None);
+    }
+
+    #[test]
+    fn raster_scale_targets_a_sharp_width_within_bounds() {
+        let scale = |width, height, exact| {
+            raster_scale(&Drawing {
+                width,
+                height,
+                exact,
+            })
+        };
+        // A small chart stops at MAX_SCALE.
+        assert_eq!(scale(184.0, 270.0, true), MAX_SCALE);
+        assert_eq!(scale(512.0, 300.0, true), 4.0);
+        assert_eq!(scale(1024.0, 300.0, true), 2.0);
+        // A wide drawing keeps at least SCALE while it fits.
+        assert_eq!(scale(1793.3, 78.0, true), 2.0);
+        // A tall or large drawing stops at MAX_SIDE.
+        assert_eq!(scale(221.0, 830.0, true), 4.934);
+        assert_eq!(scale(3000.0, 200.0, true), 1.365);
+        assert_eq!(scale(4096.0, 4096.0, true), 1.0);
+        // A drawing sized by its content keeps the old 2x rule.
+        assert_eq!(scale(100.0, 100.0, false), 2.0);
+        assert_eq!(scale(24.0, 24.0, true), MAX_SCALE);
+        for (width, height) in [
+            (184.0, 270.0),
+            (221.0, 830.0),
+            (3000.0, 200.0),
+            (2047.9, 13.0),
+        ] {
+            let s = scale(width, height, true);
+            assert!(width * s <= MAX_SIDE && height * s <= MAX_SIDE);
+        }
     }
 
     #[test]

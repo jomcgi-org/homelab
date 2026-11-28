@@ -5,7 +5,7 @@
   "view": { "stroke": null },
   "title": {
     "font": "Inter",
-    "fontSize": 16,
+    "fontSize": 18,
     "fontWeight": 600,
     "color": "#0F172A",
     "anchor": "start",
@@ -14,8 +14,8 @@
   "axis": {
     "labelFont": "Inter",
     "titleFont": "Inter",
-    "labelFontSize": 12,
-    "titleFontSize": 12,
+    "labelFontSize": 14,
+    "titleFontSize": 14,
     "titleFontWeight": 500,
     "labelColor": "#475569",
     "titleColor": "#334155",
@@ -29,8 +29,8 @@
   "legend": {
     "labelFont": "Inter",
     "titleFont": "Inter",
-    "labelFontSize": 12,
-    "titleFontSize": 12,
+    "labelFontSize": 14,
+    "titleFontSize": 14,
     "labelColor": "#475569",
     "titleColor": "#334155",
     "symbolType": "circle"
@@ -39,9 +39,11 @@
     "labelFont": "Inter",
     "titleFont": "Inter",
     "labelColor": "#334155",
-    "titleColor": "#0F172A"
+    "titleColor": "#0F172A",
+    "labelFontSize": 14,
+    "titleFontSize": 14
   },
-  "text": { "font": "Inter", "color": "#334155" },
+  "text": { "font": "Inter", "color": "#334155", "fontSize": 14 },
   "mark": { "color": "#2A78D6" },
   "bar": { "color": "#2A78D6", "cornerRadiusEnd": 4 },
   "line": { "color": "#2A78D6", "strokeWidth": 2 },
