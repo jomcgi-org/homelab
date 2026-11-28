@@ -144,7 +144,7 @@ func TestJoesGlovesReactionReplaysTheBlockedMessageOffTheRecord(t *testing.T) {
 	if !strings.Contains(prompt, "the spicy joke") {
 		t.Errorf("replay prompt = %q", prompt)
 	}
-	var gif, answer = -1, -1
+	gif, answer := -1, -1
 	for n, text := range rep.texts()[1:] {
 		switch {
 		case strings.HasPrefix(text, "🥊 Gloves off until"):
