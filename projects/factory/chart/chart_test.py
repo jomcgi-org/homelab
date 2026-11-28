@@ -2010,7 +2010,7 @@ def test_discord_bridge_starts_new_channel_sessions_for_the_tools() -> None:
     # sessionEpoch gives every channel a new session (HOME-915). Deploy sets
     # it after the tools revision was live (2026-11-28).
     deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
-    assert deploy["discord"]["bridge"]["policy"]["sessionEpoch"] == "notes1"
+    assert deploy["discord"]["bridge"]["policy"]["sessionEpoch"] == "sql1"
     defaults = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
     assert defaults["discord"]["bridge"]["policy"]["sessionEpoch"] == ""
 
