@@ -23,7 +23,7 @@ type scriptedAgent struct {
 	ids  []string
 }
 
-func (f *scriptedAgent) Turn(_ context.Context, key, id, _ string) (string, error) {
+func (f *scriptedAgent) Turn(_ context.Context, key, id, _ string, _ ...TurnImage) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.keys = append(f.keys, key)

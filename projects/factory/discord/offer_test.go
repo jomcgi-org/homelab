@@ -15,7 +15,7 @@ type blockingAgent struct {
 	turns int
 }
 
-func (f *blockingAgent) Turn(context.Context, string, string, string) (string, error) {
+func (f *blockingAgent) Turn(context.Context, string, string, string, ...TurnImage) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.turns++
