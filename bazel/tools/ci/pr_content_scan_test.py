@@ -61,6 +61,12 @@ def test_pr_scope_and_redaction(tmp_path, monkeypatch):
         ("GH_" + "TOKEN=$GHCR_TOKEN", "unquoted reference", 0),
         ("GH_" + 'TOKEN="${GHCR_' + 'TOKEN:-fixture}"', "literal default", 1),
         ("GH_" + "TOKEN=$GHCR_TOKEN OTHER_" + "SECRET=fixture", "mixed", 1),
+        (
+            "RENOVATE_" + 'TOKEN="$(cat /var/run/renovate-token/token)"',
+            "mounted file",
+            0,
+        ),
+        ("RENOVATE_" + 'TOKEN="$(printf fixture)"', "literal command argument", 1),
         (token, "fixture", 1),
         ("ordinary text", marker, 1),
         ("clean addition", "clean commit", 0),

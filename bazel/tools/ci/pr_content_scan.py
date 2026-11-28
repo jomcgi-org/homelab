@@ -21,11 +21,14 @@ RULES = (
 )
 
 
-# Accept a complete shell variable expansion, optionally double quoted.
+# Accept complete variable expansions and the Renovate mounted-token read.
 # Literal prefixes, suffixes and nonempty fallback values still need review.
 VARIABLE = r"[a-zA-Z_][a-zA-Z_0-9]*"
 EXPANSION = rf"\$(?:{VARIABLE}|\{{{VARIABLE}(?::-)?\}})"
-RUNTIME_VALUE = re.compile(rf'(?:{EXPANSION}|"{EXPANSION}")(?=\s|$)')
+RENOVATE_TOKEN_READ = r'"\$\(cat /var/run/renovate-token/token\)"'
+RUNTIME_VALUE = re.compile(
+    rf'(?:{EXPANSION}|"{EXPANSION}"|{RENOVATE_TOKEN_READ})(?=\s|$)'
+)
 
 
 def matches(label, pattern, content):
