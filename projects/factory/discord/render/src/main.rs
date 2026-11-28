@@ -93,11 +93,6 @@ fn svg_allowed(input: &str) -> bool {
 // attribute reads a quoted attribute of one tag: the name must follow
 // whitespace, and whitespace may surround the '='.
 fn attribute(tag: &str, name: &str) -> Option<String> {
-    raw_attribute(tag, name).map(|value| value.trim().to_string())
-}
-
-// raw_attribute is attribute without the trim.
-fn raw_attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let mut from = 0;
     while let Some(found) = tag[from..].find(name) {
         let at = from + found;
@@ -112,7 +107,7 @@ fn raw_attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
         let rest = rest.trim_start();
         let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
         let value = &rest[1..];
-        return Some(&value[..value.find(quote)?]);
+        return Some(value[..value.find(quote)?].trim().to_string());
     }
     None
 }
@@ -195,23 +190,37 @@ fn svg_size(lower: &str) -> Option<Drawing> {
 // plain, px or percentage lengths with no spaces. It returns the size when
 // resvg takes it from the root, and None when resvg sizes the image to its
 // content (no viewBox and not both sides) or the root is not that simple.
+// The root must come first, after at most an XML declaration, so a comment
+// cannot hold a decoy root.
 fn exact_size(svg: &str) -> Option<Drawing> {
     let start = svg.find("<svg")?;
-    let root = &svg[start..];
-    let root = &root[..root.find('>').unwrap_or(root.len())];
+    let prefix = svg[..start].trim();
+    let declaration =
+        prefix.starts_with("<?xml") && prefix.ends_with("?>") && prefix.matches('<').count() == 1;
+    if !prefix.is_empty() && !declaration {
+        return None;
+    }
+    let attributes = root_attributes(&svg[start + 4..])?;
+    let get = |name: &str| {
+        attributes
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| *value)
+    };
     let number = |v: &str| {
         v.parse::<f64>()
             .ok()
             .filter(|n| n.is_finite() && *n > 0.0 && !v.contains(char::is_whitespace))
     };
-    let view_box = match raw_attribute(root, "viewBox") {
+    let view_box = match get("viewBox") {
         None => None,
         Some(v) => {
             let parts: Vec<&str> = v
                 .split(|c: char| c.is_ascii_whitespace() || c == ',')
                 .filter(|part| !part.is_empty())
                 .collect();
-            if parts.len() != 4 || parts[..2].iter().any(|p| p.parse::<f64>().is_err()) {
+            let origin = |p: &&str| p.parse::<f64>().is_ok_and(f64::is_finite);
+            if parts.len() != 4 || !parts[..2].iter().all(origin) {
                 return None;
             }
             Some((number(parts[2])?, number(parts[3])?))
@@ -220,7 +229,7 @@ fn exact_size(svg: &str) -> Option<Drawing> {
     let mut sides = [0.0; 2];
     for (index, name) in ["width", "height"].into_iter().enumerate() {
         let view_side = view_box.map(|(w, h)| if index == 0 { w } else { h });
-        sides[index] = match raw_attribute(root, name) {
+        sides[index] = match get(name) {
             None => view_side?,
             Some(v) => match v.strip_suffix('%') {
                 Some(percent) => view_side? * number(percent)? / 100.0,
@@ -232,6 +241,34 @@ fn exact_size(svg: &str) -> Option<Drawing> {
         width: sides[0],
         height: sides[1],
     })
+}
+
+// root_attributes reads the root tag's attributes one by one, so a name
+// inside another attribute's value is not read as an attribute. It returns
+// None for anything but name="value" pairs up to the tag's end, or for a
+// name given twice.
+fn root_attributes(mut rest: &str) -> Option<Vec<(&str, &str)>> {
+    let mut attributes: Vec<(&str, &str)> = Vec::new();
+    loop {
+        let trimmed = rest.trim_start();
+        if trimmed.starts_with('>') || trimmed.starts_with("/>") {
+            return Some(attributes);
+        }
+        if trimmed.len() == rest.len() {
+            return None;
+        }
+        let end = trimmed
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-' | '.')))?;
+        let (name, after) = trimmed.split_at(end);
+        let after = after.trim_start().strip_prefix('=')?.trim_start();
+        let quote = after.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+        let value_end = after[1..].find(quote)?;
+        if name.is_empty() || attributes.iter().any(|(key, _)| *key == name) {
+            return None;
+        }
+        attributes.push((name, &after[1..1 + value_end]));
+        rest = &after[2 + value_end..];
+    }
 }
 
 // raster_scale picks the PNG's scale: TARGET_WIDTH pixels wide, at least
@@ -558,7 +595,10 @@ mod tests {
             svg_size(r#"<svg width="200%" height="200%" viewbox="0 0 2048 2048">"#),
             size(4096.0, 4096.0)
         );
-        assert_eq!(svg_size(r#"<svg width="300%" viewbox="0 0 2048 10">"#), None);
+        assert_eq!(
+            svg_size(r#"<svg width="300%" viewbox="0 0 2048 10">"#),
+            None
+        );
         // vl-convert 1.9.0 draws these at 100x40 and 200x200 pixels.
         assert_eq!(
             svg_size(r#"<svg width="100" viewbox="0 0 1 40">"#),
@@ -585,14 +625,21 @@ mod tests {
     fn exact_size_only_trusts_what_resvg_reads() {
         // The converters' roots.
         assert_eq!(
-            exact_size(r#"<svg xmlns="x" width="1793.3381" height="78" viewBox="0 0 1793.3381 78">"#),
+            exact_size(r#"<svg width="1793.3381" height="78" viewBox="0 0 1793.3381 78">"#),
             size(1793.3381, 78.0)
         );
         assert_eq!(
             exact_size(r#"<svg width="100%" viewBox="0,0,400,200">"#),
             size(400.0, 200.0)
         );
-        assert_eq!(exact_size(r#"<svg width="300px" height="200">"#), size(300.0, 200.0));
+        assert_eq!(
+            exact_size(r#"<svg width="300px" height="200">"#),
+            size(300.0, 200.0)
+        );
+        assert_eq!(
+            exact_size(r#"<?xml version="1.0"?> <svg width="300" height="200"/>"#),
+            size(300.0, 200.0)
+        );
         // resvg sizes these to their content, or reads them differently
         // from the lowercased check.
         for root in [
@@ -607,6 +654,13 @@ mod tests {
             r#"<svg viewBox="0 0 0x10 100 100">"#,
             r#"<svg viewBox="0 0 inf 100">"#,
             r#"<SVG width="10" height="10">"#,
+            r#"<svg viewBox="inf 0 100 100">"#,
+            r#"<svg viewBox="NaN 0 100 100">"#,
+            // A decoy root in a comment, or a decoy size inside a value.
+            r#"<!-- <svg width="10" height="10"> --><svg viewBox="0 0 2000 2000">"#,
+            r#"<svg data-x=" width='10' height='10' ">"#,
+            r#"<svg width="10" width="20" height="10">"#,
+            r#"<svg width="10"height="10">"#,
         ] {
             assert_eq!(exact_size(root), None, "{root}");
         }
