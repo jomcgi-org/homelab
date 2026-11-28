@@ -614,7 +614,7 @@ sequenceDiagram
   R->>J: link, valid until <time> UTC
   Note over E,G: anyone with the link
   E->>G: GET /bosun-artifacts/<key>?X-Amz-..., Host kept
-  G-->>E: file, or 403 if the signature is bad or expired
+  G-->>E: file, 403 for a bad signature, 400 when expired
 ```
 
 | Rule | Where |
@@ -622,7 +622,7 @@ sequenceDiagram
 | Only a fenced `share` block asks; the bridge takes one per answer. `path` is a file of the current channel, its URL or its key (`<server>/<channel>/…` or `private/<channel>/…`); `ttl` is 1 minute to 7 days, 24 hours by default | `share.go` `ParseShare`, `artifacts/share.go` `ShareKey` |
 | A link needs Joe's ✅ (`Operator.UserID`) on that exact confirmation, in its channel, within 10 minutes. Other users, other emoji, the bot's own ✅ and late reactions do nothing. A confirmation makes one link | `share.go` `HandleReaction` |
 | The bridge signs with `bosun-artifacts-share-s3`, a read-only key for the bucket that only the bridge mounts. The agent and the artifacts service never hold it | `garage_init.py` `GRANTS`, chart `discord.yaml` |
-| The link is `/s/<key>?X-Amz-…`. The edge rewrites the prefix to `/bosun-artifacts/`, keeps Host, and allows GET and HEAD with no sign-in. Garage checks the signature and expiry; a bad, expired or unsigned request gets 403 | edge `artifact-route.yaml` route `artifact-share` |
+| The link is `/s/<key>?X-Amz-…`. The edge rewrites the prefix to `/bosun-artifacts/`, keeps Host, and allows GET and HEAD with no sign-in. Garage checks the signature and expiry: a bad or unsigned request gets 403, an expired link 400 ("Date is too old") | edge `artifact-route.yaml` route `artifact-share` |
 | Each response gets the artifact sandbox CSP, `nosniff`, `no-referrer`, `CORP: same-origin`, `X-Robots-Tag: noindex, nofollow` and `Cache-Control: private, no-store`; `Set-Cookie` is removed | same |
 
 The bridge posts the link in the channel, so the channel's members see it
