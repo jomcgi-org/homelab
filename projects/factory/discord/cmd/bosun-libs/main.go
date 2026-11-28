@@ -89,6 +89,11 @@ func run(log *slog.Logger) error {
 		}
 		// A library file's name carries its version, so the same name and
 		// size is the same file. Pages are small and always rewritten.
+		// Published pages pin a library file's hash, so a changed file
+		// under the same name would break them: it needs a new name.
+		if size, ok := stored[key]; ok && size != int64(len(body)) && versioned(key) {
+			return fmt.Errorf("%s: the stored file differs; publish a new version under a new name", key)
+		}
 		if size, ok := stored[key]; ok && size == int64(len(body)) && versioned(key) {
 			log.Info("unchanged", "key", key)
 			return nil

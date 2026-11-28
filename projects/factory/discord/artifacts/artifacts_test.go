@@ -186,7 +186,7 @@ func TestTemplatePagesLoadOnlyFromLib(t *testing.T) {
 	if len(pages) != 4 {
 		t.Fatalf("pages %v", len(pages))
 	}
-	ref := regexp.MustCompile(`(?:src|href)\s*=\s*"([^"]*)"`)
+	ref := regexp.MustCompile(`(?:src|href)\s*=\s*["']([^"']*)`)
 	for name, html := range pages {
 		if !strings.HasPrefix(html, "<!doctype html>") {
 			t.Errorf("%s: not a whole page", name)

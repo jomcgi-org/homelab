@@ -23,6 +23,14 @@ HOUSE = [
 ]
 
 
+# Published pages pin these hashes: a change to house-1 breaks them, so a
+# change goes in a new file (house-2) with a new entry here.
+FROZEN = {
+    "house-1.css": "sha384-Tt4JSJaoy7NNzikxVGCB+5/qL1NUQ1phcM/MOI9Utn6UJy2agGMjx3y9hDqxt9OI",
+    "house-1.js": "sha384-NiEZdpnNpkeVwoHxhcCtboc4US6S/HG5+hii0NhwT7L8pbhqlJkvsqTagPboBc72",
+}
+
+
 def sri(name):
     digest = hashlib.sha384(Path(LIBS[name]).read_bytes()).digest()
     return "sha384-" + base64.b64encode(digest).decode()
@@ -39,7 +47,7 @@ def test_pages_load_the_house_files_with_their_hashes():
 def test_pages_load_nothing_else():
     for page in PAGES:
         html = Path(page).read_text()
-        for value in re.findall(r'(?:src|href)\s*=\s*"([^"]*)"', html):
+        for value in re.findall(r"""(?:src|href)\s*=\s*["']([^"']*)""", html):
             assert value.startswith(("/_lib/", "#")), (page, value)
         assert "@import" not in html and "url(" not in html, page
 
@@ -49,3 +57,8 @@ def test_the_stylesheet_loads_fonts_from_lib_only():
     for url in re.findall(r"url\(\"?([^\")]+)", css):
         assert url.startswith("/_lib/"), url
         assert url.removeprefix("/_lib/") in LIBS, url
+
+
+def test_house_files_are_frozen():
+    for name, integrity in FROZEN.items():
+        assert sri(name) == integrity, f"{name} changed: add house-2 instead"

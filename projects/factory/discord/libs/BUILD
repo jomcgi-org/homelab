@@ -24,7 +24,7 @@ py_test(
     name = "sri_test",
     srcs = ["sri_test.py"],
     # The self-test page is in both lists.
-    data = PAGES[1:] + LIBS.values(),
+    data = [page for page in PAGES if page not in LIBS.values()] + LIBS.values(),
     env = {
         "LIB_FILES": " ".join(["$(rootpath %s)" % label for label in LIBS.values()]),
         "LIB_NAMES": " ".join(LIBS.keys()),

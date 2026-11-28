@@ -1,6 +1,7 @@
 /* Bosun house design system, version 1 (projects/factory/discord/libs).
-   Served at /_lib/house-1.css. Pages written with it keep loading this
-   version: change it only for fixes, and add house-2.css for a redesign. */
+   Served at /_lib/house-1.css. Published pages load it with an integrity
+   hash, so never edit it: copy it to house-2.css for any change.
+   libs/sri_test.py pins its hash. */
 
 @font-face {
   font-family: "Inter";
@@ -155,10 +156,10 @@ a {
 .grid {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
 }
 .grid.two {
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
 }
 .split {
   display: grid;
@@ -655,6 +656,17 @@ pre.code code {
   }
 }
 
+/* Tablets: steps wrap instead of squeezing into one row. */
+@media (max-width: 900px) {
+  .steps {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  }
+  .steps > li:not(:last-child)::after {
+    display: none;
+  }
+}
+
 /* Phones */
 @media (max-width: 640px) {
   .page {
@@ -683,6 +695,7 @@ pre.code code {
     margin: 0;
   }
   .steps > li:not(:last-child)::after {
+    display: block;
     top: auto;
     bottom: -15px;
     left: 32px;
