@@ -247,8 +247,9 @@ func (b *Bridge) answer(ctx context.Context, m Message) bool {
 	if !ok {
 		return false // A repeat, too old, or the bridge is draining.
 	}
+	operator := b.fromOperator(m) // Before b.mu: fromOperator takes it.
 	b.mu.Lock()
-	allowed := b.take(b.now(), m)
+	allowed := b.take(b.now(), m, operator)
 	key := m.ChannelID
 	q, exists := b.queues[key]
 	if !exists && allowed {
@@ -671,12 +672,19 @@ func actionFailed(ctx context.Context, l *slog.Logger, action string, err error)
 }
 
 // take counts a turn against the user, server and global limits, or
-// reports that one is reached (contract rule 7). b.mu is held.
-func (b *Bridge) take(now time.Time, m Message) bool {
-	keys := []struct {
+// reports that one is reached (contract rule 7). The operator counts
+// against the global limit only. b.mu is held.
+func (b *Bridge) take(now time.Time, m Message, operator bool) bool {
+	type key struct {
 		key   string
 		limit Limit
-	}{{"user:" + m.Author.ID, b.Config.UserLimit}, {"guild:" + m.GuildID, b.Config.GuildLimit}, {"global", b.Config.GlobalLimit}}
+	}
+	keys := []key{{"global", b.Config.GlobalLimit}}
+	if !operator {
+		// Joe's own tags skip the user and server caps; the global cap
+		// stays as the spend backstop.
+		keys = append(keys, key{"user:" + m.Author.ID, b.Config.UserLimit}, key{"guild:" + m.GuildID, b.Config.GuildLimit})
+	}
 	for _, k := range keys {
 		if k.limit.Count <= 0 {
 			continue
