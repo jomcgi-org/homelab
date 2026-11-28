@@ -117,6 +117,8 @@ for role in ["factory-operator", "applicant"]:
     session("artifact.jomcgi.dev", role, expected=403, path=f"/{homelab}/page.html")
 # notes.jomcgi.dev: the same per-server folders (HOME-920).
 notes = session("notes.jomcgi.dev", "member", path=f"/{homelab}/")
+status, _, _ = notes(f"/{homelab}")
+assert status == 200, ("bare server path", status)
 for path in [f"/{other}/", "/", f"/{homelab}/../{other}/", f"/{homelab}x/"]:
     status, _, _ = notes(path)
     assert status == 403, (path, status)

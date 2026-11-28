@@ -62,10 +62,15 @@ spec:
   rules:
     {{- range .Values.artifacts.servers }}
     - name: server-{{ . }}
+      # The bare /<server-id> too, so the viewer's redirect to /<server-id>/
+      # reaches members.
       matches:
         - path:
             type: PathPrefix
             value: /{{ . }}/
+        - path:
+            type: Exact
+            value: /{{ . }}
       filters:
         {{- include "edge.notesFilters" $ | nindent 8 }}
       backendRefs:
