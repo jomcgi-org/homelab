@@ -10,7 +10,8 @@
   // to the colour of the current scheme.
   const probe = document.createElement("span");
   probe.style.display = "none";
-  document.body.append(probe);
+  // <html> exists even if this script runs before <body>.
+  document.documentElement.append(probe);
   const token = (name) => {
     if (!name.startsWith("--font") && name !== "--display") {
       probe.style.color = `var(${name})`;
