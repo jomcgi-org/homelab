@@ -1324,7 +1324,11 @@ stateDiagram-v2
   turns gloves off (default time) and replays the message as a gloves-off
   turn that answers it. The bridge keeps the message in memory only until
   the offer ends. Without gloves off, or for another author, the reply
-  stays the blocked one.
+  stays the blocked one. A tagged message waits in the ingest buffer until
+  its turn ends; a refused one is dropped there and its archive row is
+  cleared, so it never reaches Hindsight, the archive or a later prompt. A
+  🥊 or 🔄 whose replay finds no queue place keeps its offer or notice, and
+  each no-credits notice lives 24 h from its own post (HOME-945).
 - **Out of credits.** abliteration.ai answers 402 for an empty balance;
   the kagent fork reports it as `insufficient_credits`. A gloves-off turn
   that fails so gets a marked notice with the top-up link and Bosun's 🔄.

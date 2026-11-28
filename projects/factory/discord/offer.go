@@ -147,6 +147,8 @@ func offerLine(messageID string) string {
 type glovesOffer struct {
 	m     Message
 	until time.Time
+	// taking is set while a 🥊 tries to queue the replay.
+	taking bool
 }
 
 // offerGloves posts a gloves-off offer for Joe's blocked message m and
@@ -215,36 +217,86 @@ func (b *Bridge) dropOfferAt(ctx context.Context, id string, until time.Time) {
 
 // acceptOffer takes Joe's 🥊 on an offer: gloves off in the offer's channel
 // for the default time, then the blocked message as a gloves-off turn. The
-// caller checked that the reaction is Joe's 🥊.
+// caller checked that the reaction is Joe's 🥊. The offer is used only when
+// the replay gets a place on the channel's queue; otherwise it stays
+// pending, Joe hears why, and a later 🥊 tries again.
 func (b *Bridge) acceptOffer(ctx context.Context, r ReactionAdd) {
 	now := b.now()
 	b.mu.Lock()
 	o, ok := b.offers[r.MessageID]
-	if ok {
-		delete(b.offers, r.MessageID) // An offer is used once.
-	}
-	b.mu.Unlock()
-	if !ok || o.m.ChannelID != r.ChannelID || !now.Before(o.until) || !b.glovesAvailable() {
+	if !ok || o.taking || o.m.ChannelID != r.ChannelID || !now.Before(o.until) {
+		b.mu.Unlock()
 		return
 	}
+	o.taking = true // One 🥊 at a time.
+	b.offers[r.MessageID] = o
+	b.mu.Unlock()
+	release := func(used bool) {
+		b.mu.Lock()
+		if used {
+			delete(b.offers, r.MessageID) // An offer is used once.
+		} else if p, ok := b.offers[r.MessageID]; ok {
+			p.taking = false
+			b.offers[r.MessageID] = p
+		}
+		b.mu.Unlock()
+	}
 	notices, admitted := b.admitReplay(ctx)
-	if !admitted {
+	if !admitted || !b.glovesAvailable() {
+		release(false)
 		return
 	}
 	m := o.m
-	b.mu.Lock()
-	w := b.openWindow(ctx, m.ChannelID, now, 0)
-	// The replay is a gloves-off turn in this window, whatever was decided
-	// for m before (unsafe.go).
-	if b.decided == nil {
-		b.decided = map[string]unsafeDecision{}
+	w, prev, hadPrev := b.markGlovesTurn(m.ID, m.ChannelID, now)
+	if !b.reserveTurn(ctx, m) {
+		b.unmarkGlovesTurn(m.ID, prev, hadPrev)
+		release(false)
+		offer := Message{ID: r.MessageID, ChannelID: r.ChannelID, GuildID: m.GuildID}
+		b.queueNotice(ctx, notices, offer, ReplyGlovesBusy)
+		return
 	}
-	b.decided[m.ID] = unsafeDecision{unsafe: true, window: w, at: now}
+	release(true)
+	b.mu.Lock()
+	w = b.openWindow(ctx, m.ChannelID, now, 0)
 	b.mu.Unlock()
 	b.Log.InfoContext(ctx, "gloves offer taken", "channel", m.ChannelID, "message", m.ID, "until", w.end)
 	offer := Message{ID: r.MessageID, ChannelID: r.ChannelID, GuildID: m.GuildID}
 	b.queueNoticeFiles(ctx, notices, offer, glovesOffText(w), []File{{Name: "gloves-off.gif", Data: glovesOffGIF}})
-	b.queueTurn(ctx, notices, m, true)
+}
+
+// ReplyGlovesBusy answers a 🥊 or 🔄 whose replay found no place: the
+// channel's queue is full or the global limit is reached.
+const ReplyGlovesBusy = "I'm busy or at my limit right now. Take your reaction off and add it again in a minute."
+
+// markGlovesTurn decides message id a gloves-off turn in the window that
+// 🥊 opens in channelID: the open window, or a new one from now. It returns
+// that window and the decision it replaced.
+func (b *Bridge) markGlovesTurn(id, channelID string, now time.Time) (w unsafeWindow, prev unsafeDecision, hadPrev bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	w, on := b.windows[channelID]
+	if !on || !now.Before(w.end) {
+		w.start = now
+	}
+	w.end = now.Add(b.Config.Unsafe.windowFor(0)) // As openWindow sets it.
+	if b.decided == nil {
+		b.decided = map[string]unsafeDecision{}
+	}
+	prev, hadPrev = b.decided[id]
+	b.decided[id] = unsafeDecision{unsafe: true, window: w, at: now}
+	return w, prev, hadPrev
+}
+
+// unmarkGlovesTurn restores message id's decision after a replay found no
+// place.
+func (b *Bridge) unmarkGlovesTurn(id string, prev unsafeDecision, hadPrev bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if hadPrev {
+		b.decided[id] = prev
+	} else {
+		delete(b.decided, id)
+	}
 }
 
 // admitReplay returns the notice queue, or false while the bridge drains.

@@ -162,6 +162,9 @@ type Bridge struct {
 	// Unsafe answers unsafe mode turns (HOME-938, unsafe.go), one session
 	// per channel window; nil while Config.Unsafe is zero.
 	Unsafe SessionAgent
+	// Archive forgets the archive row of a message the filter refused
+	// (archive.go); nil forgets none.
+	Archive ArchiveForgetter
 	// OfferWriter writes a gloves-off offer's line on the gloves-off Agent,
 	// one stateless turn per offer (offer.go); nil uses canned lines.
 	OfferWriter Agent
@@ -193,7 +196,7 @@ type Bridge struct {
 	// retries holds no-credits notices by message ID until Joe's 🔄, and
 	// attempts the next attempt of each retried turn (credits.go).
 	retries  map[string]pendingRetry
-	attempts map[string]retryAttempt
+	attempts map[string]int
 	// blocked holds the IDs of messages that the provider's safety filter
 	// refused, for the dedupe window. A later turn's context leaves them
 	// out, so one refused message does not refuse the next turn.
@@ -256,10 +259,13 @@ func (b *Bridge) Handle(ctx context.Context, m Message) {
 	if b.operatorScope(ctx, m) {
 		return // The operator's channels: no ingest and no public turn.
 	}
+	held := false
 	if !b.UnsafeTurn(m) {
-		b.ingest(m) // An unsafe turn is never stored (HOME-938).
+		held = b.ingest(m) // An unsafe turn is never stored (HOME-938).
 	}
-	b.answer(ctx, m)
+	if !b.answer(ctx, m) && held {
+		b.Ingest.Release(m.GuildID, m.ChannelID, m.ID) // No turn will settle it.
+	}
 }
 
 // answer queues a turn for m when the bridge answers it: Accept, the
@@ -283,7 +289,8 @@ func (b *Bridge) answer(ctx context.Context, m Message) bool {
 		return false // A repeat, too old, or the bridge is draining.
 	}
 	if cmd.Kind != cmdNone {
-		b.setMode(ctx, notices, m, cmd) // Joe's gloves command (HOME-938).
+		b.Ingest.Release(m.GuildID, m.ChannelID, m.ID) // A command has no turn.
+		b.setMode(ctx, notices, m, cmd)                // Joe's gloves command (HOME-938).
 		return true
 	}
 	b.UnsafeTurn(m)               // Decides once, before the turn queues (unsafe.go).
@@ -310,6 +317,41 @@ func (b *Bridge) queueTurn(ctx context.Context, notices chan notice, m Message, 
 		return false
 	}
 	return b.enqueue(ctx, notices, q, m)
+}
+
+// reserveTurn queues Joe's m only when the global limit and the channel
+// queue both take it, and reports whether they did; it posts no notice. A
+// gloves offer or retry (offer.go, credits.go) stays pending when it fails.
+func (b *Bridge) reserveTurn(ctx context.Context, m Message) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.draining {
+		return false
+	}
+	q, exists := b.queues[m.ChannelID]
+	if exists && len(q) >= cap(q) {
+		return false
+	}
+	if ok, _ := b.take(b.now(), m, true); !ok {
+		return false
+	}
+	if !exists {
+		q = make(chan Message, max(b.Config.QueueDepth, 1))
+		b.queues[m.ChannelID] = q
+		b.wg.Add(1)
+		go b.worker(ctx, q, b.Turn)
+	}
+	select {
+	case q <- m:
+		b.active++ // As enqueue's track(1); the worker counts it down.
+		return true
+	default:
+		// A gateway turn took the last place meanwhile: give back the turn.
+		if t := b.turns["global"]; b.Config.GlobalLimit.Count > 0 && len(t) > 0 {
+			b.turns["global"] = t[:len(t)-1]
+		}
+		return false
+	}
 }
 
 // enqueue puts m on a channel queue and counts it as in flight until its
@@ -348,31 +390,53 @@ func (b *Bridge) ingesting(guildID string) bool {
 // ingest buffers a human message of a server with `ingest`: no turn, no
 // reply. Bots, webhooks, the bot itself, system messages and messages
 // without text are skipped. The server and channel come from the gateway
-// event, never from the text.
-func (b *Bridge) ingest(m Message) {
+// event, never from the text. A message that tags Bosun is held until its
+// turn ends (settleIngest), so a message the filter refuses never reaches
+// Hindsight or a later prompt; it reports whether it held one.
+func (b *Bridge) ingest(m Message) (held bool) {
 	if m.GuildID == "" || !b.ingesting(m.GuildID) {
-		return
+		return false
 	}
 	g := b.Config.Guilds[m.GuildID]
 	if len(g.Channels) > 0 && !contains(g.Channels, m.ChannelID) {
-		return
+		return false
 	}
 	b.mu.Lock()
 	bot := b.botID
 	b.mu.Unlock()
 	if m.Author.Bot || m.WebhookID != "" || m.Author.ID == "" || m.Author.ID == bot || !conversationTypes[m.Type] {
-		return
+		return false
 	}
 	b.Places.Learn(m.GuildID, m.Users()...)
 	text := b.Places.Resolve(m.GuildID, b.stripMention(m.Content), m.Mentions)
 	if text == "" {
-		return
+		return false
 	}
 	at := SentAt(m)
 	if at.IsZero() {
 		at = b.now()
 	}
-	b.Ingest.Add(m.GuildID, m.ChannelID, m.ID, at, m.Author.Username+" ("+at.UTC().Format(time.RFC3339)+"): "+text)
+	line := m.Author.Username + " (" + at.UTC().Format(time.RFC3339) + "): " + text
+	if b.Accept(m) {
+		b.Ingest.AddHeld(m.GuildID, m.ChannelID, m.ID, at, line)
+		return true
+	}
+	b.Ingest.Add(m.GuildID, m.ChannelID, m.ID, at, line)
+	return false
+}
+
+// settleIngest ends the hold on a turn's message: released when it was
+// answered or failed, dropped from the ingest buffer and the archive when
+// the provider's filter refused it (HOME-938).
+func (b *Bridge) settleIngest(m Message, blocked bool) {
+	if !blocked {
+		b.Ingest.Release(m.GuildID, m.ChannelID, m.ID)
+		return
+	}
+	b.Ingest.Drop(m.GuildID, m.ChannelID, m.ID)
+	if b.Archive != nil {
+		b.Archive.Forget(m.GuildID, m.ChannelID, m.ID)
+	}
 }
 
 // queueNotice never blocks the gateway: when the notice queue is full, the
@@ -463,6 +527,8 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 		b.unsafeTurn(ctx, m, w)
 		return
 	}
+	blocked := false
+	defer func() { b.settleIngest(m, blocked) }()
 	b.Lookup.Fill(ctx, b.Places, m.GuildID, m.Content, m.Mentions)
 	text := b.Places.Resolve(m.GuildID, b.stripMention(m.Content), m.Mentions)
 	l := b.Log.With("guild", m.GuildID, "channel", m.ChannelID, "message", m.ID)
@@ -566,7 +632,9 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 		b.restoreResults(m.ChannelID, research) // The next turn gets them.
 		if ContentBlocked(err) {
 			// Later turns leave the message out of their context, so it
-			// cannot trip the filter again.
+			// cannot trip the filter again; nor do Hindsight and the
+			// archive keep it.
+			blocked = true
 			b.block(m.ID)
 			if !b.offerGloves(ctx, l, m) {
 				b.reply(ctx, m, ReplyBlocked)

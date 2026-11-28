@@ -435,10 +435,10 @@ func (b *Bridge) unsafeTurn(ctx context.Context, m Message, w unsafeWindow) {
 	l := b.Log.With("guild", m.GuildID, "channel", m.ChannelID, "message", m.ID, "mode", "unsafe")
 	text := b.Places.Resolve(m.GuildID, b.stripMention(m.Content), m.Mentions)
 	key := m.ChannelID + "-" + strconv.FormatInt(w.start.Unix(), 10)
-	attempt, until := b.takeAttempt(m.ID)
+	attempt := b.takeAttempt(m.ID)
 	answer, err := b.Unsafe.Turn(ctx, key, attemptID(m.ID, attempt), UnsafePrompt(m, text))
 	if CreditsExhausted(err) {
-		b.noCredits(ctx, l, m, w, attempt, until) // credits.go
+		b.noCredits(ctx, l, m, w, attempt) // credits.go
 		return
 	}
 	if err != nil {

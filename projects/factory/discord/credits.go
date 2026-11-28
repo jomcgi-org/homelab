@@ -63,12 +63,14 @@ type pendingRetry struct {
 	window  unsafeWindow
 	attempt int
 	until   time.Time
+	// taking is set while a 🔄 tries to queue the turn.
+	taking bool
 }
 
 // noCredits posts the notice for gloves-off turn m with the gloves-off
 // footer, so history readers drop it and m, then reacts 🔄 and keeps the
 // retry. Without an Actor it posts the notice with no retry.
-func (b *Bridge) noCredits(ctx context.Context, l *slog.Logger, m Message, w unsafeWindow, attempt int, until time.Time) {
+func (b *Bridge) noCredits(ctx context.Context, l *slog.Logger, m Message, w unsafeWindow, attempt int) {
 	actor, ok := b.Replies.(Actor)
 	b.mu.Lock()
 	for k, r := range b.retries {
@@ -92,7 +94,8 @@ func (b *Bridge) noCredits(ctx context.Context, l *slog.Logger, m Message, w uns
 	if b.retries == nil {
 		b.retries = map[string]pendingRetry{}
 	}
-	b.retries[id] = pendingRetry{m: m, window: w, attempt: attempt, until: until}
+	// Each notice lives retryTTL from its own post, as it says.
+	b.retries[id] = pendingRetry{m: m, window: w, attempt: attempt, until: b.now().Add(retryTTL)}
 	b.mu.Unlock()
 	if err := actor.React(ctx, m.ChannelID, id, retryEmoji); err != nil {
 		actionFailed(ctx, l, "retry react", err) // Joe can still add 🔄 himself.
@@ -107,15 +110,26 @@ func (b *Bridge) acceptRetry(ctx context.Context, r ReactionAdd) {
 	now := b.now()
 	b.mu.Lock()
 	p, ok := b.retries[r.MessageID]
-	if ok {
-		delete(b.retries, r.MessageID) // A notice is retried once.
-	}
-	b.mu.Unlock()
-	if !ok || p.m.ChannelID != r.ChannelID || !now.Before(p.until) {
+	if !ok || p.taking || p.m.ChannelID != r.ChannelID || !now.Before(p.until) {
+		b.mu.Unlock()
 		return
+	}
+	p.taking = true // One 🔄 at a time.
+	b.retries[r.MessageID] = p
+	b.mu.Unlock()
+	release := func(used bool) {
+		b.mu.Lock()
+		if used {
+			delete(b.retries, r.MessageID) // A notice is retried once.
+		} else if q, ok := b.retries[r.MessageID]; ok {
+			q.taking = false
+			b.retries[r.MessageID] = q
+		}
+		b.mu.Unlock()
 	}
 	notices, admitted := b.admitReplay(ctx)
 	if !admitted {
+		release(false)
 		return
 	}
 	b.mu.Lock()
@@ -123,33 +137,33 @@ func (b *Bridge) acceptRetry(ctx context.Context, r ReactionAdd) {
 	if b.decided == nil {
 		b.decided = map[string]unsafeDecision{}
 	}
+	prev, hadPrev := b.decided[p.m.ID]
 	b.decided[p.m.ID] = unsafeDecision{unsafe: true, window: p.window, at: now}
 	if b.attempts == nil {
-		b.attempts = map[string]retryAttempt{}
+		b.attempts = map[string]int{}
 	}
-	b.attempts[p.m.ID] = retryAttempt{n: p.attempt + 1, until: p.until}
+	b.attempts[p.m.ID] = p.attempt + 1
 	b.mu.Unlock()
+	if !b.reserveTurn(ctx, p.m) {
+		b.unmarkGlovesTurn(p.m.ID, prev, hadPrev)
+		b.mu.Lock()
+		delete(b.attempts, p.m.ID)
+		b.mu.Unlock()
+		release(false)
+		b.queueNotice(ctx, notices, Message{ID: r.MessageID, ChannelID: r.ChannelID, GuildID: p.m.GuildID}, ReplyGlovesBusy)
+		return
+	}
+	release(true)
 	b.Log.InfoContext(ctx, "gloves-off retry", "channel", p.m.ChannelID, "message", p.m.ID, "attempt", p.attempt+1)
-	b.queueTurn(ctx, notices, p.m, true)
 }
 
-// retryAttempt is the next attempt of a retried gloves-off turn.
-type retryAttempt struct {
-	n     int
-	until time.Time
-}
-
-// takeAttempt returns and clears m's retry attempt: 0 and the default
-// expiry for a first attempt.
-func (b *Bridge) takeAttempt(id string) (int, time.Time) {
+// takeAttempt returns and clears m's retry attempt: 0 for a first attempt.
+func (b *Bridge) takeAttempt(id string) int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	a, ok := b.attempts[id]
-	if !ok {
-		return 0, b.now().Add(retryTTL)
-	}
+	n := b.attempts[id]
 	delete(b.attempts, id)
-	return a.n, a.until
+	return n
 }
 
 // attemptID is the A2A message ID of an attempt: kagent answers a repeated

@@ -82,6 +82,7 @@ go_test(
         "remember_test.go",
         "render_test.go",
         "replies_test.go",
+        "retention_test.go",
         "seed_test.go",
         "server_agents_test.go",
         "sessions_test.go",

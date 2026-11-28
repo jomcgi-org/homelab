@@ -197,7 +197,8 @@ func run(log *slog.Logger) error {
 	// does, so the last events are written.
 	archiver, archiveStore := newArchive(log, policy, bridge.Places, reg)
 	if archiver != nil {
-		archiver.Unsafe = bridge // Unsafe mode turns are never archived (HOME-938).
+		archiver.Unsafe = bridge  // Unsafe mode turns are never archived (HOME-938).
+		bridge.Archive = archiver // A refused message's row is cleared (HOME-938).
 	}
 	archiveDone := make(chan struct{})
 	stopArchive := func() {}
