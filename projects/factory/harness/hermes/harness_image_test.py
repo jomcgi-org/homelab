@@ -304,7 +304,6 @@ class _FakeModel(BaseHTTPRequestHandler):
         )
         self._send(stream + "data: [DONE]\n\n", "text/event-stream")
 
-
     def _refuse(self, stream: bool, usage: dict) -> None:
         refusal = "I won't help with that."
         if not stream:
