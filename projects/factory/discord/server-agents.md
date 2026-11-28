@@ -1312,6 +1312,14 @@ stateDiagram-v2
 - **Egress.** Workers may reach `api.abliteration.ai`; the egress gateway
   scans each request body (`gateway-policy-tls.yaml`) before it injects
   the key.
+- **Offer after a block.** When the normal model's filter blocks Joe's
+  message, the bridge (`offer.go`) answers with a canned line and reacts
+  🥊, in place of the blocked reply. Joe's own 🥊 within 10 min turns
+  gloves off (default time) and replays the message as a gloves-off turn
+  that answers it. No model writes the line and it holds no message text.
+  The bridge keeps the message in memory only until the offer ends.
+  Without gloves off, or for another author, the reply stays the blocked
+  one.
 - **GIFs.** `gloves/gloves-off.gif` and `gloves/gloves-on.gif` are
   embedded in the bridge. To use other files, replace those two files.
 - **Billing.** Prepaid credits only, with auto-reload off.

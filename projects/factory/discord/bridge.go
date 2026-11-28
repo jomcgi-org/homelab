@@ -185,6 +185,8 @@ type Bridge struct {
 	exploreSlots chan struct{}
 	// shares holds share confirmations by message ID until Joe's ✅.
 	shares map[string]pendingShare
+	// offers holds gloves-off offers by the offer message's ID (offer.go).
+	offers map[string]glovesOffer
 	// blocked holds the IDs of messages that the provider's safety filter
 	// refused, for the dedupe window. A later turn's context leaves them
 	// out, so one refused message does not refuse the next turn.
@@ -279,6 +281,12 @@ func (b *Bridge) answer(ctx context.Context, m Message) bool {
 	}
 	b.UnsafeTurn(m)               // Decides once, before the turn queues (unsafe.go).
 	operator := b.fromOperator(m) // Before b.mu: fromOperator takes it.
+	return b.queueTurn(ctx, notices, m, operator)
+}
+
+// queueTurn counts m against the limits and puts it on its channel's
+// queue, starting the channel's worker once.
+func (b *Bridge) queueTurn(ctx context.Context, notices chan notice, m Message, operator bool) bool {
 	b.mu.Lock()
 	allowed, retry := b.take(b.now(), m, operator)
 	key := m.ChannelID
@@ -553,7 +561,9 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 			// Later turns leave the message out of their context, so it
 			// cannot trip the filter again.
 			b.block(m.ID)
-			b.reply(ctx, m, ReplyBlocked)
+			if !b.offerGloves(ctx, l, m) {
+				b.reply(ctx, m, ReplyBlocked)
+			}
 			return
 		}
 		b.reply(ctx, m, ReplyFailed)
